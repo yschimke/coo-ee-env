@@ -96,13 +96,18 @@ module_java() {
 }
 
 # Warm the Gradle build cache: with a JDK ready (and the Gradle/Maven hosts
-# reachable), resolve the project's dependencies now so a later `./gradlew build`
-# — possibly under tighter egress — can run from cache. Best-effort and never
-# fatal. The task defaults to `dependencies` (resolves + downloads the build's
-# configurations without compiling); override it with COOEE_GRADLE_DEPS_TASK
-# (e.g. a multi-project `resolveAll`/`assemble`). Skipped when there is no Gradle
-# build in the project dir, when neither a wrapper nor `gradle` is available, or
-# when COOEE_NO_DEPS=1.
+# reachable), download the project's dependencies now so a later `./gradlew
+# build` — possibly under tighter egress — can run from cache. Best-effort and
+# never fatal.
+#
+# By default this resolves every resolvable configuration's *files* via a
+# transient init script, so the actual artifact JARs land in the cache — not
+# just the metadata that the `dependencies` report task alone fetches — without
+# compiling anything. Set COOEE_GRADLE_DEPS_TASK to run a specific task instead
+# (e.g. "assemble -x test"); the value is word-split so it can carry flags.
+#
+# Skipped when there is no Gradle build in the project dir, when neither a
+# wrapper nor `gradle` is available, or when COOEE_NO_DEPS=1.
 cooee_prefetch_gradle() {
   cooee_deps_enabled || { log "java: skipping Gradle dependency prefetch (COOEE_NO_DEPS=1)."; return 0; }
 
@@ -120,15 +125,43 @@ cooee_prefetch_gradle() {
   elif command -v gradle >/dev/null 2>&1; then gradle=gradle
   else log "java: Gradle build present but no wrapper or gradle on PATH; skipping dependency prefetch."; return 0; fi
 
-  # Split into words so an override can carry flags (e.g. "assemble -x test").
-  local -a task
-  read -r -a task <<< "${COOEE_GRADLE_DEPS_TASK:-dependencies}"
-  log "java: prefetching Gradle build dependencies (${task[*]})..."
-  # Capture output so the success path stays quiet (the dependency tree can be
-  # huge); surface it only when the run fails, for diagnosis.
-  local out
-  if out=$( cd "$dir" && "$gradle" --no-daemon --console=plain "${task[@]}" </dev/null 2>&1 ); then
-    ok "java: Gradle build dependencies prefetched (${task[*]})."
+  local -a inv=(--no-daemon --console=plain)
+  local label init=""
+  if [[ -n "${COOEE_GRADLE_DEPS_TASK:-}" ]]; then
+    # Explicit task override — word-split so it can carry flags.
+    local -a task; read -r -a task <<< "$COOEE_GRADLE_DEPS_TASK"
+    inv+=("${task[@]}")
+    label="task: ${task[*]}"
+  else
+    # Default: an init script resolves every resolvable configuration's files
+    # (leniently, so one unresolvable config can't fail the warm-up), forcing
+    # artifact download across all projects. `help` just drives evaluation.
+    init=$(mktemp "${TMPDIR:-/tmp}/cooee-gradle-prefetch.XXXXXX") || {
+      warn "java: could not create a temp init script; skipping dependency prefetch."; return 0; }
+    cat > "$init" <<'GRADLE'
+gradle.projectsEvaluated {
+  rootProject.allprojects { proj ->
+    proj.configurations.each { conf ->
+      if (conf.canBeResolved) {
+        try { conf.resolvedConfiguration.lenientConfiguration.files }
+        catch (Throwable t) { proj.logger.lifecycle("cooee: skip ${proj.path}:${conf.name} (${t.message})") }
+      }
+    }
+  }
+}
+GRADLE
+    inv+=(--init-script "$init" help)
+    label="all resolvable configurations"
+  fi
+
+  log "java: prefetching Gradle build dependencies ($label)..."
+  # Capture output so the success path stays quiet (resolution is noisy);
+  # surface it only on failure, for diagnosis.
+  local out rc=0
+  out=$( cd "$dir" && "$gradle" "${inv[@]}" </dev/null 2>&1 ) || rc=$?
+  [[ -n "$init" ]] && rm -f "$init"
+  if [[ $rc -eq 0 ]]; then
+    ok "java: Gradle build dependencies prefetched ($label)."
   else
     printf '%s\n' "$out" >&2
     warn "java: Gradle dependency prefetch failed (continuing). Allowlist the Gradle/Maven hosts, or set COOEE_NO_DEPS=1 to skip."
