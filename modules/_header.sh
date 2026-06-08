@@ -81,6 +81,125 @@ cooee_forward_persisted_env() {
   fi
 }
 
+# ---- activation: make the env auto-apply without a manual `source` ----------
+# Persisting the env to a file isn't enough on its own — a future shell or agent
+# session still has to load it. So, as part of a normal run, we wire that up:
+#   * append a guarded line to the common shell rc files (every future shell
+#     sources the persisted env), and
+#   * install/merge a Claude Code SessionStart hook into the *consuming* project
+#     so future web sessions re-run this same bootstrap (idempotent, cheap).
+# This is generic plumbing for whatever project pulls in coo.ee/env — never tied
+# to one repo. GitHub Actions has its own activation ($GITHUB_ENV/$GITHUB_PATH),
+# so we skip it there; COOEE_NO_ACTIVATE=1 opts out everywhere.
+COOEE_BASE_URL="${COOEE_BASE_URL:-https://env.coo.ee}"
+
+# Rebuild the canonical request segment (modules + their params) so a hook can
+# re-run exactly what was asked for, e.g. "java[17,21],android[34]".
+cooee_request_segment() {
+  local m seg=() p
+  for m in "${MODULES[@]}"; do
+    [[ "$m" == base ]] && continue
+    p="${_MODULE_PARAMS[$m]:-}"
+    if [[ -n "$p" ]]; then seg+=("$m[$p]"); else seg+=("$m"); fi
+  done
+  local IFS=,; printf '%s' "${seg[*]}"
+}
+
+# Append a guarded activation block to the usual shell rc files. Idempotent via
+# marker lines; touches ~/.zshrc only when zsh is actually in play.
+cooee_install_shell_rc() {
+  local begin='# >>> coo.ee/env >>>' end='# <<< coo.ee/env <<<'
+  local block="${begin}
+[ -f \"${COOEE_PROFILE}\" ] && . \"${COOEE_PROFILE}\"
+${end}"
+  local -a rcs=("$HOME/.bashrc" "$HOME/.profile")
+  [[ -f "$HOME/.zshrc" || "${SHELL:-}" == *zsh || -n "${ZSH_VERSION:-}" ]] && rcs+=("$HOME/.zshrc")
+  local rc updated=0
+  for rc in "${rcs[@]}"; do
+    if [[ -f "$rc" ]] && grep -qF "$begin" "$rc" 2>/dev/null; then
+      updated=1; continue   # already activated here
+    fi
+    printf '\n%s\n' "$block" >> "$rc" && { ok "activation: ${rc/#$HOME/\~} now sources the persisted env."; updated=1; }
+  done
+  (( updated )) || warn "activation: could not update any shell rc file."
+}
+
+# Install/merge a SessionStart hook into the consuming project's
+# .claude/settings.json so future Claude Code sessions auto-provision. Uses
+# jq/python3/node to merge an existing file; writes a fresh one otherwise; warns
+# (with the snippet) if a file exists but no JSON tool is available.
+cooee_install_session_hook() {
+  local dir
+  if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then dir="$CLAUDE_PROJECT_DIR"
+  elif [[ -d "$PWD/.git" || -d "$PWD/.claude" ]]; then dir="$PWD"
+  else warn "activation: no project dir (CLAUDE_PROJECT_DIR unset, $PWD isn't a repo) — skipping SessionStart hook."; return 0; fi
+
+  local seg cmd settings="$dir/.claude/settings.json"
+  seg="$(cooee_request_segment)"
+  cmd="curl -fsSL ${COOEE_BASE_URL}/${seg} | bash"
+
+  if [[ -f "$settings" ]] && grep -qF "$cmd" "$settings" 2>/dev/null; then
+    ok "activation: SessionStart hook already present in ${settings/#$HOME/\~}."
+    return 0
+  fi
+  mkdir -p "$dir/.claude"
+
+  if [[ ! -f "$settings" ]]; then
+    cat > "$settings" <<JSON
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "${cmd}" } ] }
+    ]
+  }
+}
+JSON
+    ok "activation: wrote SessionStart hook to ${settings/#$HOME/\~}."
+    return 0
+  fi
+
+  # Merge into the existing settings without clobbering other keys.
+  local tmp; tmp="$(mktemp)"
+  if command -v jq >/dev/null 2>&1; then
+    if jq --arg c "$cmd" '.hooks //= {} | .hooks.SessionStart //= []
+        | .hooks.SessionStart += [ { hooks: [ { type: "command", command: $c } ] } ]' \
+        "$settings" > "$tmp" 2>/dev/null && mv "$tmp" "$settings"; then
+      ok "activation: merged SessionStart hook into ${settings/#$HOME/\~} (jq)."; return 0
+    fi
+  elif command -v python3 >/dev/null 2>&1; then
+    if python3 - "$settings" "$cmd" <<'PY' 2>/dev/null
+import json, sys
+path, cmd = sys.argv[1], sys.argv[2]
+with open(path) as f: data = json.load(f)
+hooks = data.setdefault("hooks", {}).setdefault("SessionStart", [])
+hooks.append({"hooks": [{"type": "command", "command": cmd}]})
+with open(path, "w") as f:
+    json.dump(data, f, indent=2); f.write("\n")
+PY
+    then ok "activation: merged SessionStart hook into ${settings/#$HOME/\~} (python3)."; return 0; fi
+  elif command -v node >/dev/null 2>&1; then
+    if node -e '
+        const fs = require("fs"), [p, c] = process.argv.slice(1);
+        const d = JSON.parse(fs.readFileSync(p, "utf8"));
+        (d.hooks ||= {}).SessionStart ||= [];
+        d.hooks.SessionStart.push({ hooks: [{ type: "command", command: c }] });
+        fs.writeFileSync(p, JSON.stringify(d, null, 2) + "\n");
+      ' "$settings" "$cmd" 2>/dev/null; then
+      ok "activation: merged SessionStart hook into ${settings/#$HOME/\~} (node)."; return 0; fi
+  fi
+  rm -f "$tmp"
+  warn "activation: ${settings/#$HOME/\~} exists but no jq/python3/node to merge it safely."
+  warn "activation: add this SessionStart hook command manually: ${cmd}"
+}
+
+# Run both activation steps unless opted out / on GitHub Actions.
+cooee_install_activation() {
+  [[ "${COOEE_NO_ACTIVATE:-0}" == 1 ]] && { log "activation: skipped (COOEE_NO_ACTIVATE=1)."; return 0; }
+  [[ "$COOEE_GHA" == 1 ]] && { log "activation: GitHub Actions uses \$GITHUB_ENV/\$GITHUB_PATH; skipping shell-rc/hook install."; return 0; }
+  cooee_install_shell_rc
+  cooee_install_session_hook
+}
+
 # ---- privilege helper -----------------------------------------------------
 # Run a command as root: directly when already root, via sudo when available,
 # otherwise return 127 so the caller can degrade gracefully (warn, not die).

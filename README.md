@@ -52,6 +52,8 @@ curl -fsSL https://env.coo.ee/java,android | bash
    17 + 21, `node` → Node.js 22).
 6. **Persists the environment** to `~/.config/coo-ee/env.sh` and, when running
    inside a harness, to `$CLAUDE_ENV_FILE` / `$GITHUB_ENV`.
+7. **Activates itself** so the env applies without a manual `source` — see
+   [Auto-activation](#auto-activation) below.
 
 ### Idempotent by design
 
@@ -67,8 +69,8 @@ treats an already-present package as success — so a partial/cold box is
 | --------- | ----------------------------------------- | ----------------------- | ----------------------- |
 | `base`    | Nix (Determinate, daemonless)             | `install.determinate.systems`, `cache.nixos.org`, `channels.nixos.org`, `github.com`, `objects.githubusercontent.com` | — |
 | `java`    | Temurin JDK (default 17 + 21; `java[17,21]` to choose), `JAVA_HOME` | `cache.nixos.org` | base-image JDK |
-| `android` | `android-tools` (adb/fastboot), `ANDROID_HOME`; `android[30,37,wear-33]` records platforms in `COOEE_ANDROID_PLATFORMS` | `cache.nixos.org`, `dl.google.com`, `maven.google.com` | — |
-| `android-emulator` | Configures `/dev/kvm` access (GitHub `99-kvm4all.rules`); records system images in `COOEE_ANDROID_EMULATOR_IMAGES`; **implies `android`** | `cache.nixos.org`, `dl.google.com` | — |
+| `android` | Full SDK via `androidenv`: `platform-tools` (adb), `cmdline-tools`, the requested platform(s) + `build-tools`, `ANDROID_HOME`; `android[30,37,wear-33]` picks the platform API levels | `cache.nixos.org`, `dl.google.com`, `maven.google.com` | — |
+| `android-emulator` | Adds `emulator` + `system-images` to the SDK (via the implied `android` build) and configures `/dev/kvm` access (GitHub `99-kvm4all.rules`); `android-emulator[34,wear-33]` picks the image levels; **implies `android`** | `cache.nixos.org`, `dl.google.com` | — |
 | `node`    | Node.js 22 LTS, npm                       | `cache.nixos.org`, `registry.npmjs.org` | Codex: `CODEX_ENV_NODE_VERSION` |
 | `python`  | CPython 3 + pip                           | `cache.nixos.org`, `pypi.org`, `files.pythonhosted.org` | Codex: `CODEX_ENV_PYTHON_VERSION` |
 | `go`      | Go toolchain, `GOPATH`                    | `cache.nixos.org`, `proxy.golang.org`, `sum.golang.org` | Codex: `CODEX_ENV_GO_VERSION` |
@@ -112,13 +114,13 @@ curl -fsSL 'https://env.coo.ee/java[17,21],android[30,37,wear-33]' | bash
 
 `java[17,21]` installs each Temurin major (`nixpkgs#temurin-bin-<major>`, lowest
 owning the `java`/`javac` symlinks); bare `java` keeps the default 17 + 21.
-`android[30,37,wear-33]` records platform API levels in `COOEE_ANDROID_PLATFORMS`,
-and `android-emulator[34,wear-33]` records system-image levels in
-`COOEE_ANDROID_EMULATOR_IMAGES`, both for the project's `androidenv` flake to
-provision. `ruby[3]` selects the major series (the nixpkgs default Ruby 3) and
-`ruby[3.4.9]` pins a full version down to its `ruby_3_4` major.minor attribute. A
-param-less request injects nothing, so it renders byte-identically to before
-parameters existed.
+`android[30,37,wear-33]` installs those platform API levels (with their
+`build-tools`), and `android-emulator[34,wear-33]` installs the matching
+`emulator` system images — both built into the SDK by `androidenv` (see
+[Android: what `android` installs](#android-what-android-installs)). `ruby[3]`
+selects the major series (the nixpkgs default Ruby 3) and `ruby[3.4.9]` pins a
+full version down to its `ruby_3_4` major.minor attribute. A param-less request
+injects nothing, so it renders byte-identically to before parameters existed.
 
 ### Module implications
 
@@ -141,6 +143,52 @@ curl -fsSL 'https://env.coo.ee/tools[ripgrep,jq],node,skills' | bash
 
 Nested attributes work too (`tools[nodePackages.prettier]`); an unknown name
 just warns and is skipped, so one typo doesn't fail the whole environment.
+
+### Android: what `android` installs
+
+The `android` module installs a **complete, buildable SDK** — `platform-tools`
+(`adb`/`fastboot`), `cmdline-tools`, the requested platform(s) and
+`build-tools` — using [`nixpkgs`
+`androidenv`](https://nixos.org/manual/nixpkgs/stable/#android), and points
+`ANDROID_HOME` / `ANDROID_SDK_ROOT` at it. Add `android-emulator` and the same
+build also includes the `emulator` and matching `system-images`. So
+
+```bash
+curl -fsSL 'https://env.coo.ee/java[21],android[34],android-emulator[34]' | bash
+```
+
+leaves you with a JDK, `adb`, the API-34 platform + build-tools, the emulator,
+an API-34 system image, and a configured `/dev/kvm` — ready for
+`./gradlew assembleDebug` or to boot an AVD, no extra flake step.
+
+**Which versions.** The bracketed params pick the platform API levels
+(`android[30,37,wear-33]`); a `wear-NN` level also pulls the `android-wear`
+system image. A bare `android` installs one default platform. Two knobs tune the
+rest (set them in the environment before running):
+
+| Variable | Default | Selects |
+| --- | --- | --- |
+| `COOEE_ANDROID_DEFAULT_PLATFORM` | `36` | platform API level for a param-less `android` |
+| `COOEE_ANDROID_BUILD_TOOLS` | `36.0.0` | the `build-tools` revision to install |
+
+Because the SDK is built through Nix, it is reproducible and survives
+`nix store gc` (the build is anchored by a GC root under `~/.cache/coo-ee/`). On
+a box that already has a **complete** SDK (a CI runner, or a warm box with
+platforms + build-tools), the module adopts it instead of rebuilding — and only
+falls back to a Nix build if an explicitly requested platform is missing. The
+recorded `COOEE_ANDROID_PLATFORMS` / `COOEE_ANDROID_EMULATOR_IMAGES` values are
+kept as a description of the request.
+
+**Allowlist.** Installing now fetches the SDK components, so beyond
+`cache.nixos.org` (the Nix closure) the module needs **`dl.google.com`** (the
+platform / build-tools / system-image sources). *Building* the project
+additionally wants the registries the module lists under **"Recommended for
+builds"** (`maven.google.com`, `packages.jetbrains.team`, `*.jetbrains.com`,
+`fonts.googleapis.com`, `fonts.gstatic.com`), plus whatever your Gradle build
+resolves from — commonly `services.gradle.org` (the Gradle distribution),
+`repo.maven.apache.org` / `repo1.maven.org` (Maven Central), and `jitpack.io`.
+The build-time registries are advisory: the script never probes them and never
+fails on them, it just reminds you to allow them before `./gradlew build`.
 
 ## Cloud built-ins & short-circuit
 
@@ -165,9 +213,36 @@ Knobs:
 | --- | --- |
 | `COOEE_FORCE=1` | Ignore the short-circuit and adoption; force a fresh Nix install / repair. |
 | `COOEE_IGNORE_HOST_CHECK=1` | Continue even if a required install host is blocked. |
+| `COOEE_NO_ACTIVATE=1` | Skip [auto-activation](#auto-activation) — don't touch shell rc files or `.claude/settings.json`. |
+| `COOEE_BASE_URL` | Service base URL baked into the installed SessionStart hook (default `https://env.coo.ee`). |
 
 The provisioning stamp lives at `~/.config/coo-ee/provisioned` (the canonical
 module set); delete it to force the next run to re-probe.
+
+## Auto-activation
+
+Persisting the env to `~/.config/coo-ee/env.sh` doesn't help if nothing loads
+it. So a normal run also **wires up activation** for the consuming project — no
+manual `source`, no per-project boilerplate:
+
+- **Shell rc.** A guarded block is appended to `~/.bashrc`, `~/.profile` (and
+  `~/.zshrc` when zsh is in play) that sources the persisted env, so every
+  future shell has the toolchain on `PATH`. The block is fenced by
+  `# >>> coo.ee/env >>>` markers and added at most once.
+- **Claude Code SessionStart hook.** The script installs (or merges) a
+  `SessionStart` hook into the consuming project's `.claude/settings.json` that
+  re-runs the *same request* — `curl -fsSL https://env.coo.ee/<your,modules> | bash` —
+  so a fresh web session re-provisions automatically. It reconstructs the
+  request (modules + params) from the run itself, merges with `jq`/`python3`/
+  `node` so existing settings are preserved (and warns with the snippet if none
+  is available), and is idempotent — the hook is added at most once. The target
+  is `$CLAUDE_PROJECT_DIR`, falling back to the current directory when it's a
+  git repo.
+
+This is generic plumbing baked into the bootstrapper, so **any** project that
+pulls in coo.ee/env gets it — nothing is specific to one repo. GitHub Actions
+has its own activation (`$GITHUB_ENV` / `$GITHUB_PATH`), so the step is skipped
+there. Opt out entirely with `COOEE_NO_ACTIVATE=1`.
 
 ## How rendering works
 
@@ -210,7 +285,9 @@ curl -fsSL https://env.coo.ee/java,android | bash
 ```
 
 **Project config / `SessionStart` hook** (`.claude/settings.json`) — runs in
-both local and cloud sessions; idempotency keeps it cheap:
+both local and cloud sessions; idempotency keeps it cheap. You usually don't
+write this by hand: the first run [auto-installs](#auto-activation) exactly this
+hook into the consuming project. The shape it writes (or merges) is:
 
 ```json
 {

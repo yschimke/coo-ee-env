@@ -1,12 +1,14 @@
 
 # ===========================================================================
 #  module: android-emulator
-#    software : Android emulator runtime + system images (project androidenv)
-#    params   : android-emulator[34,wear-33] records the requested system-image
-#               API levels in COOEE_ANDROID_EMULATOR_IMAGES for the androidenv
-#               flake; default 36
+#    software : Android emulator runtime + system images. The implied `android`
+#               module installs the emulator and system images into the SDK
+#               (it reads this module's params); here we make KVM usable and
+#               record/verify the request.
+#    params   : android-emulator[34,wear-33] selects the system-image API levels
+#               (also recorded in COOEE_ANDROID_EMULATOR_IMAGES)
 #    hosts    : cache.nixos.org (install)
-#             : dl.google.com (emulator binaries + system images, advisory)
+#             : dl.google.com (emulator binaries + system images)
 #    implies  : android (adb / ANDROID_HOME) — pulled in automatically
 #  An emulator needs KVM acceleration. When /dev/kvm exists but isn't accessible
 #  (the GitHub-hosted runner case) we apply the documented 99-kvm4all.rules to
@@ -59,33 +61,26 @@ cooee_configure_kvm() {
 }
 
 module_android-emulator() {
-  # Requested system-image API levels come from the params
-  # (android-emulator[34,wear-33]); default to 36 (current stable API level) when
-  # none are given. Record them for the project's androidenv flake regardless of
-  # where the emulator itself comes from.
+  # (android-emulator[34,wear-33]); default to API 36 when none are given. The
+  # implied `android` module reads these same params and builds the emulator +
+  # matching system images into the SDK, so by the time we run here the emulator
+  # is already installed. Record them for reference / the androidenv flake.
   local -a images=("$@")
   (( ${#images[@]} )) || images=(36)
   add_env COOEE_ANDROID_EMULATOR_IMAGES "${images[*]}"
 
-  # An emulator is only usable with KVM acceleration — configure it whether we
-  # adopt an existing emulator or delegate provisioning to the androidenv flake.
+  # An emulator is only usable with KVM acceleration — configure it regardless
+  # of where the emulator binary came from.
   cooee_configure_kvm
 
-  # Adopt an existing emulator (warm box / base image) when present.
-  if [[ "${COOEE_FORCE:-0}" != 1 ]] && command -v emulator >/dev/null 2>&1; then
-    ok "android-emulator: adopted existing $(emulator -version 2>/dev/null | head -1 || echo emulator) ($(command -v emulator))."
-    (( ${#images[@]} )) && warn "requested system images: ${images[*]} (COOEE_ANDROID_EMULATOR_IMAGES)."
-    return 0
-  fi
-
-  # Like the SDK platforms, the emulator and its system images are licensed and
-  # large, and the versions belong to the project, not this bootstrap. We record
-  # the request and let the repo's androidenv flake provision the emulator and
-  # AVDs from it (adb / ANDROID_HOME come from the implied `android` module).
-  warn "android-emulator: the emulator and system images are provisioned by the"
-  warn "project's androidenv flake (see README.md), not installed here."
-  if (( ${#images[@]} )); then
-    warn "requested system images: ${images[*]}"
-    warn "(exported as COOEE_ANDROID_EMULATOR_IMAGES for the androidenv flake)."
+  # The `android` module installed (or adopted) the emulator. Verify it's on
+  # PATH and report; warn if it isn't (e.g. an adopted SDK without the emulator).
+  if command -v emulator >/dev/null 2>&1; then
+    ok "android-emulator: $(emulator -version 2>/dev/null | head -1 || echo emulator) ready ($(command -v emulator))."
+    (( ${#images[@]} )) && ok "android-emulator: system images for ${images[*]} installed with the SDK."
+  else
+    warn "android-emulator: no 'emulator' on PATH — the adopted SDK may not include"
+    warn "it. Re-run with COOEE_FORCE=1 to build a complete SDK (emulator + system"
+    warn "images) via Nix, or add the emulator to your existing SDK."
   fi
 }
