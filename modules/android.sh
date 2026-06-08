@@ -3,7 +3,8 @@
 #  module: android
 #    software : android-tools (adb/fastboot) via Nix, ANDROID_HOME
 #    params   : android[30,37,wear-33] records platform API levels in
-#               COOEE_ANDROID_PLATFORMS for the project's androidenv flake
+#               COOEE_ANDROID_PLATFORMS for the project's androidenv flake;
+#               default 36
 #    hosts    : cache.nixos.org (install)
 #             : Google / JetBrains / fonts registries (build, advisory)
 #  Host set mirrors skills/compose-preview/references/agent-cloud.md.
@@ -20,12 +21,14 @@ want_host fonts.googleapis.com   "downloadable font metadata (Compose)"
 want_host fonts.gstatic.com      "downloadable font binaries (Compose)"
 
 module_android() {
-  # Requested platform API levels come from the params (android[30,37,wear-33]).
-  # We don't provision the licensed SDK here; record the request so the project's
+  # Requested platform API levels come from the params (android[30,37,wear-33]);
+  # default to 36 (current stable API level) when none are given. We don't
+  # provision the licensed SDK here; record the request so the project's
   # androidenv flake can pick the platforms up from the environment. Independent
   # of where adb comes from, so record it before the adopt/install branch.
   local -a platforms=("$@")
-  (( ${#platforms[@]} )) && add_env COOEE_ANDROID_PLATFORMS "${platforms[*]}"
+  (( ${#platforms[@]} )) || platforms=(36)
+  add_env COOEE_ANDROID_PLATFORMS "${platforms[*]}"
 
   # Adopt existing platform-tools (warm box / base image) when adb is already
   # on PATH — just settle ANDROID_HOME and skip the Nix install.

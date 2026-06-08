@@ -3,7 +3,8 @@
 #  module: android-emulator
 #    software : Android emulator runtime + system images (project androidenv)
 #    params   : android-emulator[34,wear-33] records the requested system-image
-#               API levels in COOEE_ANDROID_EMULATOR_IMAGES for the androidenv flake
+#               API levels in COOEE_ANDROID_EMULATOR_IMAGES for the androidenv
+#               flake; default 36
 #    hosts    : cache.nixos.org (install)
 #             : dl.google.com (emulator binaries + system images, advisory)
 #    implies  : android (adb / ANDROID_HOME) — pulled in automatically
@@ -59,10 +60,12 @@ cooee_configure_kvm() {
 
 module_android-emulator() {
   # Requested system-image API levels come from the params
-  # (android-emulator[34,wear-33]); record them for the project's androidenv
-  # flake regardless of where the emulator itself comes from.
+  # (android-emulator[34,wear-33]); default to 36 (current stable API level) when
+  # none are given. Record them for the project's androidenv flake regardless of
+  # where the emulator itself comes from.
   local -a images=("$@")
-  (( ${#images[@]} )) && add_env COOEE_ANDROID_EMULATOR_IMAGES "${images[*]}"
+  (( ${#images[@]} )) || images=(36)
+  add_env COOEE_ANDROID_EMULATOR_IMAGES "${images[*]}"
 
   # An emulator is only usable with KVM acceleration — configure it whether we
   # adopt an existing emulator or delegate provisioning to the androidenv flake.

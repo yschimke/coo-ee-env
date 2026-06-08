@@ -167,6 +167,15 @@ declare -A _HOST_REASON=()   # required to INSTALL — probed, hard-fail if bloc
 declare -A _WANT_REASON=()   # recommended for BUILDS — advisory only (may be wildcards)
 declare -A _MODULE_PARAMS=() # request params per module (comma-joined), injected by the renderer
 register_module() { MODULES+=("$1"); }
+# True when <module> is part of this run's requested set (every fragment calls
+# register_module at source time, before the footer runs the modules, so this is
+# reliable inside a module_* function). Lets a module vary its defaults by what
+# else is being installed — e.g. java defaulting differently when android is in.
+cooee_module_requested() {  # cooee_module_requested <module>
+  local m
+  for m in "${MODULES[@]}"; do [[ "$m" == "$1" ]] && return 0; done
+  return 1
+}
 need_host()       { _HOST_REASON["$1"]="$2"; }   # need_host <host> <reason>
 want_host()       { _WANT_REASON["$1"]="$2"; }   # want_host <host|*.host> <reason>
 set_params()      { _MODULE_PARAMS["$1"]="$2"; } # set_params <module> <comma-joined params>
@@ -369,7 +378,8 @@ module_base() {
 #  module: android
 #    software : android-tools (adb/fastboot) via Nix, ANDROID_HOME
 #    params   : android[30,37,wear-33] records platform API levels in
-#               COOEE_ANDROID_PLATFORMS for the project's androidenv flake
+#               COOEE_ANDROID_PLATFORMS for the project's androidenv flake;
+#               default 36
 #    hosts    : cache.nixos.org (install)
 #             : Google / JetBrains / fonts registries (build, advisory)
 #  Host set mirrors skills/compose-preview/references/agent-cloud.md.
@@ -386,12 +396,14 @@ want_host fonts.googleapis.com   "downloadable font metadata (Compose)"
 want_host fonts.gstatic.com      "downloadable font binaries (Compose)"
 
 module_android() {
-  # Requested platform API levels come from the params (android[30,37,wear-33]).
-  # We don't provision the licensed SDK here; record the request so the project's
+  # Requested platform API levels come from the params (android[30,37,wear-33]);
+  # default to 36 (current stable API level) when none are given. We don't
+  # provision the licensed SDK here; record the request so the project's
   # androidenv flake can pick the platforms up from the environment. Independent
   # of where adb comes from, so record it before the adopt/install branch.
   local -a platforms=("$@")
-  (( ${#platforms[@]} )) && add_env COOEE_ANDROID_PLATFORMS "${platforms[*]}"
+  (( ${#platforms[@]} )) || platforms=(36)
+  add_env COOEE_ANDROID_PLATFORMS "${platforms[*]}"
 
   # Adopt existing platform-tools (warm box / base image) when adb is already
   # on PATH — just settle ANDROID_HOME and skip the Nix install.
@@ -426,7 +438,8 @@ module_android() {
 # ===========================================================================
 #  module: java
 #    software : Temurin JDK (via Nix), JAVA_HOME, JDK TLS fix
-#    params   : java[17,21] picks the JDK majors; default 17 + 21
+#    params   : java[17,21] picks the JDK majors; default 21, or 17 + 21 when
+#               android is also being installed
 #    hosts    : cache.nixos.org (install)
 #             : Gradle / Maven / toolchain registries (build, advisory)
 #  Host set mirrors skills/compose-preview/references/agent-cloud.md.
@@ -442,11 +455,19 @@ want_host api.adoptium.net     "JDK/toolchain provisioning API"
 want_host jitpack.io           "dependencies published via JitPack"
 
 module_java() {
-  # Requested JDK majors come from the request params (java[17,21]); default to
-  # 17 + 21, the toolchains most repos here pin to. Each maps to a
-  # nixpkgs#temurin-bin-<major>.
+  # Requested JDK majors come from the request params (java[17,21]). With no
+  # params we default to 21 (the current LTS most repos here run on) — but when
+  # android is also being installed we default to 17 + 21, since the Android
+  # toolchain (AGP/Gradle) still pins to 17 while app code targets 21. Each major
+  # maps to a nixpkgs#temurin-bin-<major>.
   local -a versions=("$@")
-  (( ${#versions[@]} )) || versions=(17 21)
+  if (( ! ${#versions[@]} )); then
+    if cooee_module_requested android; then
+      versions=(17 21)
+    else
+      versions=(21)
+    fi
+  fi
 
   # Already provisioned (warm box) or provided by the cloud base image? Adopt
   # the existing JDK — set JAVA_HOME from it and skip the redundant Nix install.
