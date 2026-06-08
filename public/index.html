@@ -384,11 +384,15 @@
   function renderCommand() {
     var seg = segment();
     var url = ORIGIN + "/" + seg;
-    // Bracketed params (java[17,21]) need single-quoting so the shell doesn't
-    // try to glob the '[' / ']'. Plain requests (java,android) don't — a comma
-    // isn't a shell metacharacter — so keep those quote-free, matching the docs.
-    var cmd = seg.indexOf("[") >= 0 ? "'" + url + "'" : url;
-    cmdText.textContent = "curl -fsSL " + cmd + " | bash";
+    // Bracketed params (java[17,21]) need two kinds of protection: single quotes
+    // so the *shell* doesn't glob '[' / ']', and curl -g (--globoff) so *curl*
+    // doesn't read them as its own URL range syntax (it errors 'bad range in
+    // URL' otherwise). Plain requests (java,android) need neither — a comma is
+    // not special to the shell or to curl — so keep those clean, matching the docs.
+    var cmd = seg.indexOf("[") >= 0
+      ? "curl -fsSL -g '" + url + "'"
+      : "curl -fsSL " + url;
+    cmdText.textContent = cmd + " | bash";
     viewLink.href = url;
     syncHash();
   }

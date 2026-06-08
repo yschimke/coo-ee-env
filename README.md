@@ -95,9 +95,14 @@ of dependency**. It clones one or more skill repos and symlinks every skill
 # default: the skills repo this service was extracted from
 curl -fsSL https://env.coo.ee/skills | bash
 # explicit source(s), with an optional @ref (branch/tag/sha)
-curl -fsSL 'https://env.coo.ee/skills[yschimke/skills]' | bash
-curl -fsSL 'https://env.coo.ee/skills[yschimke/skills@v1,owner/more-skills],java' | bash
+curl -fsSL -g 'https://env.coo.ee/skills[yschimke/skills]' | bash
+curl -fsSL -g 'https://env.coo.ee/skills[yschimke/skills@v1,owner/more-skills],java' | bash
 ```
+
+> **Bracketed requests use `-g '...'`.** The single quotes stop the *shell*
+> from globbing `[`/`]` before curl runs; `-g` (`--globoff`) stops *curl* from
+> reading them as its own URL range/list syntax (without it, `[17,21]` fails
+> with `bad range in URL`). Plain requests like `java,android` need neither.
 
 The bracketed list is the module's request-time input. The renderer validates
 it (lowercase module names; `[A-Za-z0-9._/@-]` params, so a URL can't inject
@@ -110,7 +115,7 @@ stays a static source of truth for *logic* while the renderer supplies the
 The same brackets carry **versions** for the toolchain modules:
 
 ```bash
-curl -fsSL 'https://env.coo.ee/java[17,21],android[30,36,wear-33]' | bash
+curl -fsSL -g 'https://env.coo.ee/java[17,21],android[30,36,wear-33]' | bash
 ```
 
 `java[17,21]` installs each Temurin major (`nixpkgs#temurin-bin-<major>`, lowest
@@ -137,9 +142,9 @@ module — each parameter is a nixpkgs attribute name, installed through the sam
 idempotent `nix_ensure`:
 
 ```bash
-curl -fsSL 'https://env.coo.ee/tools[ripgrep,jq,gh]' | bash
+curl -fsSL -g 'https://env.coo.ee/tools[ripgrep,jq,gh]' | bash
 # mix with anything else
-curl -fsSL 'https://env.coo.ee/tools[ripgrep,jq],node,skills' | bash
+curl -fsSL -g 'https://env.coo.ee/tools[ripgrep,jq],node,skills' | bash
 ```
 
 Nested attributes work too (`tools[nodePackages.prettier]`); an unknown name
@@ -178,7 +183,7 @@ The `android` module installs a **complete, buildable SDK** — `platform-tools`
 build also includes the `emulator` and matching `system-images`. So
 
 ```bash
-curl -fsSL 'https://env.coo.ee/java[21],android[34],android-emulator[34]' | bash
+curl -fsSL -g 'https://env.coo.ee/java[21],android[34],android-emulator[34]' | bash
 ```
 
 leaves you with a JDK, `adb`, the API-34 platform + build-tools, the emulator,
@@ -223,7 +228,7 @@ the browsers it drives:
 
 ```bash
 curl -fsSL https://env.coo.ee/playwright | bash      # @latest
-curl -fsSL 'https://env.coo.ee/playwright[0.1.13]' | bash   # pin the CLI version
+curl -fsSL -g 'https://env.coo.ee/playwright[0.1.13]' | bash   # pin the CLI version
 ```
 
 **Is it on Nix?** Two halves, two answers:
