@@ -1,0 +1,43 @@
+# Example consumer of the coo.ee/env composite action.
+#
+# Demonstrates the GitHub Actions bridge: bootstrap an identical environment to
+# the curl|bash one-liner, with the toolchain carried into later steps via
+# $GITHUB_ENV / $GITHUB_PATH (the script writes both).
+#
+# RUN ON DEMAND (workflow_dispatch), not on push: the action curls the LIVE
+# service (https://env.coo.ee), so it exercises whatever is *deployed*, not the
+# code on a branch/PR. setup.yml is the per-commit gate — it renders modules/
+# locally and runs them, so it tests the branch. Trigger this manually after a
+# deploy to smoke-test the published action against the live CDN.
+#
+# NOTE on caching: on GitHub-hosted runners base.sh does a multi-user (daemon)
+# Nix install, and caching /nix across runs does not compose with it — a
+# restored store has no running daemon, so the next `nix` call fails. The
+# bootstrap already edge-caches the rendered store at the CDN; cross-run /nix
+# caching here is a follow-up that needs live-runner iteration (issue #6).
+name: env-example
+on:
+  workflow_dispatch:
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Uses the action from this repo (./). Consumers would pin a tag:
+      #   - uses: yschimke/coo-ee-env@v1
+      #     with: { modules: java,android }
+      - name: Bootstrap env
+        uses: ./
+        with:
+          modules: java,android
+
+      # Proves the env handoff: these vars/binaries come from the step above.
+      - name: Verify toolchain
+        shell: bash
+        run: |
+          echo "JAVA_HOME=$JAVA_HOME"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          java -version
+          adb --version || true

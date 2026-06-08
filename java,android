@@ -13,6 +13,16 @@ set -euo pipefail
 
 COOEE_VERSION="0.1.0-sim"
 
+# ---- GitHub Actions awareness ---------------------------------------------
+# GitHub is just another cloud target, but it has its own log + env protocol.
+# Inside a runner we mirror our output into the workflow log: collapsible
+# ::group:: sections per module (see _footer) and ::warning::/::error::
+# annotations that surface on the run summary. No-op everywhere else.
+COOEE_GHA=0
+[[ "${GITHUB_ACTIONS:-}" == "true" ]] && COOEE_GHA=1
+gha_group()    { [[ $COOEE_GHA == 1 ]] && printf '::group::%s\n' "$*" >&2 || true; }
+gha_endgroup() { [[ $COOEE_GHA == 1 ]] && printf '::endgroup::\n'     >&2 || true; }
+
 # ---- logging --------------------------------------------------------------
 if [[ -t 2 ]]; then
   _c_red=$'\033[31m'; _c_yel=$'\033[33m'; _c_grn=$'\033[32m'
@@ -22,8 +32,10 @@ else
 fi
 log()  { printf '%s[coo.ee]%s %s\n'   "$_c_blu" "$_c_rst" "$*" >&2; }
 ok()   { printf '%s[coo.ee] OK%s %s\n' "$_c_grn" "$_c_rst" "$*" >&2; }
-warn() { printf '%s[coo.ee] !!%s %s\n' "$_c_yel" "$_c_rst" "$*" >&2; }
-die()  { printf '%s[coo.ee] XX%s %s\n' "$_c_red" "$_c_rst" "$*" >&2; exit 1; }
+warn() { printf '%s[coo.ee] !!%s %s\n' "$_c_yel" "$_c_rst" "$*" >&2
+         [[ $COOEE_GHA == 1 ]] && printf '::warning::%s\n' "$*" >&2 || true; }
+die()  { printf '%s[coo.ee] XX%s %s\n' "$_c_red" "$_c_rst" "$*" >&2
+         [[ $COOEE_GHA == 1 ]] && printf '::error::%s\n' "$*" >&2 || true; exit 1; }
 
 # ---- persisted environment ------------------------------------------------
 # Everything we export is also written to a profile file so a *new* shell can
@@ -213,6 +225,9 @@ print_allowlist_help() {
     echo "${_c_yel}|${_c_rst}       add to the domain allowlist (allow GET/HEAD)."
     echo "${_c_yel}|${_c_rst}   - Antigravity / Gemini Managed Agents: declare the hosts"
     echo "${_c_yel}|${_c_rst}       in the sandbox network allowlist."
+    echo "${_c_yel}|${_c_rst}   - GitHub Actions: hosted runners have open egress, so this"
+    echo "${_c_yel}|${_c_rst}       rarely fires; on self-hosted/firewalled runners, allow"
+    echo "${_c_yel}|${_c_rst}       these in the runner network policy or corporate proxy."
     echo "${_c_yel}+-------------------------------------------------------------${_c_rst}"
     echo
   } >&2
@@ -507,12 +522,15 @@ main() {
   # Host preflight only matters when something will actually install — if every
   # requested tool is adopted from the environment, there is nothing to probe.
   if [[ "$need_nix" == 1 ]]; then
+    gha_group "coo.ee: preconditions"
     check_preconditions
+    gha_endgroup
   else
     ok "Nothing to install — every requested tool is already provided; skipping host preflight."
   fi
 
   for m in "${MODULES[@]}"; do
+    gha_group "coo.ee: module ${m}"
     log "---- module: ${m} --------------------------------"
     if [[ "$m" == base ]]; then
       if [[ "$need_nix" == 1 ]]; then
@@ -523,6 +541,7 @@ main() {
     else
       "module_${m}"   # each module adopts an existing tool or installs via Nix
     fi
+    gha_endgroup
   done
 
   printf '%s' "${MODULES[*]:-}" > "$COOEE_STAMP"
