@@ -76,7 +76,8 @@ module_android() {
   local -a img_levels=()
   if printf '%s\n' "${MODULES[@]}" | grep -qx android-emulator; then
     want_emu=1
-    mapfile -t img_levels < <(cooee_android_levels ${_MODULE_PARAMS[android-emulator]//,/ })
+    local emu_params="${_MODULE_PARAMS[android-emulator]:-}"
+    mapfile -t img_levels < <(cooee_android_levels ${emu_params//,/ })
   fi
 
   # Adopt a complete SDK already on the box (a warm box or a CI runner that ships
