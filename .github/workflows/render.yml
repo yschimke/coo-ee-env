@@ -14,9 +14,13 @@ jobs:
         with: { node-version: 22 }
       - name: render every module set and syntax-check the output
         run: |
-          for m in base java android node python go rust \
-                   java,android node,python,go,rust \
-                   java,android,node,python,go,rust; do
+          # Array form so bracketed sets can be quoted (the shell mustn't glob `[...]`).
+          sets=(base java android node python go rust skills \
+                java,android node,python,go,rust \
+                java,android,node,python,go,rust \
+                "skills[yschimke/skills]" \
+                "skills[yschimke/skills,obra/superpowers],java,android")
+          for m in "${sets[@]}"; do
             echo "== $m =="
-            node -e "process.stdout.write(require('./api/env/render').render('$m').body)" | bash -n -
+            node -e "process.stdout.write(require('./api/env/render').render(process.argv[1]).body)" "$m" | bash -n -
           done

@@ -30,6 +30,9 @@ cooee_builtin_pass() {
     [[ "$m" == base ]] && continue
     cmd=${_PROVIDES_CMD["$m"]:-}
     envvar=${_BUILTIN_ENVVAR["$m"]:-}
+    # Modules that don't install a tool-on-PATH (e.g. skills) opt out of the
+    # adopt/built-in advice — they always do their own (idempotent) work.
+    [[ -z "$cmd" ]] && continue
     if module_present "$m"; then
       ok "module '$m': '$cmd' already on PATH — adopting ${COOEE_PROVIDER_LABEL}'s build, no Nix install."
       continue
@@ -93,7 +96,15 @@ main() {
         ok "base: every requested tool is already provided — skipping Nix install."
       fi
     else
-      "module_${m}"   # each module adopts an existing tool or installs via Nix
+      # Pass any request params (set_params, injected by the renderer) as args;
+      # each module adopts an existing tool or installs via Nix.
+      if [[ -n "${_MODULE_PARAMS[$m]:-}" ]]; then
+        local -a _args
+        IFS=',' read -r -a _args <<< "${_MODULE_PARAMS[$m]}"
+        "module_${m}" "${_args[@]}"
+      else
+        "module_${m}"
+      fi
     fi
     gha_endgroup
   done

@@ -4,6 +4,13 @@
 // shell fragments in modules/ into a single script — exactly what the M1
 // hardcoded `java,android` artifact is, but rendered on demand.
 //
+// Modules may carry parameters in brackets, e.g. `skills[yschimke/skills]`
+// or `skills[yschimke/skills,obra/superpowers]`. The bracketed list is the
+// module's request-time input (which skill repos, which MCP servers, ...).
+// Parameters are validated, deduped, sorted, and injected into the script as
+// `set_params <module> '<comma-joined>'` so the shell fragment stays a static
+// source of truth for *logic* while the renderer supplies the *data*.
+//
 // Single source of truth: the ../../modules fragments. No shell is duplicated.
 
 const fs = require("fs");
@@ -11,6 +18,12 @@ const path = require("path");
 
 // api/env/render.js -> repo-root modules/ (the coo-ee-env repo root).
 const MODULES_DIR = path.join(__dirname, "..", "..", "modules");
+
+// Module names are lowercase slugs; parameters keep their case (repo slugs and
+// refs are case-sensitive) but are restricted to a safe charset so a request
+// can never inject shell into the rendered script.
+const NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
+const PARAM_RE = /^[A-Za-z0-9._/@-]+$/;
 
 // Allowed modules = *.sh fragments that aren't framing (_header/_footer).
 function allowedModules() {
@@ -25,46 +38,135 @@ function readFragment(name) {
   return fs.readFileSync(path.join(MODULES_DIR, `${name}.sh`), "utf8");
 }
 
-// Parse the path segment ("java,android") into a canonical module list:
-// trim, drop blanks, dedupe, force `base` first, sort the rest. Canonical
-// order means android,java and java,android render identically and share a
-// CDN cache entry.
+// Split "a,b[c,d],e" on top-level commas only — commas inside [...] belong to
+// the bracketed parameter list and must not split the module list.
+function splitTopLevel(segment) {
+  const out = [];
+  let buf = "";
+  let depth = 0;
+  for (const ch of String(segment || "")) {
+    if (ch === "[") { depth++; buf += ch; }
+    else if (ch === "]") { depth = Math.max(0, depth - 1); buf += ch; }
+    else if (ch === "," && depth === 0) { out.push(buf); buf = ""; }
+    else buf += ch;
+  }
+  out.push(buf);
+  return out;
+}
+
+// canonicalize(segment) -> { entries, errors }
+//   entries: [{ name, params: [...] }] — `base` forced first, the rest sorted
+//            by name; duplicate modules merge their params; params deduped+sorted.
+//   errors:  human-readable strings for malformed tokens (renderer -> 400).
+// Canonical order means android,java and java,android (and skills[b,a] vs
+// skills[a,b]) render byte-identically and share a CDN cache entry.
 function canonicalize(segment) {
-  const requested = String(segment || "")
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-  const rest = [...new Set(requested.filter((m) => m !== "base"))].sort();
-  return ["base", ...rest];
+  const errors = [];
+  const params = new Map(); // name -> Set(params)
+
+  for (const raw of splitTopLevel(segment)) {
+    const token = raw.trim();
+    if (!token) continue;
+
+    const m = token.match(/^([^[\]]+?)(?:\[([^\]]*)\])?$/);
+    if (!m) {
+      errors.push(`malformed module token: ${token}`);
+      continue;
+    }
+    const name = m[1].trim().toLowerCase();
+    if (!NAME_RE.test(name)) {
+      errors.push(`invalid module name: ${name}`);
+      continue;
+    }
+
+    const set = params.get(name) || new Set();
+    if (m[2] !== undefined && name !== "base") {
+      for (const p of m[2].split(",").map((s) => s.trim()).filter(Boolean)) {
+        if (!PARAM_RE.test(p)) {
+          errors.push(`invalid parameter for ${name}: ${p}`);
+          continue;
+        }
+        set.add(p);
+      }
+    }
+    params.set(name, set);
+  }
+
+  const rest = [...params.keys()].filter((n) => n !== "base").sort();
+  const entries = ["base", ...rest].map((name) => ({
+    name,
+    params: [...(params.get(name) || new Set())].sort(),
+  }));
+
+  return { entries, errors };
+}
+
+// Canonical string form of an entry: "name" or "name[p1,p2]". Used for the
+// cache key / x-cooee-modules header and for echoing the request back.
+function entryToString(e) {
+  return e.params.length ? `${e.name}[${e.params.join(",")}]` : e.name;
+}
+
+// Single-quote for safe embedding in the rendered shell. Parameters are
+// already restricted to PARAM_RE (no quotes), so this is belt-and-suspenders.
+function shQuote(s) {
+  return `'${String(s).replace(/'/g, `'\\''`)}'`;
 }
 
 // render(segment) -> { status, contentType, body, canonical }
 function render(segment) {
   const allowed = allowedModules();
-  const modules = canonicalize(segment);
-  const unknown = modules.filter((m) => m !== "base" && !allowed.includes(m));
+  const { entries, errors } = canonicalize(segment);
+  const canonical = entries.map(entryToString);
+
+  if (errors.length) {
+    return {
+      status: 400,
+      contentType: "text/plain; charset=utf-8",
+      canonical,
+      body:
+        `# coo.ee/env: ${errors.join("; ")}\n` +
+        `# available: ${allowed.join(", ")}\n`,
+    };
+  }
+
+  const unknown = entries
+    .filter((e) => e.name !== "base" && !allowed.includes(e.name))
+    .map((e) => e.name);
 
   if (unknown.length) {
     return {
       status: 400,
       contentType: "text/plain; charset=utf-8",
-      canonical: modules,
+      canonical,
       body:
         `# coo.ee/env: unknown module(s): ${unknown.join(", ")}\n` +
         `# available: ${allowed.join(", ")}\n`,
     };
   }
 
-  const parts = [
-    readFragment("_header"),
-    ...modules.map(readFragment),
-    readFragment("_footer"),
-  ];
+  const parts = [readFragment("_header")];
+
+  // Inject request parameters before the module fragments run. set_params is
+  // defined in _header; the fragments and _footer read _MODULE_PARAMS at run
+  // time, so a no-parameter request (e.g. java,android) emits nothing here and
+  // renders byte-identically to before parameters existed.
+  const injections = entries
+    .filter((e) => e.params.length)
+    .map((e) => `set_params ${e.name} ${shQuote(e.params.join(","))}\n`);
+  if (injections.length) {
+    parts.push(
+      "\n# ---- request parameters (injected by the renderer) -----------------------\n",
+      ...injections,
+    );
+  }
+
+  parts.push(...entries.map((e) => readFragment(e.name)), readFragment("_footer"));
 
   return {
     status: 200,
     contentType: "text/x-shellscript; charset=utf-8",
-    canonical: modules,
+    canonical,
     body: parts.join(""),
   };
 }
