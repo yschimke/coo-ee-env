@@ -521,7 +521,7 @@
     } else if (e.key === "Escape") {
       closeMenu();
     } else if (e.key === "Backspace" && !search.value && selected.length) {
-      remove(selected[selected.length - 1]);
+      remove(selected[selected.length - 1].name);
     }
   });
 

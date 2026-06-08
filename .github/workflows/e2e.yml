@@ -1,0 +1,39 @@
+name: e2e
+
+# Browser tests for the landing page (public/index.html): the picker UI plus
+# its committed screenshot baselines. Complements render.yml (renderer unit
+# tests + shell syntax) — this is the only job that drives a real browser.
+#
+# Runs INSIDE the matching Playwright container so font rendering is identical
+# to the environment the baselines were generated in (tests/__screenshots__).
+# Regenerate baselines the same way: `npm run test:e2e:update` in that image.
+
+# PRs run on pull_request; push is scoped to main so an open PR's commits
+# don't trigger a second (duplicate) run.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  playwright:
+    runs-on: ubuntu-latest
+    container:
+      image: mcr.microsoft.com/playwright:v1.60.0-noble
+      options: --ipc=host
+    steps:
+      - uses: actions/checkout@v4
+      - name: install deps
+        run: npm ci
+      - name: playwright tests (picker UI + screenshot baselines)
+        run: npx playwright test
+      - name: upload report + screenshot diffs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7

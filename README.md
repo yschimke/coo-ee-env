@@ -580,6 +580,48 @@ CI runs two checks on each push/PR:
   work from the persisted profile and that a second run is a no-op — an
   end-to-end check that the setup really installs a usable environment.
 
+## Tests
+
+Two complementary suites, mirrored by two CI workflows:
+
+- **Renderer unit tests** ([`test/`](./test), `node --test`, run by
+  [`render.yml`](./.github/workflows/render.yml)) — the pure
+  renderer/recommender: canonicalization, params, implications, recommendations.
+  No browser, no network.
+- **End-to-end tests** ([`tests/`](./tests),
+  [`@playwright/test`](https://playwright.dev/), run by
+  [`e2e.yml`](./.github/workflows/e2e.yml)) — the browser behaviour of the
+  landing-page picker (`public/index.html`): autocomplete, chip selection, the
+  live `curl … | bash` one-liner, the host allowlist, clipboard copy, and
+  `#hash` sharing, plus committed screenshot baselines.
+
+```bash
+npm test            # renderer unit tests (node --test)
+npm run test:e2e    # Playwright UI tests + screenshot comparison
+npm run serve       # serve the app locally on :3000 (the picker + /api/*)
+```
+
+`tests/server.js` is a tiny stand-in for `vercel dev` (which needs a Vercel
+login): it serves `public/` and mounts the real `api/**` handlers with the same
+routing as `vercel.json`, so the picker behaves identically with no account or
+secrets. Playwright boots it automatically via the `webServer` block in
+[`playwright.config.js`](./playwright.config.js).
+
+**Screenshots.** Each meaningful state yields two images: a committed
+visual-regression baseline in
+[`tests/__screenshots__/`](./tests/__screenshots__) (compared on every run, so a
+UI change that alters pixels fails CI) and a labelled artifact PNG in
+[`screenshots/`](./screenshots) (living documentation of the UI). Because
+baselines are font/OS-sensitive, both the CI job and the baselines run **inside
+the matching Playwright container** (`mcr.microsoft.com/playwright:v<version>`)
+so rendering is identical. Regenerate them the same way after an intentional UI
+change:
+
+```bash
+docker run --rm --ipc=host --network=host -v "$PWD":/work -w /work \
+  mcr.microsoft.com/playwright:v1.60.0-noble npm run test:e2e:update
+```
+
 ## Hosting roadmap
 
 - **M1 — hardcoded.** *(superseded by M2)* Began as a single checked-in
