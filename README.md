@@ -132,9 +132,14 @@ node -e 'process.stdout.write(require("./api/env/render").render("java,android")
 npx vercel dev        # serves http://localhost:3000/env/java,android
 ```
 
-CI ([`.github/workflows/render.yml`](./.github/workflows/render.yml)) renders
-every module set on each push/PR and syntax-checks the output, so a fragment
-that breaks `bash -n` never lands.
+CI runs two checks on each push/PR:
+
+- [`render.yml`](./.github/workflows/render.yml) renders every module set and
+  syntax-checks the output, so a fragment that breaks `bash -n` never lands.
+- [`setup.yml`](./.github/workflows/setup.yml) renders `android,java` and
+  actually runs it on a clean runner, then asserts `java`, `adb`, and `nix`
+  work from the persisted profile and that a second run is a no-op — an
+  end-to-end check that the setup really installs a usable environment.
 
 ## Hosting roadmap
 
@@ -171,3 +176,7 @@ After the domain is live, drop the simulation caveat above and the
 - **Keep the curl path pure** — a bare `curl` prints the script for review; a
   browser (`Accept: text/html`) can show help. HTTPS only.
 - **Later:** version pinning (`/java,android@v1`) for reproducible installs.
+
+## License
+
+[Apache License 2.0](./LICENSE).
