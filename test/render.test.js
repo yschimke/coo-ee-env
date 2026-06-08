@@ -1,7 +1,7 @@
 // Unit tests for the pure renderer. Run with: node --test
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { render, canonicalize } = require("../api/env/render");
+const { render, canonicalize, moduleInfo } = require("../api/env/render");
 
 const names = (seg) => canonicalize(seg).entries.map((e) => e.name);
 const canon = (seg) => render(seg).canonical;
@@ -102,6 +102,18 @@ test("unknown modules return 400 with the available list", () => {
   assert.equal(o.status, 400);
   assert.match(o.body, /unknown module/);
   assert.match(o.body, /available:/);
+});
+
+test("moduleInfo surfaces params and implies for the landing page", () => {
+  const byName = Object.fromEntries(moduleInfo().map((m) => [m.name, m]));
+  // android-emulator advertises params and its android implication.
+  assert.ok(byName["android-emulator"].params.includes("android-emulator["));
+  assert.deepEqual(byName["android-emulator"].implies, ["android"]);
+  // java advertises a params hint; node does not.
+  assert.ok(byName["java"].params.includes("java["));
+  assert.equal(byName["node"].params, "");
+  // base is flagged implicit so the UI shows it as fixed.
+  assert.equal(byName["base"].implicit, true);
 });
 
 test("the version example from the brief renders and is well-formed", () => {

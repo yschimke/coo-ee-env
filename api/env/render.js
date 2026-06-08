@@ -38,16 +38,18 @@ function readFragment(name) {
   return fs.readFileSync(path.join(MODULES_DIR, `${name}.sh`), "utf8");
 }
 
-// moduleInfo() -> [{ name, software, implicit }], parsed from each fragment's
-// header comment (`# module: <name>` / `# software : <desc>`). The fragments
-// stay the single source of truth: the autocomplete UI reads this rather than
-// keeping its own copy of the module list. `base` is flagged implicit (it is
-// always prepended, so the UI shows it as fixed rather than selectable).
+// moduleInfo() -> [{ name, software, params, implies, implicit }], parsed from
+// each fragment's header comments (`# software : <desc>`, `# params : <desc>`)
+// and its `# coo.ee:implies` directive. The fragments stay the single source of
+// truth: the autocomplete UI reads this rather than keeping its own copy of the
+// module list, what each takes in brackets, or what it pulls in. `base` is
+// flagged implicit (always prepended, so the UI shows it as fixed).
 function moduleInfo() {
   return allowedModules().map((name) => {
     const src = readFragment(name);
     const software = (src.match(/^#\s*software\s*:\s*(.+?)\s*$/m) || [])[1] || "";
-    return { name, software, implicit: name === "base" };
+    const params = (src.match(/^#\s*params\s*:\s*(.+?)\s*$/m) || [])[1] || "";
+    return { name, software, params, implies: moduleImplies(name), implicit: name === "base" };
   });
 }
 
