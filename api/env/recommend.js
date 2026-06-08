@@ -37,6 +37,7 @@ const RULES = {
   android: [
     { module: "java", weight: 9, reason: "Android builds require a JDK — java is effectively a prerequisite." },
     { module: "android-emulator", weight: 4, reason: "Run/test on a device image without Android Studio." },
+    { module: "compose", weight: 3, reason: "Render Jetpack Compose @Preview functions to PNG (compose-preview skill)." },
     { tools: ["kotlin"], weight: 3, reason: "Modern Android code is mostly Kotlin." },
   ],
   node: [

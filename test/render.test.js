@@ -109,6 +109,28 @@ test("playwright implies node and takes a version param", () => {
   assert.ok(render("playwright[0.1.13]").body.includes("set_params playwright '0.1.13'"));
 });
 
+test("compose is a curated target that implies java and android", () => {
+  // No emulator — compose-preview renders without one.
+  assert.deepEqual(names("compose"), ["base", "android", "compose", "java"]);
+  const byName = Object.fromEntries(moduleInfo().map((m) => [m.name, m]));
+  assert.deepEqual(byName["compose"].implies.sort(), ["android", "java"]);
+  // The target clones the skill repo, so it needs github.com.
+  assert.ok(byName["compose"].hosts.need.map((h) => h.host).includes("github.com"));
+});
+
+test("skills selects a single skill via a path segment after the repo", () => {
+  // owner/repo/<skill> is a valid param and round-trips through canonicalization.
+  assert.deepEqual(canon("skills[yschimke/skills/compose-preview]"), [
+    "base",
+    "skills[yschimke/skills/compose-preview]",
+  ]);
+  assert.ok(
+    render("skills[yschimke/skills/compose-preview]").body.includes(
+      "set_params skills 'yschimke/skills/compose-preview'",
+    ),
+  );
+});
+
 test("invalid params and malformed tokens return 400", () => {
   for (const seg of ["java[17;rm]", "java[17 21]", "java[$(x)]"]) {
     assert.equal(render(seg).status, 400, `expected 400 for ${JSON.stringify(seg)}`);

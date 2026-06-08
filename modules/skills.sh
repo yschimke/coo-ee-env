@@ -4,8 +4,9 @@
 #    type     : agent skills (NOT a Nix package) — the first "other kind of
 #               dependency": clones skill repo(s) and links each skill into
 #               ~/.claude/skills/ so the agent picks them up.
-#    params   : skills[owner/repo, owner/repo@ref, ...]
-#               default (bare `skills`) installs yschimke/skills
+#    params   : skills[owner/repo, owner/repo/<skill>, owner/repo@ref, ...]
+#               a path segment after the repo picks one skill by name;
+#               bare `skills` links every skill in yschimke/skills
 #    software : git (pulled from Nix only if the box doesn't already have it)
 #    hosts    : github.com (clone), cache.nixos.org (git, if absent)
 # ===========================================================================
@@ -28,16 +29,23 @@ module_skills() {
   local cache_dir="$HOME/.cache/coo-ee/skills"
   mkdir -p "$skills_dir" "$cache_dir"
 
-  local installed=0 src spec ref repo slug dest
+  local installed=0 src spec ref repo slug dest owner rest skill
   for src in "${sources[@]}"; do
-    # owner/repo with an optional @ref (branch/tag/sha).
+    # owner/repo, with an optional @ref (branch/tag/sha) and an optional skill
+    # selector — a path segment after the repo that picks a single skill:
+    #   owner/repo               -> link every skill in the repo (the default)
+    #   owner/repo/<skill>       -> link only the skill directory named <skill>
+    #   owner/repo/<skill>@ref   -> ...from a specific branch/tag/sha
     spec=${src%@*}; ref=""
     [[ "$src" == *@* ]] && ref=${src##*@}
-    repo=$spec
-    case "$repo" in
+    case "$spec" in
       */*) : ;;
-      *) warn "skipping '$src' — expected owner/repo"; continue ;;
+      *) warn "skipping '$src' — expected owner/repo[/skill]"; continue ;;
     esac
+    # The first two path segments are the GitHub repo; anything after picks a skill.
+    owner=${spec%%/*}; rest=${spec#*/}
+    repo="$owner/${rest%%/*}"
+    skill=""; [[ "$rest" == */* ]] && skill=${rest#*/}
     slug=${repo//\//-}
     dest="$cache_dir/$slug"
 
@@ -63,12 +71,17 @@ module_skills() {
     local skillmd name n=0
     while IFS= read -r -d '' skillmd; do
       name=$(basename "$(dirname "$skillmd")")
+      # When a skill was named, link only that one (match on the directory name).
+      [[ -n "$skill" && "$name" != "${skill##*/}" ]] && continue
       ln -sfn "$(dirname "$skillmd")" "$skills_dir/$name"
       ok "skill: $name  ($repo)"
       n=$((n + 1)); installed=$((installed + 1))
     done < <(find "$dest" -name SKILL.md -not -path '*/.git/*' -print0 2>/dev/null)
 
-    (( n )) || warn "no SKILL.md found in $repo"
+    if (( n == 0 )); then
+      [[ -n "$skill" ]] && warn "skill '${skill##*/}' not found in $repo" \
+                        || warn "no SKILL.md found in $repo"
+    fi
   done
 
   if (( installed )); then
