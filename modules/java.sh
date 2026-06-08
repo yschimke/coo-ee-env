@@ -2,7 +2,8 @@
 # ===========================================================================
 #  module: java
 #    software : Temurin JDK (via Nix), JAVA_HOME, JDK TLS fix
-#    params   : java[17,21] picks the JDK majors; default 17 + 21
+#    params   : java[17,21] picks the JDK majors; default 21, or 17 + 21 when
+#               android is also being installed
 #    hosts    : cache.nixos.org (install)
 #             : Gradle / Maven / toolchain registries (build, advisory)
 #  Host set mirrors skills/compose-preview/references/agent-cloud.md.
@@ -18,11 +19,19 @@ want_host api.adoptium.net     "JDK/toolchain provisioning API"
 want_host jitpack.io           "dependencies published via JitPack"
 
 module_java() {
-  # Requested JDK majors come from the request params (java[17,21]); default to
-  # 17 + 21, the toolchains most repos here pin to. Each maps to a
-  # nixpkgs#temurin-bin-<major>.
+  # Requested JDK majors come from the request params (java[17,21]). With no
+  # params we default to 21 (the current LTS most repos here run on) — but when
+  # android is also being installed we default to 17 + 21, since the Android
+  # toolchain (AGP/Gradle) still pins to 17 while app code targets 21. Each major
+  # maps to a nixpkgs#temurin-bin-<major>.
   local -a versions=("$@")
-  (( ${#versions[@]} )) || versions=(17 21)
+  if (( ! ${#versions[@]} )); then
+    if cooee_module_requested android; then
+      versions=(17 21)
+    else
+      versions=(21)
+    fi
+  fi
 
   # Already provisioned (warm box) or provided by the cloud base image? Adopt
   # the existing JDK — set JAVA_HOME from it and skip the redundant Nix install.

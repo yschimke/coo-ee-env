@@ -75,6 +75,7 @@ treats an already-present package as success — so a partial/cold box is
 | `python`  | CPython 3 + pip                           | `cache.nixos.org`, `pypi.org`, `files.pythonhosted.org` | Codex: `CODEX_ENV_PYTHON_VERSION` |
 | `go`      | Go toolchain, `GOPATH`                    | `cache.nixos.org`, `proxy.golang.org`, `sum.golang.org` | Codex: `CODEX_ENV_GO_VERSION` |
 | `rust`    | `rustc` + `cargo`                         | `cache.nixos.org`, `static.crates.io`, `index.crates.io` | Codex: `CODEX_ENV_RUST_VERSION` |
+| `ruby`    | Ruby + RubyGems (default 3; `ruby[3.4.9]` to pin) | `cache.nixos.org`, `rubygems.org`, `index.rubygems.org` | Codex: `CODEX_ENV_RUBY_VERSION` |
 | `skills`  | Claude Code agent skills, linked into `~/.claude/skills/` | `github.com` (`cache.nixos.org` if `git` is absent) | — |
 | `tools`   | Arbitrary CLI tools from nixpkgs, by name (`tools[ripgrep,jq,gh]`) | `cache.nixos.org` | — |
 
@@ -116,9 +117,10 @@ owning the `java`/`javac` symlinks); bare `java` keeps the default 17 + 21.
 `android[30,37,wear-33]` installs those platform API levels (with their
 `build-tools`), and `android-emulator[34,wear-33]` installs the matching
 `emulator` system images — both built into the SDK by `androidenv` (see
-[Android: what `android` installs](#android-what-android-installs)). A param-less
-request injects nothing, so it renders byte-identically to before parameters
-existed.
+[Android: what `android` installs](#android-what-android-installs)). `ruby[3]`
+selects the major series (the nixpkgs default Ruby 3) and `ruby[3.4.9]` pins a
+full version down to its `ruby_3_4` major.minor attribute. A param-less request
+injects nothing, so it renders byte-identically to before parameters existed.
 
 ### Module implications
 
@@ -166,8 +168,8 @@ rest (set them in the environment before running):
 
 | Variable | Default | Selects |
 | --- | --- | --- |
-| `COOEE_ANDROID_DEFAULT_PLATFORM` | `34` | platform API level for a param-less `android` |
-| `COOEE_ANDROID_BUILD_TOOLS` | `34.0.0` | the `build-tools` revision to install |
+| `COOEE_ANDROID_DEFAULT_PLATFORM` | `36` | platform API level for a param-less `android` |
+| `COOEE_ANDROID_BUILD_TOOLS` | `36.0.0` | the `build-tools` revision to install |
 
 Because the SDK is built through Nix, it is reproducible and survives
 `nix store gc` (the build is anchored by a GC root under `~/.cache/coo-ee/`). On

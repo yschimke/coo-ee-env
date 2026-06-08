@@ -6,7 +6,7 @@
 #               android-emulator is also requested, the emulator + system
 #               images). ANDROID_HOME / ANDROID_SDK_ROOT point at it.
 #    params   : android[30,37,wear-33] selects the platform API levels to
-#               install; bare `android` installs the default level.
+#               install; bare `android` installs the default (API 36).
 #    hosts    : cache.nixos.org (install), dl.google.com (SDK component sources)
 #             : Google / JetBrains / fonts registries (build, advisory)
 #  Host set mirrors skills/compose-preview/references/agent-cloud.md.
@@ -25,8 +25,8 @@ want_host fonts.gstatic.com      "downloadable font binaries (Compose)"
 # Defaults (overridable from the environment). The platform level used when a
 # bare `android` is requested, and the build-tools revision to install. Pinning
 # them keeps a param-less install reproducible; override for a different target.
-COOEE_ANDROID_DEFAULT_PLATFORM="${COOEE_ANDROID_DEFAULT_PLATFORM:-34}"
-COOEE_ANDROID_BUILD_TOOLS="${COOEE_ANDROID_BUILD_TOOLS:-34.0.0}"
+COOEE_ANDROID_DEFAULT_PLATFORM="${COOEE_ANDROID_DEFAULT_PLATFORM:-36}"
+COOEE_ANDROID_BUILD_TOOLS="${COOEE_ANDROID_BUILD_TOOLS:-36.0.0}"
 
 # Map request params (e.g. 30, 37, wear-33) to numeric platform API levels,
 # deduped in input order. A `wear-NN` param contributes level NN (the wear
@@ -56,9 +56,13 @@ cooee_sdk_is_complete() {  # cooee_sdk_is_complete <sdk dir>
 }
 
 module_android() {
-  # Requested platform API levels come from the params (android[30,37,wear-33]).
+  # Requested platform API levels come from the params (android[30,37,wear-33]);
+  # default to COOEE_ANDROID_DEFAULT_PLATFORM (API 36) when none are given.
+  # Recorded in COOEE_ANDROID_PLATFORMS for reference; the module installs them
+  # below (independent of where adb comes from, so record before the branch).
   local -a params=("$@")
-  (( ${#params[@]} )) && add_env COOEE_ANDROID_PLATFORMS "${params[*]}"
+  (( ${#params[@]} )) || params=("$COOEE_ANDROID_DEFAULT_PLATFORM")
+  add_env COOEE_ANDROID_PLATFORMS "${params[*]}"
 
   local -a levels=()
   mapfile -t levels < <(cooee_android_levels "${params[@]}")

@@ -61,12 +61,13 @@ cooee_configure_kvm() {
 }
 
 module_android-emulator() {
-  # Requested system-image API levels come from the params
-  # (android-emulator[34,wear-33]); record them. The implied `android` module
-  # reads these same params and builds the emulator + matching system images
-  # into the SDK, so by the time we run here the emulator is already installed.
+  # (android-emulator[34,wear-33]); default to API 36 when none are given. The
+  # implied `android` module reads these same params and builds the emulator +
+  # matching system images into the SDK, so by the time we run here the emulator
+  # is already installed. Record them for reference / the androidenv flake.
   local -a images=("$@")
-  (( ${#images[@]} )) && add_env COOEE_ANDROID_EMULATOR_IMAGES "${images[*]}"
+  (( ${#images[@]} )) || images=(36)
+  add_env COOEE_ANDROID_EMULATOR_IMAGES "${images[*]}"
 
   # An emulator is only usable with KVM acceleration — configure it regardless
   # of where the emulator binary came from.
