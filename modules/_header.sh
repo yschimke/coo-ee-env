@@ -273,7 +273,14 @@ cooee_trust_cas_in_jdk() {  # cooee_trust_cas_in_jdk <java_home>
   done
 
   # Append, don't clobber, any JAVA_TOOL_OPTIONS already in the environment.
-  local opts="-Djavax.net.ssl.trustStore=$store -Djavax.net.ssl.trustStorePassword=changeit"
+  # Deliberately a single, space-free option: we point only at the truststore
+  # and omit -Djavax.net.ssl.trustStorePassword. The password is needed solely
+  # to verify the keystore's integrity hash, not to read its certificates, so a
+  # CA truststore loads and is trusted fine without it. Keeping the value to one
+  # whitespace-free token means the persisted env line (and any naive consumer
+  # that word-splits it) can't break it into a bogus second command — the source
+  # of the stray "...trustStorePassword=changeit: command not found" noise.
+  local opts="-Djavax.net.ssl.trustStore=$store"
   add_env JAVA_TOOL_OPTIONS "${JAVA_TOOL_OPTIONS:+$JAVA_TOOL_OPTIONS }$opts"
   ok "JDK now trusts ${#extra[@]} extra CA(s) via JAVA_TOOL_OPTIONS."
 }
