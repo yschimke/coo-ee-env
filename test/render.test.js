@@ -116,6 +116,28 @@ test("moduleInfo surfaces params and implies for the landing page", () => {
   assert.equal(byName["base"].implicit, true);
 });
 
+test("moduleInfo surfaces the hosts each module needs and wants", () => {
+  const byName = Object.fromEntries(moduleInfo().map((m) => [m.name, m]));
+  // base is required to install Nix itself.
+  const baseNeed = byName["base"].hosts.need.map((h) => h.host);
+  assert.ok(baseNeed.includes("cache.nixos.org"));
+  assert.ok(baseNeed.includes("github.com"));
+  // java needs the Nix cache and recommends the build registries (advisory).
+  assert.deepEqual(
+    byName["java"].hosts.need.map((h) => h.host),
+    ["cache.nixos.org"],
+  );
+  const javaWant = byName["java"].hosts.want.map((h) => h.host);
+  assert.ok(javaWant.includes("services.gradle.org"));
+  // Reasons are carried through for the allowlist UI.
+  assert.equal(
+    byName["java"].hosts.need[0].reason,
+    "prebuilt Temurin JDK from the Nix cache",
+  );
+  // Quoted wildcard hosts parse without their quotes.
+  assert.ok(byName["android"].hosts.want.map((h) => h.host).includes("*.jetbrains.com"));
+});
+
 test("the version example from the brief renders and is well-formed", () => {
   const o = render("java[17,21],android[30,37,wear-33]");
   assert.equal(o.status, 200);

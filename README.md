@@ -359,9 +359,22 @@ them as chips, and copy the generated `curl … | bash` one-liner (or follow
 or `vercel dev` alike, and the selection round-trips through the URL hash
 (`/#java,android`) so a configuration is shareable.
 
+Below the one-liner the picker shows the **required hosts** for the current
+selection — the union of every active module's `need_host` declarations
+(`base` plus your picks plus anything they imply), deduped and each with the
+reason it's needed. *Copy hosts* drops the bare hostnames (newline-separated)
+straight into a cloud environment's allowlist (Claude Code → Network access →
+Custom → Allowed domains, Codex's domain allowlist, or a sandbox/runner network
+policy). A collapsible *Recommended for builds* list adds the `want_host`
+entries — the registries a build needs but the install doesn't — with a *Copy
+all* for the full set. This is the same host set the rendered script probes and
+prints on a blocked install, surfaced up front so you can configure egress
+before the first run.
+
 The picker's module list isn't hardcoded — it fetches
 [`/api/modules`](./api/modules.js), which derives the catalog (each module's
-name + `software:` blurb) straight from the `modules/` fragment headers. Add or
+name + `software:` blurb, the params it takes, what it implies, and its
+`need_host`/`want_host` set) straight from the `modules/` fragments. Add or
 edit a fragment and the picker updates with no extra wiring. `base` is shown as
 a fixed, always-included chip. Static files are matched before the `/:modules`
 rewrite, so `/` and `/api/*` resolve to the page and the catalog while
