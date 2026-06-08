@@ -80,7 +80,8 @@ module_android-emulator() {
   # the request and let the repo's androidenv flake provision the emulator and
   # AVDs from it (adb / ANDROID_HOME come from the implied `android` module).
   warn "android-emulator: the emulator and system images are provisioned by the"
-  warn "project's androidenv flake (see README.md), not installed here."
+  warn "project's androidenv flake (README.md: \"Android: the bootstrap /"
+  warn "androidenv flake split\"), not installed here."
   if (( ${#images[@]} )); then
     warn "requested system images: ${images[*]}"
     warn "(exported as COOEE_ANDROID_EMULATOR_IMAGES for the androidenv flake)."

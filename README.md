@@ -139,6 +139,85 @@ curl -fsSL 'https://env.coo.ee/tools[ripgrep,jq],node,skills' | bash
 Nested attributes work too (`tools[nodePackages.prettier]`); an unknown name
 just warns and is skipped, so one typo doesn't fail the whole environment.
 
+### Android: the bootstrap / `androidenv` flake split
+
+The `android` and `android-emulator` modules deliberately install **only the
+unlicensed pieces** — `platform-tools` (`adb`/`fastboot`) and a conventional
+`ANDROID_HOME` — and stop there. The full SDK (`platforms;android-<level>`,
+`build-tools`, emulator system images) is **licensed, large, and
+version-specific to the project**, so the bootstrap doesn't fetch it. Instead it
+records *what you asked for* and hands off to the project's own `androidenv`
+flake. That is the "see README.md" the script points at, and this is it.
+
+The handoff is two environment variables, exported by the bootstrap (and
+forwarded to `$GITHUB_ENV` / `$CLAUDE_ENV_FILE` like every other `add_env`):
+
+| Variable | Set by | Carries |
+| --- | --- | --- |
+| `ANDROID_HOME` | `android` | SDK root the flake should populate (default `~/.android/sdk`) |
+| `COOEE_ANDROID_PLATFORMS` | `android[30,37,wear-33]` | space-separated platform API levels to provision |
+| `COOEE_ANDROID_EMULATOR_IMAGES` | `android-emulator[34,wear-33]` | space-separated system-image API levels for AVDs |
+
+So a request like
+
+```bash
+curl -fsSL 'https://env.coo.ee/java[21],android[34],android-emulator[34]' | bash
+```
+
+leaves you with `adb`, a JDK, a configured `/dev/kvm`, and
+`COOEE_ANDROID_PLATFORMS=34` / `COOEE_ANDROID_EMULATOR_IMAGES=34` in the
+environment — but **not** the API-34 platform or build-tools. The project's
+flake reads those levels and provisions them into `ANDROID_HOME` via
+[`nixpkgs` `androidenv`](https://nixos.org/manual/nixpkgs/stable/#android), e.g.
+`<repo>/flake.nix`:
+
+```nix
+{
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  outputs = { self, nixpkgs }:
+    let
+      system = "x86_64-linux";
+      pkgs = import nixpkgs { inherit system; config.allowUnfree = true; };
+      android = pkgs.androidenv.composeAndroidPackages {
+        platformVersions = [ "34" ];          # mirror COOEE_ANDROID_PLATFORMS
+        buildToolsVersions = [ "34.0.0" ];
+        systemImageTypes = [ "google_apis" ]; # for COOEE_ANDROID_EMULATOR_IMAGES
+        abiVersions = [ "x86_64" ];
+        includeEmulator = true;
+        includeSystemImages = true;
+        platformToolsVersion = "34.0.5";
+      };
+    in {
+      devShells.${system}.default = pkgs.mkShell {
+        buildInputs = [ android.androidsdk ];
+        # androidenv builds its own SDK root; point ANDROID_HOME at it so adb,
+        # Gradle, and the emulator all agree.
+        ANDROID_HOME = "${android.androidsdk}/libexec/android-sdk";
+      };
+    };
+}
+```
+
+```bash
+nix develop          # platforms + build-tools + emulator now under ANDROID_HOME
+./gradlew assembleDebug
+```
+
+Keep `platformVersions` / system-image levels in sync with what you passed the
+bootstrap (the `COOEE_ANDROID_*` values are the record of the request). A repo
+that pins exact versions in `flake.lock` is reproducible across every agent and
+CI run; the bootstrap stays small and unlicensed.
+
+**Allowlist for builds.** Installing the bootstrap only needs `cache.nixos.org`.
+*Building* the project additionally needs the Android/JetBrains registries the
+`android` module lists under **"Recommended for builds"** (`dl.google.com`,
+`maven.google.com`, `packages.jetbrains.team`, `*.jetbrains.com`,
+`fonts.googleapis.com`, `fonts.gstatic.com`), plus whatever your Gradle build
+resolves from — commonly `services.gradle.org` (the Gradle distribution),
+`repo.maven.apache.org` / `repo1.maven.org` (Maven Central), and `jitpack.io`.
+These are advisory: the script never probes them and never fails on them, it
+just reminds you to allow them before `./gradlew build`.
+
 ## Cloud built-ins & short-circuit
 
 In a hosted agent environment the cheapest install is the one you skip. The

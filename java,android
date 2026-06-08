@@ -420,7 +420,8 @@ module_android() {
     warn "(exported as COOEE_ANDROID_PLATFORMS for the androidenv flake)."
   fi
   warn "ANDROID_HOME=$sdk (platform-tools only); run the project's androidenv"
-  warn "flake for platforms/build-tools (see README.md)."
+  warn "flake for platforms/build-tools (README.md: \"Android: the bootstrap /"
+  warn "androidenv flake split\")."
 }
 
 # ===========================================================================
