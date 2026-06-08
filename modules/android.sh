@@ -8,6 +8,7 @@
 #  Assumes `java` is also requested (Android builds need a JDK).
 # ===========================================================================
 register_module android
+provides_tool android adb   # adopt existing platform-tools (adb on PATH)
 need_host cache.nixos.org        "prebuilt android-tools from the Nix cache"
 want_host dl.google.com          "Android SDK cmdline-tools, platforms, build-tools"
 want_host maven.google.com       "AndroidX / AGP artifacts"
@@ -17,6 +18,16 @@ want_host fonts.googleapis.com   "downloadable font metadata (Compose)"
 want_host fonts.gstatic.com      "downloadable font binaries (Compose)"
 
 module_android() {
+  # Adopt existing platform-tools (warm box / base image) when adb is already
+  # on PATH — just settle ANDROID_HOME and skip the Nix install.
+  if [[ "${COOEE_FORCE:-0}" != 1 ]] && command -v adb >/dev/null 2>&1; then
+    local sdk="${ANDROID_HOME:-$HOME/.android/sdk}"
+    mkdir -p "$sdk"
+    add_env ANDROID_HOME "$sdk"
+    ok "android: adopted existing $(adb --version 2>/dev/null | head -1 || echo adb) (ANDROID_HOME=$sdk)."
+    return 0
+  fi
+
   log "Installing Android platform-tools (adb, fastboot) via Nix..."
   export NIXPKGS_ALLOW_UNFREE=1
   nix_ensure android-tools nixpkgs#android-tools --impure

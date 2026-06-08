@@ -1,62 +1,82 @@
-# `coo.ee/env` — composable environment bootstrapper (simulation)
+# `coo.ee/env` — composable environment bootstrapper
 
 A [gitignore.io](https://www.toptal.com/developers/gitignore)-style service for
 **dev environments** instead of `.gitignore` files. You ask for a set of
 modules in the URL and get back a single `bash` script that installs them:
 
 ```bash
-curl -fsSL https://coo.ee/env/java,android | bash
+curl -fsSL https://env.coo.ee/java,android | bash
 ```
 
-Like gitignore.io's `/api/java,android`, the path after `/env/` is a
-comma-separated list of modules. The service renders a script by concatenating
-a fixed preamble with each requested module and streaming the result.
+Like gitignore.io's `/api/java,android`, the path is a comma-separated list of
+modules. The service renders a script by concatenating a fixed preamble with
+each requested module and streaming the result.
 
 This repo is the standalone home of the service (extracted from
 [`yschimke/skills`](https://github.com/yschimke/skills)). The dynamic renderer
-is **built** (see [`api/`](./api)); it is **not yet wired to a public domain**,
-so `coo.ee/env/...` is still a simulation until the domain is live (see
-[Deploying](#deploying)). The checked-in [`java,android`](./java,android) is the
-**pre-rendered** response for that request, so you can see and run the idea
-today:
+is **live** at [`env.coo.ee`](https://env.coo.ee/java,android) (see
+[`api/`](./api)). The checked-in [`java,android`](./java,android) is the
+**pre-rendered** response for that request, kept as a runnable, offline-friendly
+demo:
 
 ```bash
-# from a checkout (the file lives at the repo root)
+# live service (canonical)
+curl -fsSL https://env.coo.ee/java,android | bash
+# or from a checkout, with no network call to the service
 ./java,android
-# or, the shape the real service would take
-curl -fsSL https://raw.githubusercontent.com/yschimke/coo-ee-env/main/java,android | bash
 ```
 
 ## What the script does
 
-1. **Checks preconditions first.** Verifies `curl`/OS, then probes every host
-   the requested modules need. If any are blocked it prints exactly which
-   hosts to allow and where to set them (Claude Code, Codex, Antigravity /
-   Gemini Managed Agents), then **stops** — no half-installed environment.
-   Override with `COOEE_IGNORE_HOST_CHECK=1` to try anyway.
-2. **Installs [Nix](https://determinate.systems/)** (daemonless) as the base.
-3. **Installs each module** through Nix: `java` → Temurin JDK 17 + 21,
-   `android` → platform-tools + `ANDROID_HOME`.
-4. **Persists the environment** to `~/.config/coo-ee/env.sh` and, when running
+1. **Short-circuits if already provisioned.** If a previous run installed
+   exactly this module set and every tool is still on `PATH`, it re-exports the
+   saved environment and exits — no network, no Nix. `COOEE_FORCE=1` forces a
+   re-provision.
+2. **Prefers the cloud provider's built-ins.** It detects the host (Claude
+   Code, Codex, Gemini/Antigravity) and, for each module whose tool is already
+   present, **adopts** it instead of installing a redundant copy. On Codex —
+   whose base image version-selects languages via `CODEX_ENV_*_VERSION` — it
+   warns you to set that variable rather than install through Nix. See
+   [Cloud built-ins](#cloud-built-ins--short-circuit).
+3. **Checks preconditions.** When something does need installing, it verifies
+   `curl`/OS and probes every host the to-be-installed modules need. If any are
+   blocked it prints exactly which hosts to allow and where (Claude Code,
+   Codex, Antigravity / Gemini), then **stops** — no half-installed
+   environment. Override with `COOEE_IGNORE_HOST_CHECK=1`.
+4. **Installs [Nix](https://determinate.systems/)** as the base — only if at
+   least one module actually needs to install. Daemonless when running as root
+   (the usual agent sandbox); when run non-root (e.g. a CI runner) it brings up
+   the `nix-daemon` (via systemd when present, otherwise started directly) so
+   the root-owned store is reachable.
+5. **Installs each remaining module** through Nix (e.g. `java` → Temurin JDK
+   17 + 21, `node` → Node.js 22).
+6. **Persists the environment** to `~/.config/coo-ee/env.sh` and, when running
    inside a harness, to `$CLAUDE_ENV_FILE` / `$GITHUB_ENV`.
 
 ### Idempotent by design
 
-Re-running is safe. The base install is skipped when `nix` is already present,
+Re-running is safe and cheap. A warm box hits the short-circuit and is a pure
+**no-op**; otherwise the base install is skipped when `nix` is already present,
 and packages go through `nix_ensure`, which installs only what's missing and
-treats an already-present package as success. So a second run is a **no-op**
-on a warm box and a **repair** on a cold or partially-broken one.
+treats an already-present package as success — so a partial/cold box is
+**repaired**.
 
 ## Modules
 
-| Module    | Installs                                  | Needs network access to |
-| --------- | ----------------------------------------- | ----------------------- |
-| `base`    | Nix (Determinate, daemonless)             | `install.determinate.systems`, `cache.nixos.org`, `channels.nixos.org`, `github.com`, `objects.githubusercontent.com` |
-| `java`    | Temurin JDK 17 + 21, `JAVA_HOME`          | `cache.nixos.org` |
-| `android` | `android-tools` (adb/fastboot), `ANDROID_HOME` | `cache.nixos.org`, `dl.google.com`, `maven.google.com` |
-| `skills`  | Claude Code agent skills, linked into `~/.claude/skills/` | `github.com` (`cache.nixos.org` if `git` is absent) |
+| Module    | Installs                                  | Needs network access to | Cloud built-in selector |
+| --------- | ----------------------------------------- | ----------------------- | ----------------------- |
+| `base`    | Nix (Determinate, daemonless)             | `install.determinate.systems`, `cache.nixos.org`, `channels.nixos.org`, `github.com`, `objects.githubusercontent.com` | — |
+| `java`    | Temurin JDK 17 + 21, `JAVA_HOME`          | `cache.nixos.org` | base-image JDK |
+| `android` | `android-tools` (adb/fastboot), `ANDROID_HOME` | `cache.nixos.org`, `dl.google.com`, `maven.google.com` | — |
+| `node`    | Node.js 22 LTS, npm                       | `cache.nixos.org`, `registry.npmjs.org` | Codex: `CODEX_ENV_NODE_VERSION` |
+| `python`  | CPython 3 + pip                           | `cache.nixos.org`, `pypi.org`, `files.pythonhosted.org` | Codex: `CODEX_ENV_PYTHON_VERSION` |
+| `go`      | Go toolchain, `GOPATH`                    | `cache.nixos.org`, `proxy.golang.org`, `sum.golang.org` | Codex: `CODEX_ENV_GO_VERSION` |
+| `rust`    | `rustc` + `cargo`                         | `cache.nixos.org`, `static.crates.io`, `index.crates.io` | Codex: `CODEX_ENV_RUST_VERSION` |
+| `skills`  | Claude Code agent skills, linked into `~/.claude/skills/` | `github.com` (`cache.nixos.org` if `git` is absent) | — |
 
-`base` is always included; it is the implicit preamble for every request.
+`base` is always included; it is the implicit preamble for every request. The
+language modules above install a Nix toolchain (or adopt the provider's
+built-in); `skills` is a different *kind* of dependency — see below.
 
 ### Parameterized modules
 
@@ -67,10 +87,10 @@ of dependency**. It clones one or more skill repos and symlinks every skill
 
 ```bash
 # default: the skills repo this service was extracted from
-curl -fsSL https://coo.ee/env/skills | bash
+curl -fsSL https://env.coo.ee/skills | bash
 # explicit source(s), with an optional @ref (branch/tag/sha)
-curl -fsSL 'https://coo.ee/env/skills[yschimke/skills]' | bash
-curl -fsSL 'https://coo.ee/env/skills[yschimke/skills@v1,owner/more-skills],java' | bash
+curl -fsSL 'https://env.coo.ee/skills[yschimke/skills]' | bash
+curl -fsSL 'https://env.coo.ee/skills[yschimke/skills@v1,owner/more-skills],java' | bash
 ```
 
 The bracketed list is the module's request-time input. The renderer validates
@@ -80,6 +100,33 @@ shell), dedupes and sorts it, and injects it into the script as
 source of truth for *logic* while the renderer supplies the *data*. Re-running
 is idempotent: the repo is cached under `~/.cache/coo-ee/skills/` and re-pulled,
 and the symlinks are refreshed in place.
+
+## Cloud built-ins & short-circuit
+
+In a hosted agent environment the cheapest install is the one you skip. The
+script is built around two ideas:
+
+- **Adopt, don't duplicate.** Every language module first checks whether its
+  tool is already on `PATH` (a warm box, or shipped by the provider's base
+  image). If so it *adopts* the existing tool — sets `JAVA_HOME` / `GOPATH` /
+  etc. from it — and skips the Nix install. If nothing is left to install, even
+  Nix (`base`) and the host preflight are skipped, so the whole run is offline.
+- **Prefer the provider's selector.** [Codex](https://chatgpt.com/codex) ships
+  a base image whose languages are chosen via `CODEX_ENV_*_VERSION`. When you
+  request a module Codex could provide but the tool isn't present, the script
+  **warns** you to set that variable instead of installing a parallel copy via
+  Nix. Claude Code and Gemini expose their tools directly on `PATH`, so there
+  the adopt path covers it.
+
+Knobs:
+
+| Variable | Effect |
+| --- | --- |
+| `COOEE_FORCE=1` | Ignore the short-circuit and adoption; force a fresh Nix install / repair. |
+| `COOEE_IGNORE_HOST_CHECK=1` | Continue even if a required install host is blocked. |
+
+The provisioning stamp lives at `~/.config/coo-ee/provisioned` (the canonical
+module set); delete it to force the next run to re-probe.
 
 ## How rendering works
 
@@ -118,7 +165,7 @@ Because it is one idempotent line, it drops into either layer:
 script) — runs once, result is cached:
 
 ```bash
-curl -fsSL https://coo.ee/env/java,android | bash
+curl -fsSL https://env.coo.ee/java,android | bash
 ```
 
 **Project config / `SessionStart` hook** (`.claude/settings.json`) — runs in
@@ -129,11 +176,36 @@ both local and cloud sessions; idempotency keeps it cheap:
   "hooks": {
     "SessionStart": [
       { "hooks": [ { "type": "command",
-        "command": "curl -fsSL https://coo.ee/env/java,android | bash" } ] }
+        "command": "curl -fsSL https://env.coo.ee/java,android | bash" } ] }
     ]
   }
 }
 ```
+
+**GitHub Actions** — GitHub is just another cloud target. Use the bundled
+composite action:
+
+```yaml
+- uses: yschimke/coo-ee-env@v1
+  with: { modules: java,android }
+- run: ./gradlew build          # JAVA_HOME etc. already exported
+```
+
+or drop to the raw step (identical effect):
+
+```yaml
+- run: curl -fsSL https://env.coo.ee/java,android | bash
+```
+
+The rendered script is runner-aware: `add_env` forwards `JAVA_HOME` /
+`ANDROID_HOME` / `JAVA_TOOL_OPTIONS` to `$GITHUB_ENV`, so the toolchain is on
+`PATH` for every later step; each module is wrapped in a collapsible `::group::`
+and failures surface as `::error::` annotations. On a non-root runner `base.sh`
+brings up the `nix-daemon` so the root-owned store is reachable (see
+[Modules](#modules)). [`.github/workflows/env-example.yml`](./.github/workflows/env-example.yml)
+is a runnable example — `workflow_dispatch`-only, since the action exercises the
+live service rather than a branch's code, so gate per-commit on a local render
+instead (as [`setup.yml`](./.github/workflows/setup.yml) does).
 
 Either way, make sure the module hosts above are on your environment's
 allowlist — the script tells you precisely which are missing if not. This is
@@ -179,21 +251,18 @@ CI runs two checks on each push/PR:
 - **M2 — dynamic renderer.** *(built, see [`api/`](./api))* A Vercel Node
   function parses `/env/:modules`, canonicalizes the list, concatenates the
   `modules/` fragments, and streams `text/x-shellscript`.
-- **M3 — domain.** *(pending)* `env.coo.ee/<modules>` (see "Domain" below).
+- **M3 — domain.** *(done)* Live at `env.coo.ee/<modules>` (see "Domain" below).
 
 ## Deploying
 
-The code is push-ready; what remains is wiring it to Vercel and a domain. These
-are one-time account-level steps (no secrets live in the repo):
+Deployed on Vercel behind `env.coo.ee`. These were the one-time account-level
+steps (no secrets live in the repo), kept here for reference:
 
 1. **Vercel Git integration** — import this repo once at
    <https://vercel.com/new>. Push to `main` → production deploy; PRs → preview
    URLs. Vercel auto-detects the `api/` functions and `vercel.json` routes.
 2. **Domain** — Vercel project → Settings → Domains → add `env.coo.ee`, then in
    DNS add `CNAME  env -> cname.vercel-dns.com`.
-
-After the domain is live, drop the simulation caveat above and the
-`0.1.0-sim` version marker in [`modules/_header.sh`](./modules/_header.sh).
 
 ## Domain
 

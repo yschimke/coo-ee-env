@@ -1,5 +1,10 @@
 name: render
-on: [push, pull_request]
+# PRs run on pull_request; branch pushes that have an open PR don't double-run
+# because push is scoped to main (covers the post-merge commit).
+on:
+  pull_request:
+  push:
+    branches: [main]
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -9,8 +14,10 @@ jobs:
         with: { node-version: 22 }
       - name: render every module set and syntax-check the output
         run: |
-          # Quote bracketed sets so the shell doesn't glob `[...]`.
-          sets=(base java android java,android skills \
+          # Array form so bracketed sets can be quoted (the shell mustn't glob `[...]`).
+          sets=(base java android node python go rust skills \
+                java,android node,python,go,rust \
+                java,android,node,python,go,rust \
                 "skills[yschimke/skills]" \
                 "skills[yschimke/skills,obra/superpowers],java,android")
           for m in "${sets[@]}"; do

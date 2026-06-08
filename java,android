@@ -1,17 +1,27 @@
 #!/usr/bin/env bash
 # ===========================================================================
-#  coo.ee/env — composable dev-environment bootstrapper   (SIMULATION)
+#  coo.ee/env — composable dev-environment bootstrapper
 # ---------------------------------------------------------------------------
 #  This is the HEADER fragment. The hosted service concatenates:
 #       _header.sh  +  <module>.sh ...  +  _footer.sh
-#  to produce the script served at  https://coo.ee/env/<modules>.
+#  to produce the script served at  https://env.coo.ee/<modules>.
 #  The checked-in file  java,android  is one such rendering.
 #  Edit fragments here; do not hand-edit the rendered artifact.
 #  See README.md.
 # ===========================================================================
 set -euo pipefail
 
-COOEE_VERSION="0.1.0-sim"
+COOEE_VERSION="0.1.0"
+
+# ---- GitHub Actions awareness ---------------------------------------------
+# GitHub is just another cloud target, but it has its own log + env protocol.
+# Inside a runner we mirror our output into the workflow log: collapsible
+# ::group:: sections per module (see _footer) and ::warning::/::error::
+# annotations that surface on the run summary. No-op everywhere else.
+COOEE_GHA=0
+[[ "${GITHUB_ACTIONS:-}" == "true" ]] && COOEE_GHA=1
+gha_group()    { [[ $COOEE_GHA == 1 ]] && printf '::group::%s\n' "$*" >&2 || true; }
+gha_endgroup() { [[ $COOEE_GHA == 1 ]] && printf '::endgroup::\n'     >&2 || true; }
 
 # ---- logging --------------------------------------------------------------
 if [[ -t 2 ]]; then
@@ -22,23 +32,53 @@ else
 fi
 log()  { printf '%s[coo.ee]%s %s\n'   "$_c_blu" "$_c_rst" "$*" >&2; }
 ok()   { printf '%s[coo.ee] OK%s %s\n' "$_c_grn" "$_c_rst" "$*" >&2; }
-warn() { printf '%s[coo.ee] !!%s %s\n' "$_c_yel" "$_c_rst" "$*" >&2; }
-die()  { printf '%s[coo.ee] XX%s %s\n' "$_c_red" "$_c_rst" "$*" >&2; exit 1; }
+warn() { printf '%s[coo.ee] !!%s %s\n' "$_c_yel" "$_c_rst" "$*" >&2
+         [[ $COOEE_GHA == 1 ]] && printf '::warning::%s\n' "$*" >&2 || true; }
+die()  { printf '%s[coo.ee] XX%s %s\n' "$_c_red" "$_c_rst" "$*" >&2
+         [[ $COOEE_GHA == 1 ]] && printf '::error::%s\n' "$*" >&2 || true; exit 1; }
 
 # ---- persisted environment ------------------------------------------------
 # Everything we export is also written to a profile file so a *new* shell can
 # pick it up, and forwarded to the host harness env files when present
 # (Claude Code SessionStart: $CLAUDE_ENV_FILE, GitHub Actions: $GITHUB_ENV).
+#
+# Two files are kept: COOEE_PROFILE is `export KEY=value` (source-able in a
+# shell), COOEE_HARNESS_ENV is raw `KEY=value` (the format harness env files
+# want). They are truncated lazily — only when we actually (re)provision — so
+# the already-provisioned short-circuit can replay the PREVIOUS run's values.
 COOEE_PROFILE="${COOEE_PROFILE:-$HOME/.config/coo-ee/env.sh}"
+COOEE_HARNESS_ENV="${COOEE_HARNESS_ENV:-$HOME/.config/coo-ee/env.harness}"
 mkdir -p "$(dirname "$COOEE_PROFILE")"
-: > "$COOEE_PROFILE"
+
+cooee_init_profile() { : > "$COOEE_PROFILE"; : > "$COOEE_HARNESS_ENV"; }
+
+# Append a raw KEY=value line to whichever harness env files this run has.
+cooee_forward_to_harness() {  # cooee_forward_to_harness KEY=value
+  local kv=$1
+  [[ -n "${CLAUDE_ENV_FILE:-}" ]] && printf '%s\n' "$kv" >> "$CLAUDE_ENV_FILE" || true
+  [[ -n "${GITHUB_ENV:-}"     ]] && printf '%s\n' "$kv" >> "$GITHUB_ENV"     || true
+  return 0
+}
 
 add_env() {  # add_env KEY VALUE — export now and persist for later shells
   local key=$1 val=$2
   export "${key}=${val}"
   printf 'export %s=%q\n' "$key" "$val" >> "$COOEE_PROFILE"
-  [[ -n "${CLAUDE_ENV_FILE:-}" ]] && printf '%s=%s\n' "$key" "$val" >> "$CLAUDE_ENV_FILE" || true
-  [[ -n "${GITHUB_ENV:-}"     ]] && printf '%s=%s\n' "$key" "$val" >> "$GITHUB_ENV"     || true
+  printf '%s=%s\n'        "$key" "$val" >> "$COOEE_HARNESS_ENV"
+  cooee_forward_to_harness "${key}=${val}"
+}
+
+# Short-circuit replay: re-export the last run's env into THIS session without
+# reinstalling anything.
+cooee_forward_persisted_env() {
+  # shellcheck disable=SC1090
+  [[ -f "$COOEE_PROFILE" ]] && . "$COOEE_PROFILE" || true
+  if [[ -f "$COOEE_HARNESS_ENV" ]]; then
+    local line
+    while IFS= read -r line; do
+      [[ -n "$line" ]] && cooee_forward_to_harness "$line"
+    done < "$COOEE_HARNESS_ENV"
+  fi
 }
 
 # ---- idempotent nix package install ---------------------------------------
@@ -122,6 +162,41 @@ need_host()       { _HOST_REASON["$1"]="$2"; }   # need_host <host> <reason>
 want_host()       { _WANT_REASON["$1"]="$2"; }   # want_host <host|*.host> <reason>
 set_params()      { _MODULE_PARAMS["$1"]="$2"; } # set_params <module> <comma-joined params>
 
+# ---- provisioning state + cloud built-in awareness ------------------------
+# Each module declares the command that proves its tool is ALREADY present (on
+# a warm box, or shipped by the cloud provider's base image), and — when a
+# provider exposes a first-class version selector — which env var to point the
+# user at so they prefer the built-in over a redundant Nix install.
+declare -A _PROVIDES_CMD=()     # module -> command that resolves when present
+declare -A _BUILTIN_ENVVAR=()   # module -> provider env var that selects it
+provides_tool() {               # provides_tool <module> <command> [provider_env_var]
+  _PROVIDES_CMD["$1"]="$2"
+  [[ -n "${3:-}" ]] && _BUILTIN_ENVVAR["$1"]="$3"
+  return 0
+}
+module_present() {              # module_present <module> -> 0 if its tool is on PATH
+  local cmd=${_PROVIDES_CMD["$1"]:-}
+  [[ -n "$cmd" ]] && command -v "$cmd" >/dev/null 2>&1
+}
+
+# Stamp of the last successfully provisioned module set, used to short-circuit.
+COOEE_STAMP="${COOEE_STAMP:-$HOME/.config/coo-ee/provisioned}"
+
+# Detect the hosting agent so we can prefer its built-in toolchains. Codex ships
+# a base image whose languages are version-selected via CODEX_ENV_*_VERSION;
+# Claude Code / Gemini expose themselves through their own env markers.
+COOEE_PROVIDER=unknown
+COOEE_PROVIDER_LABEL="this environment"
+cooee_detect_provider() {
+  if compgen -v 2>/dev/null | grep -q '^CODEX_'; then
+    COOEE_PROVIDER=codex;  COOEE_PROVIDER_LABEL="the Codex base image"
+  elif [[ -n "${CLAUDECODE:-}" || -n "${CLAUDE_CODE_ENTRYPOINT:-}" || -n "${CLAUDE_ENV_FILE:-}" ]]; then
+    COOEE_PROVIDER=claude; COOEE_PROVIDER_LABEL="the Claude Code environment"
+  elif [[ -n "${GEMINI_CLI:-}" || -n "${GOOGLE_CLOUD_AGENT:-}" || -n "${ANTIGRAVITY:-}" ]]; then
+    COOEE_PROVIDER=gemini; COOEE_PROVIDER_LABEL="the Gemini / Antigravity sandbox"
+  fi
+}
+
 # ---- preconditions: tools, OS, and host reachability ----------------------
 probe_host() {
   # Reachable == we got *any* HTTP response (even 403/404). "000" == the
@@ -152,6 +227,9 @@ print_allowlist_help() {
     echo "${_c_yel}|${_c_rst}       add to the domain allowlist (allow GET/HEAD)."
     echo "${_c_yel}|${_c_rst}   - Antigravity / Gemini Managed Agents: declare the hosts"
     echo "${_c_yel}|${_c_rst}       in the sandbox network allowlist."
+    echo "${_c_yel}|${_c_rst}   - GitHub Actions: hosted runners have open egress, so this"
+    echo "${_c_yel}|${_c_rst}       rarely fires; on self-hosted/firewalled runners, allow"
+    echo "${_c_yel}|${_c_rst}       these in the runner network policy or corporate proxy."
     echo "${_c_yel}+-------------------------------------------------------------${_c_rst}"
     echo
   } >&2
@@ -199,7 +277,7 @@ print_recommended_hosts() {
 }
 
 # ===========================================================================
-#  module: base — install Nix (Determinate Systems installer, daemonless)
+#  module: base — install Nix (Determinate Systems installer)
 # ===========================================================================
 register_module base
 need_host install.determinate.systems   "Determinate Nix installer + binaries"
@@ -208,18 +286,56 @@ need_host channels.nixos.org            "nixpkgs channel / flake source"
 need_host github.com                     "nixpkgs + flake inputs"
 need_host objects.githubusercontent.com  "GitHub release assets for flake inputs"
 
+# Determinate's installer always lays down a root-owned (multi-user) store.
+# - As root (typical agent sandbox) we read/write that store directly, so a
+#   daemonless `--init none` install is enough.
+# - As a non-root user (e.g. a CI runner) the store is only reachable through
+#   the nix-daemon, which `--init none` never starts. So when we're not root we
+#   either let the installer manage the daemon via systemd, or start it
+#   ourselves afterwards.
+cooee_nix_daemon_socket=/nix/var/nix/daemon-socket/socket
+
+cooee_is_root()     { [[ "${EUID:-$(id -u)}" -eq 0 ]]; }
+cooee_has_systemd() { [[ -d /run/systemd/system ]]; }
+
+cooee_start_nix_daemon() {  # bring up nix-daemon when there is no init to do it
+  [[ -S "$cooee_nix_daemon_socket" ]] && return 0
+  command -v sudo >/dev/null 2>&1 || { warn "non-root Nix install but no sudo to start nix-daemon; installs may fail."; return 0; }
+  local daemon=/nix/var/nix/profiles/default/bin/nix-daemon
+  [[ -x "$daemon" ]] || daemon=$(command -v nix-daemon 2>/dev/null || true)
+  [[ -n "$daemon" && -x "$daemon" ]] || { warn "nix-daemon binary not found; cannot start it."; return 0; }
+  log "Starting nix-daemon (non-root install without an init system)..."
+  sudo --background "$daemon" >/dev/null 2>&1 || true
+  local i
+  for i in $(seq 1 50); do [[ -S "$cooee_nix_daemon_socket" ]] && break; sleep 0.2; done
+  [[ -S "$cooee_nix_daemon_socket" ]] && ok "nix-daemon is up." \
+    || warn "nix-daemon socket still absent; non-root nix commands may fail."
+}
+
 module_base() {
   if command -v nix >/dev/null 2>&1; then
     ok "Nix already installed: $(nix --version)"
   else
-    log "Installing Nix (Determinate Systems installer, daemonless)..."
-    # --init none: no systemd in most sandboxes. flakes: needed for nix#pkgs.
+    # Pick the daemon strategy from who we are and whether systemd is around.
+    local -a init_flags=(--init none)
+    local manage_daemon=0
+    if cooee_is_root; then
+      log "Installing Nix (Determinate Systems installer, daemonless — running as root)..."
+    elif cooee_has_systemd; then
+      init_flags=(--init systemd)     # let the installer start nix-daemon.service
+      log "Installing Nix (Determinate, systemd daemon — non-root host)..."
+    else
+      manage_daemon=1                 # no init: we'll start the daemon ourselves
+      log "Installing Nix (Determinate, daemon started manually — non-root, no systemd)..."
+    fi
+    # flakes: needed for nix#pkgs references used by the modules.
     curl -fsSL https://install.determinate.systems/nix \
       | sh -s -- install linux \
           --no-confirm \
-          --init none \
+          "${init_flags[@]}" \
           --extra-conf "experimental-features = nix-command flakes"
     ok "Nix installed."
+    [[ "$manage_daemon" == 1 ]] && cooee_start_nix_daemon
   fi
 
   # Put nix on PATH for the rest of THIS script...
@@ -230,11 +346,12 @@ module_base() {
   export PATH="$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin:$PATH"
   command -v nix >/dev/null 2>&1 || die "Nix not on PATH after install."
 
-  # ...and for future shells (a PATH prepend, not a frozen snapshot).
+  # ...and for future shells (a PATH prepend, not a frozen snapshot). Recorded
+  # in both persisted files so the short-circuit can replay it next session.
   echo 'export PATH="$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin:$PATH"' \
     >> "$COOEE_PROFILE"
-  [[ -n "${CLAUDE_ENV_FILE:-}" ]] && printf 'PATH=%s\n' "$PATH" >> "$CLAUDE_ENV_FILE" || true
-  [[ -n "${GITHUB_ENV:-}"     ]] && printf 'PATH=%s\n' "$PATH" >> "$GITHUB_ENV"     || true
+  printf 'PATH=%s\n' "$PATH" >> "$COOEE_HARNESS_ENV"
+  cooee_forward_to_harness "PATH=$PATH"
 
   ok "base ready: $(nix --version)"
 }
@@ -248,6 +365,7 @@ module_base() {
 #  Assumes `java` is also requested (Android builds need a JDK).
 # ===========================================================================
 register_module android
+provides_tool android adb   # adopt existing platform-tools (adb on PATH)
 need_host cache.nixos.org        "prebuilt android-tools from the Nix cache"
 want_host dl.google.com          "Android SDK cmdline-tools, platforms, build-tools"
 want_host maven.google.com       "AndroidX / AGP artifacts"
@@ -257,6 +375,16 @@ want_host fonts.googleapis.com   "downloadable font metadata (Compose)"
 want_host fonts.gstatic.com      "downloadable font binaries (Compose)"
 
 module_android() {
+  # Adopt existing platform-tools (warm box / base image) when adb is already
+  # on PATH — just settle ANDROID_HOME and skip the Nix install.
+  if [[ "${COOEE_FORCE:-0}" != 1 ]] && command -v adb >/dev/null 2>&1; then
+    local sdk="${ANDROID_HOME:-$HOME/.android/sdk}"
+    mkdir -p "$sdk"
+    add_env ANDROID_HOME "$sdk"
+    ok "android: adopted existing $(adb --version 2>/dev/null | head -1 || echo adb) (ANDROID_HOME=$sdk)."
+    return 0
+  fi
+
   log "Installing Android platform-tools (adb, fastboot) via Nix..."
   export NIXPKGS_ALLOW_UNFREE=1
   nix_ensure android-tools nixpkgs#android-tools --impure
@@ -280,6 +408,7 @@ module_android() {
 #  Host set mirrors skills/compose-preview/references/agent-cloud.md.
 # ===========================================================================
 register_module java
+provides_tool java java   # adopt an existing JDK (warm box or cloud base image)
 need_host cache.nixos.org      "prebuilt Temurin JDK from the Nix cache"
 want_host services.gradle.org  "Gradle distributions (wrapper download)"
 want_host repo.gradle.org      "Gradle libraries / tooling artifacts"
@@ -289,12 +418,25 @@ want_host api.adoptium.net     "JDK/toolchain provisioning API"
 want_host jitpack.io           "dependencies published via JitPack"
 
 module_java() {
-  log "Installing Temurin JDK 17 + 21 via Nix..."
-  nix_ensure temurin-bin-17 nixpkgs#temurin-bin-17 --accept-flake-config
-  nix_ensure temurin-bin-21 nixpkgs#temurin-bin-21 --accept-flake-config
+  # Already provisioned (warm box) or provided by the cloud base image? Adopt
+  # the existing JDK — set JAVA_HOME from it and skip the redundant Nix install.
+  if [[ "${COOEE_FORCE:-0}" != 1 ]] && command -v java >/dev/null 2>&1; then
+    add_env JAVA_HOME "$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")"
+    cooee_trust_cas_in_jdk "$JAVA_HOME"
+    ok "java: adopted existing $(java -version 2>&1 | head -1) (JAVA_HOME=$JAVA_HOME)."
+    return 0
+  fi
 
-  # Default JAVA_HOME -> 17 (the toolchain most repos here pin to); 21 stays
-  # on PATH for projects that opt into it.
+  log "Installing Temurin JDK 17 + 21 via Nix..."
+  # Both JDKs ship colliding files (e.g. lib/modules), so a single profile can't
+  # hold both at the same priority — `nix profile add` aborts. Give them distinct
+  # priorities (lower wins): 17 at 5 owns the `java`/`javac` symlinks (the
+  # toolchain most repos here pin to), 21 at 6 installs alongside and stays
+  # discoverable by Gradle toolchain resolution.
+  nix_ensure temurin-bin-17 nixpkgs#temurin-bin-17 --accept-flake-config --priority 5
+  nix_ensure temurin-bin-21 nixpkgs#temurin-bin-21 --accept-flake-config --priority 6
+
+  # JAVA_HOME -> the active (priority-winning) JDK, i.e. 17.
   command -v java >/dev/null 2>&1 || die "java not on PATH after install."
   add_env JAVA_HOME "$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")"
 
@@ -306,25 +448,118 @@ module_java() {
 }
 
 # ===========================================================================
-#  FOOTER — run preconditions once, then each registered module in order.
+#  FOOTER — short-circuit if already provisioned, else preconditions + install.
 # ===========================================================================
-main() {
-  log "coo.ee/env ${COOEE_VERSION} — modules: ${MODULES[*]}"
-  check_preconditions
+
+# Fast path: skip the whole install when a previous run already provisioned
+# exactly this module set and every tool is still on PATH. COOEE_FORCE=1 opts
+# out (forces a re-provision / repair).
+cooee_already_provisioned() {
+  [[ "${COOEE_FORCE:-0}" == 1 ]] && return 1
+  [[ -f "$COOEE_STAMP" ]] || return 1
+  [[ "$(cat "$COOEE_STAMP" 2>/dev/null)" == "${MODULES[*]:-}" ]] || return 1
   local m
   for m in "${MODULES[@]}"; do
-    log "---- module: ${m} --------------------------------"
-    # Pass any request params (set_params, injected by the renderer) as args.
-    if [[ -n "${_MODULE_PARAMS[$m]:-}" ]]; then
-      local -a _args
-      IFS=',' read -r -a _args <<< "${_MODULE_PARAMS[$m]}"
-      "module_${m}" "${_args[@]}"
+    if [[ "$m" == base ]]; then
+      command -v nix >/dev/null 2>&1 || return 1
     else
-      "module_${m}"
+      module_present "$m" || return 1
     fi
   done
+  return 0
+}
+
+# Advisory pass: for every requested module, either note that we'll adopt an
+# already-present tool, or — on a provider that ships it built-in — nudge the
+# user to prefer the built-in instead of installing a redundant copy via Nix.
+cooee_builtin_pass() {
+  local m cmd envvar
+  for m in "${MODULES[@]}"; do
+    [[ "$m" == base ]] && continue
+    cmd=${_PROVIDES_CMD["$m"]:-}
+    envvar=${_BUILTIN_ENVVAR["$m"]:-}
+    # Modules that don't install a tool-on-PATH (e.g. skills) opt out of the
+    # adopt/built-in advice — they always do their own (idempotent) work.
+    [[ -z "$cmd" ]] && continue
+    if module_present "$m"; then
+      ok "module '$m': '$cmd' already on PATH — adopting ${COOEE_PROVIDER_LABEL}'s build, no Nix install."
+      continue
+    fi
+    case "$COOEE_PROVIDER" in
+      codex)
+        if [[ -n "$envvar" ]]; then
+          warn "module '$m': Codex provides this from its base image — prefer it by setting ${envvar} in your Codex environment instead of installing via Nix."
+        else
+          warn "module '$m': Codex's base image may already ship this — prefer the image's version over a Nix install when available."
+        fi ;;
+      claude|gemini)
+        : ;;   # adoption covers the present case; no version selector to point at
+    esac
+  done
+}
+
+main() {
+  cooee_detect_provider
+  log "coo.ee/env ${COOEE_VERSION} — modules: ${MODULES[*]:-} — provider: ${COOEE_PROVIDER}"
+
+  if cooee_already_provisioned; then
+    ok "Already provisioned (${MODULES[*]:-}); skipping install."
+    cooee_forward_persisted_env
+    log "Re-exported env from ${COOEE_PROFILE} (source it in a fresh shell)."
+    log "Force a re-provision with COOEE_FORCE=1."
+    return 0
+  fi
+
+  cooee_builtin_pass
+
+  # Nix is only worth installing if at least one requested module will actually
+  # install (i.e. is not adopted from the environment). If everything is already
+  # provided, base is skipped too.
+  local need_nix=0 m
+  for m in "${MODULES[@]}"; do
+    [[ "$m" == base ]] && continue
+    if module_present "$m" && [[ "${COOEE_FORCE:-0}" != 1 ]]; then continue; fi
+    need_nix=1
+  done
+
+  cooee_init_profile
+
+  # Host preflight only matters when something will actually install — if every
+  # requested tool is adopted from the environment, there is nothing to probe.
+  if [[ "$need_nix" == 1 ]]; then
+    gha_group "coo.ee: preconditions"
+    check_preconditions
+    gha_endgroup
+  else
+    ok "Nothing to install — every requested tool is already provided; skipping host preflight."
+  fi
+
+  for m in "${MODULES[@]}"; do
+    gha_group "coo.ee: module ${m}"
+    log "---- module: ${m} --------------------------------"
+    if [[ "$m" == base ]]; then
+      if [[ "$need_nix" == 1 ]]; then
+        module_base
+      else
+        ok "base: every requested tool is already provided — skipping Nix install."
+      fi
+    else
+      # Pass any request params (set_params, injected by the renderer) as args;
+      # each module adopts an existing tool or installs via Nix.
+      if [[ -n "${_MODULE_PARAMS[$m]:-}" ]]; then
+        local -a _args
+        IFS=',' read -r -a _args <<< "${_MODULE_PARAMS[$m]}"
+        "module_${m}" "${_args[@]}"
+      else
+        "module_${m}"
+      fi
+    fi
+    gha_endgroup
+  done
+
+  printf '%s' "${MODULES[*]:-}" > "$COOEE_STAMP"
   echo
-  ok "Environment ready: ${MODULES[*]}"
+  ok "Environment ready: ${MODULES[*]:-}"
   log "Persisted env -> ${COOEE_PROFILE}"
   log "In a fresh shell:  source ${COOEE_PROFILE}"
 }
