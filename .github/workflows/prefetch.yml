@@ -18,9 +18,6 @@ on:
 jobs:
   gradle-prefetch:
     runs-on: ubuntu-latest
-    env:
-      # Isolated Gradle home so the cache assertions are unambiguous.
-      GRADLE_USER_HOME: ${{ runner.temp }}/ghome
     steps:
       - uses: actions/checkout@v4
 
@@ -43,9 +40,15 @@ jobs:
 
       - name: Run setup (prefetch) against the sample project
         working-directory: examples/gradle-sample
+        env:
+          # Isolated Gradle home so the cache assertions are unambiguous.
+          # (runner.temp is only available in step-level env, not job-level.)
+          GRADLE_USER_HOME: ${{ runner.temp }}/ghome
         run: bash /tmp/java.sh
 
       - name: Assert the dependency JAR was downloaded
+        env:
+          GRADLE_USER_HOME: ${{ runner.temp }}/ghome
         run: |
           set -euo pipefail
           jar=$(find "$GRADLE_USER_HOME/caches" \
