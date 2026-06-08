@@ -68,7 +68,7 @@ treats an already-present package as success — so a partial/cold box is
 | Module    | Installs                                  | Needs network access to | Cloud built-in selector |
 | --------- | ----------------------------------------- | ----------------------- | ----------------------- |
 | `base`    | Nix (Determinate, daemonless)             | `install.determinate.systems`, `cache.nixos.org`, `channels.nixos.org`, `github.com`, `objects.githubusercontent.com` | — |
-| `java`    | Temurin JDK (default 17 + 21; `java[17,21]` to choose), `JAVA_HOME` | `cache.nixos.org` | base-image JDK |
+| `java`    | Temurin JDK, `JAVA_HOME`; bare `java` uses the JDK the project pins for Gradle (`toolchainVersion` in `gradle/gradle-daemon-jvm.properties`), else 21 (17 + 21 with `android`); `java[17,21]` to choose | `cache.nixos.org` | base-image JDK |
 | `android` | Full SDK via `androidenv`: `platform-tools` (adb), `cmdline-tools`, the requested platform(s) + `build-tools`, `ANDROID_HOME`; `android[30,36,wear-33]` picks the platform API levels | `cache.nixos.org`, `dl.google.com`, `maven.google.com` | — |
 | `android-emulator` | Adds `emulator` + `system-images` to the SDK (via the implied `android` build) and configures `/dev/kvm` access (GitHub `99-kvm4all.rules`); `android-emulator[36,wear-33]` picks the image levels; **implies `android`** | `cache.nixos.org`, `dl.google.com` | — |
 | `node`    | Node.js 22 LTS, npm                       | `cache.nixos.org`, `registry.npmjs.org` | Codex: `CODEX_ENV_NODE_VERSION` |
@@ -119,7 +119,16 @@ curl -fsSL -g 'https://env.coo.ee/java[17,21],android[30,36,wear-33]' | bash
 ```
 
 `java[17,21]` installs each Temurin major (`nixpkgs#temurin-bin-<major>`, lowest
-owning the `java`/`javac` symlinks); bare `java` keeps the default 17 + 21.
+owning the `java`/`javac` symlinks). With no param, `java` looks for a
+**project-specified version marker** before falling back to a built-in default:
+it reads the JDK the project pins for its Gradle build — `toolchainVersion` in
+the version file in the gradle directory, `gradle/gradle-daemon-jvm.properties`
+(the file Gradle's [Daemon JVM
+criteria](https://docs.gradle.org/current/userguide/gradle_daemon.html#sec:daemon_jvm_criteria)
+reads to choose the daemon's JDK) — so the env provisions exactly what
+`./gradlew` will run on. With no such marker it defaults to 21 (the current LTS),
+or 17 + 21 when `android` is also being installed (AGP/Gradle pins 17 while app
+code targets 21). An explicit `java[…]` always overrides the detection.
 `android[30,36,wear-33]` installs those platform API levels (with their
 `build-tools`), and `android-emulator[36,wear-33]` installs the matching
 `emulator` system images — both built into the SDK by `androidenv` (see
