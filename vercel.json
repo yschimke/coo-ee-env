@@ -6,6 +6,9 @@
   "functions": {
     "api/env/[modules].js": {
       "includeFiles": "modules/**"
+    },
+    "api/modules.js": {
+      "includeFiles": "modules/**"
     }
   }
 }

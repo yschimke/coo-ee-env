@@ -218,6 +218,8 @@ the same allowlist discussed in the `skills` repo's
 modules/              shell fragments — the single source of truth
 api/env/render.js     pure renderer: canonicalize + concatenate (unit-testable)
 api/env/[modules].js  Vercel handler wrapping render()
+api/modules.js        JSON module catalog (name + software blurb) for the picker
+public/index.html     landing page: autocomplete picker -> the one-liner
 vercel.json           routes /env/:modules and /:modules -> the function
 java,android          M1 pre-rendered sample (kept as a runnable demo)
 ```
@@ -227,6 +229,25 @@ java,android          M1 pre-rendered sample (kept as a runnable demo)
 CDN cache entry; bracketed params (`skills[a,b]`) are canonicalized the same
 way. Unknown modules — or malformed names/params — return `400` with the
 available list.
+
+### Landing page (the picker)
+
+Visiting `env.coo.ee/` (no module segment) serves a
+[gitignore.io](https://www.toptal.com/developers/gitignore)-style picker
+([`public/index.html`](./public/index.html)): type to autocomplete modules, add
+them as chips, and copy the generated `curl … | bash` one-liner (or follow
+*View script* to read it inline). It builds the command against
+`location.origin`, so the copied line works from production, a Vercel preview,
+or `vercel dev` alike, and the selection round-trips through the URL hash
+(`/#java,android`) so a configuration is shareable.
+
+The picker's module list isn't hardcoded — it fetches
+[`/api/modules`](./api/modules.js), which derives the catalog (each module's
+name + `software:` blurb) straight from the `modules/` fragment headers. Add or
+edit a fragment and the picker updates with no extra wiring. `base` is shown as
+a fixed, always-included chip. Static files are matched before the `/:modules`
+rewrite, so `/` and `/api/*` resolve to the page and the catalog while
+`/java,android` still falls through to the renderer.
 
 **Run it locally:**
 
@@ -252,6 +273,8 @@ CI runs two checks on each push/PR:
   function parses `/env/:modules`, canonicalizes the list, concatenates the
   `modules/` fragments, and streams `text/x-shellscript`.
 - **M3 — domain.** *(done)* Live at `env.coo.ee/<modules>` (see "Domain" below).
+- **M4 — picker.** *(done)* A landing page at `env.coo.ee/` autocompletes the
+  module list and generates the one-liner (see [Landing page](#landing-page-the-picker)).
 
 ## Deploying
 

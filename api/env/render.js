@@ -38,6 +38,19 @@ function readFragment(name) {
   return fs.readFileSync(path.join(MODULES_DIR, `${name}.sh`), "utf8");
 }
 
+// moduleInfo() -> [{ name, software, implicit }], parsed from each fragment's
+// header comment (`# module: <name>` / `# software : <desc>`). The fragments
+// stay the single source of truth: the autocomplete UI reads this rather than
+// keeping its own copy of the module list. `base` is flagged implicit (it is
+// always prepended, so the UI shows it as fixed rather than selectable).
+function moduleInfo() {
+  return allowedModules().map((name) => {
+    const src = readFragment(name);
+    const software = (src.match(/^#\s*software\s*:\s*(.+?)\s*$/m) || [])[1] || "";
+    return { name, software, implicit: name === "base" };
+  });
+}
+
 // Split "a,b[c,d],e" on top-level commas only — commas inside [...] belong to
 // the bracketed parameter list and must not split the module list.
 function splitTopLevel(segment) {
@@ -171,4 +184,4 @@ function render(segment) {
   };
 }
 
-module.exports = { render, canonicalize, allowedModules, MODULES_DIR };
+module.exports = { render, canonicalize, allowedModules, moduleInfo, MODULES_DIR };
