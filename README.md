@@ -12,6 +12,24 @@ Like gitignore.io's `/api/java,android`, the path after `/env/` is a
 comma-separated list of modules. The service renders a script by concatenating
 a fixed preamble with each requested module and streaming the result.
 
+### Optional platform versions
+
+A module may carry an optional, bracketed list of versions:
+
+```bash
+curl -fsSL https://coo.ee/env/'java[17,21],android[30,37,wear-33]' | bash
+```
+
+`java[17,21]` installs Temurin JDK 17 **and** 21 (each maps to
+`nixpkgs#temurin-bin-<major>`); `java` with no brackets keeps the default 17 + 21.
+`android[30,37,wear-33]` records the requested platform API levels in
+`COOEE_ANDROID_PLATFORMS` for the project's `androidenv` flake to provision.
+
+Versions are canonicalized just like modules — deduped and sorted — so
+`java[21,17]` and `java[17,21]` render byte-identically and share a cache entry.
+Versions must be alphanumeric (plus `.`, `_`, `-`); anything else returns `400`.
+Quote the path in your shell so the brackets aren't globbed.
+
 This repo is the standalone home of the service (extracted from
 [`yschimke/skills`](https://github.com/yschimke/skills)). The dynamic renderer
 is **built** (see [`api/`](./api)); it is **not yet wired to a public domain**,
@@ -67,8 +85,8 @@ treats an already-present package as success — so a partial/cold box is
 | Module    | Installs                                  | Needs network access to | Cloud built-in selector |
 | --------- | ----------------------------------------- | ----------------------- | ----------------------- |
 | `base`    | Nix (Determinate, daemonless)             | `install.determinate.systems`, `cache.nixos.org`, `channels.nixos.org`, `github.com`, `objects.githubusercontent.com` | — |
-| `java`    | Temurin JDK 17 + 21, `JAVA_HOME`          | `cache.nixos.org` | base-image JDK |
-| `android` | `android-tools` (adb/fastboot), `ANDROID_HOME` | `cache.nixos.org`, `dl.google.com`, `maven.google.com` | — |
+| `java`    | Temurin JDK (default 17 + 21; `java[17,21]` to choose), `JAVA_HOME` | `cache.nixos.org` | base-image JDK |
+| `android` | `android-tools` (adb/fastboot), `ANDROID_HOME`; `android[30,37,wear-33]` records platforms in `COOEE_ANDROID_PLATFORMS` | `cache.nixos.org`, `dl.google.com`, `maven.google.com` | — |
 | `node`    | Node.js 22 LTS, npm                       | `cache.nixos.org`, `registry.npmjs.org` | Codex: `CODEX_ENV_NODE_VERSION` |
 | `python`  | CPython 3 + pip                           | `cache.nixos.org`, `pypi.org`, `files.pythonhosted.org` | Codex: `CODEX_ENV_PYTHON_VERSION` |
 | `go`      | Go toolchain, `GOPATH`                    | `cache.nixos.org`, `proxy.golang.org`, `sum.golang.org` | Codex: `CODEX_ENV_GO_VERSION` |
@@ -125,7 +143,11 @@ bash -n 'java,android'   # syntax check
 `render()` canonicalizes the module list — it dedupes, forces `base` first, and
 sorts the rest alphabetically — so `java,android` and `android,java` render
 byte-identically (the `android` block comes before the `java` block in both).
-To preview a different combination, pass a different segment to `render()`.
+The same goes for any bracketed versions: they are deduped and sorted within
+each module, then injected as a `COOEE_VERSIONS` associative array that the
+fragments read. A version-less request emits no version block, so it stays
+byte-identical to the pre-versions rendering. To preview a different
+combination, pass a different segment to `render()`.
 
 ## Wiring it into an agent environment
 
@@ -205,8 +227,10 @@ npx vercel dev        # serves http://localhost:3000/env/java,android
 
 CI runs two checks on each push/PR:
 
-- [`render.yml`](./.github/workflows/render.yml) renders every module set and
-  syntax-checks the output, so a fragment that breaks `bash -n` never lands.
+- [`render.yml`](./.github/workflows/render.yml) runs the renderer unit tests
+  (`node --test`), then renders every module set — including versioned ones like
+  `java[17,21],android[30,37,wear-33]` — and syntax-checks the output, so a
+  fragment that breaks `bash -n` never lands.
 - [`setup.yml`](./.github/workflows/setup.yml) renders `android,java` and
   actually runs it on a clean runner, then asserts `java`, `adb`, and `nix`
   work from the persisted profile and that a second run is a no-op — an

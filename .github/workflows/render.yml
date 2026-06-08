@@ -12,11 +12,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
+      - name: unit tests (renderer + version parsing)
+        run: node --test
       - name: render every module set and syntax-check the output
         run: |
           for m in base java android node python go rust \
                    java,android node,python,go,rust \
-                   java,android,node,python,go,rust; do
+                   java,android,node,python,go,rust \
+                   'java[17,21]' 'java[17,21],android[30,37,wear-33]'; do
             echo "== $m =="
             node -e "process.stdout.write(require('./api/env/render').render('$m').body)" | bash -n -
           done

@@ -156,6 +156,10 @@ cooee_trust_cas_in_jdk() {  # cooee_trust_cas_in_jdk <java_home>
 MODULES=()
 declare -A _HOST_REASON=()   # required to INSTALL — probed, hard-fail if blocked
 declare -A _WANT_REASON=()   # recommended for BUILDS — advisory only (may be wildcards)
+# Requested per-module versions, parsed from the request path (e.g. java[17,21]).
+# The renderer fills entries in when versions are asked for; modules read
+# ${COOEE_VERSIONS[<module>]:-<default>}. Always declared so that read is safe.
+declare -A COOEE_VERSIONS=()
 register_module() { MODULES+=("$1"); }
 need_host()       { _HOST_REASON["$1"]="$2"; }   # need_host <host> <reason>
 want_host()       { _WANT_REASON["$1"]="$2"; }   # want_host <host|*.host> <reason>

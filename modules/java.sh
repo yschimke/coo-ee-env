@@ -1,7 +1,8 @@
 
 # ===========================================================================
 #  module: java
-#    software : Temurin JDK 17 + 21 (via Nix), JAVA_HOME, JDK TLS fix
+#    software : Temurin JDK (via Nix), JAVA_HOME, JDK TLS fix
+#               versions from the path (java[17,21]); default 17 + 21
 #    hosts    : cache.nixos.org (install)
 #             : Gradle / Maven / toolchain registries (build, advisory)
 #  Host set mirrors skills/compose-preview/references/agent-cloud.md.
@@ -26,16 +27,23 @@ module_java() {
     return 0
   fi
 
-  log "Installing Temurin JDK 17 + 21 via Nix..."
-  # Both JDKs ship colliding files (e.g. lib/modules), so a single profile can't
-  # hold both at the same priority — `nix profile add` aborts. Give them distinct
-  # priorities (lower wins): 17 at 5 owns the `java`/`javac` symlinks (the
-  # toolchain most repos here pin to), 21 at 6 installs alongside and stays
-  # discoverable by Gradle toolchain resolution.
-  nix_ensure temurin-bin-17 nixpkgs#temurin-bin-17 --accept-flake-config --priority 5
-  nix_ensure temurin-bin-21 nixpkgs#temurin-bin-21 --accept-flake-config --priority 6
+  # Versions come from the request path (java[17,21]); default to 17 + 21, the
+  # toolchains most repos here pin to. Each maps to nixpkgs#temurin-bin-<major>.
+  local versions="${COOEE_VERSIONS[java]:-17 21}"
+  log "Installing Temurin JDK ($versions) via Nix..."
+  # Multiple JDKs ship colliding files (e.g. lib/modules), so a single profile
+  # can't hold them at the same priority — `nix profile add` aborts. Give each a
+  # distinct priority (lower wins), ascending from 5 in request order. Versions
+  # are canonicalized ascending, so the lowest JDK owns the java/javac symlinks
+  # (the toolchain most repos here pin to) and the rest stay discoverable by
+  # Gradle toolchain resolution.
+  local v prio=5
+  for v in $versions; do
+    nix_ensure "temurin-bin-$v" "nixpkgs#temurin-bin-$v" --accept-flake-config --priority "$prio"
+    prio=$((prio + 1))
+  done
 
-  # JAVA_HOME -> the active (priority-winning) JDK, i.e. 17.
+  # JAVA_HOME -> the active (priority-winning) JDK, i.e. the lowest requested.
   command -v java >/dev/null 2>&1 || die "java not on PATH after install."
   add_env JAVA_HOME "$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")"
 
