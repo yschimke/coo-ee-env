@@ -76,12 +76,15 @@ main() {
   # Host preflight only matters when something will actually install — if every
   # requested tool is adopted from the environment, there is nothing to probe.
   if [[ "$need_nix" == 1 ]]; then
+    gha_group "coo.ee: preconditions"
     check_preconditions
+    gha_endgroup
   else
     ok "Nothing to install — every requested tool is already provided; skipping host preflight."
   fi
 
   for m in "${MODULES[@]}"; do
+    gha_group "coo.ee: module ${m}"
     log "---- module: ${m} --------------------------------"
     if [[ "$m" == base ]]; then
       if [[ "$need_nix" == 1 ]]; then
@@ -92,6 +95,7 @@ main() {
     else
       "module_${m}"   # each module adopts an existing tool or installs via Nix
     fi
+    gha_endgroup
   done
 
   printf '%s' "${MODULES[*]:-}" > "$COOEE_STAMP"

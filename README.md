@@ -152,6 +152,31 @@ both local and cloud sessions; idempotency keeps it cheap:
 }
 ```
 
+**GitHub Actions** — GitHub is just another cloud target. Use the bundled
+composite action:
+
+```yaml
+- uses: yschimke/coo-ee-env@v1
+  with: { modules: java,android }
+- run: ./gradlew build          # JAVA_HOME etc. already exported
+```
+
+or drop to the raw step (identical effect):
+
+```yaml
+- run: curl -fsSL https://env.coo.ee/java,android | bash
+```
+
+The rendered script is runner-aware: `add_env` forwards `JAVA_HOME` /
+`ANDROID_HOME` / `JAVA_TOOL_OPTIONS` to `$GITHUB_ENV`, so the toolchain is on
+`PATH` for every later step; each module is wrapped in a collapsible `::group::`
+and failures surface as `::error::` annotations. On a non-root runner `base.sh`
+brings up the `nix-daemon` so the root-owned store is reachable (see
+[Modules](#modules)). [`.github/workflows/env-example.yml`](./.github/workflows/env-example.yml)
+is a runnable example — `workflow_dispatch`-only, since the action exercises the
+live service rather than a branch's code, so gate per-commit on a local render
+instead (as [`setup.yml`](./.github/workflows/setup.yml) does).
+
 Either way, make sure the module hosts above are on your environment's
 allowlist — the script tells you precisely which are missing if not. This is
 the same allowlist discussed in the `skills` repo's
