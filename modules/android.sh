@@ -4,7 +4,10 @@
 #    software : full Android SDK via Nix androidenv — platform-tools (adb),
 #               cmdline-tools, the requested platforms + build-tools (and, when
 #               android-emulator is also requested, the emulator + system
-#               images). ANDROID_HOME / ANDROID_SDK_ROOT point at it.
+#               images). ANDROID_HOME / ANDROID_SDK_ROOT point at it, and
+#               (for a Gradle project rooted here) sdk.dir is pinned in
+#               local.properties so AGP finds the SDK even when the env vars
+#               don't reach the build.
 #    params   : android[36] selects the platform API level(s) to install
 #               (e.g. android[30,36,wear-33]); bare `android` installs the
 #               default (API 36).
@@ -56,6 +59,37 @@ cooee_sdk_is_complete() {  # cooee_sdk_is_complete <sdk dir>
   && [[ -d "$s/build-tools" ]] && compgen -G "$s/build-tools/*"    >/dev/null 2>&1
 }
 
+# Pin the SDK location in the project's local.properties. AGP resolves the SDK
+# from local.properties' sdk.dir first, and only then from the ANDROID_HOME /
+# ANDROID_SDK_ROOT env vars. Some harnesses launch `./gradlew` in a shell that
+# never sourced our persisted env, so those vars are absent and the build dies
+# with "SDK location not found"; an explicit sdk.dir makes the SDK findable no
+# matter how the build is started. local.properties is machine-specific (the
+# Nix store path is unique to this container) and conventionally gitignored, so
+# we (re)write it on every provision rather than commit it — preserving any
+# other entries already in the file.
+cooee_android_pin_sdk_dir() {  # cooee_android_pin_sdk_dir <sdk dir>
+  local sdk=$1 f=local.properties m found=0
+  # Only act for a Gradle project rooted here — the build that reads sdk.dir.
+  for m in settings.gradle settings.gradle.kts build.gradle build.gradle.kts gradlew; do
+    [[ -e "$m" ]] && { found=1; break; }
+  done
+  (( found )) || return 0
+
+  if [[ -f "$f" ]] && grep -q '^[[:space:]]*sdk\.dir[[:space:]]*=' "$f"; then
+    local cur
+    cur=$(sed -n 's/^[[:space:]]*sdk\.dir[[:space:]]*=[[:space:]]*\(.*\)$/\1/p' "$f" | head -1)
+    [[ "$cur" == "$sdk" ]] && { log "android: local.properties already pins sdk.dir=$sdk."; return 0; }
+    local tmp; tmp=$(mktemp)
+    # Rewrite the stale sdk.dir line in place; keep every other entry untouched.
+    sed "s|^[[:space:]]*sdk\.dir[[:space:]]*=.*|sdk.dir=$sdk|" "$f" > "$tmp" && mv "$tmp" "$f"
+    ok "android: updated sdk.dir in $PWD/local.properties -> $sdk."
+  else
+    printf 'sdk.dir=%s\n' "$sdk" >> "$f"
+    ok "android: wrote sdk.dir to $PWD/local.properties -> $sdk."
+  fi
+}
+
 module_android() {
   # Requested platform API levels come from the params (android[30,36,wear-33]);
   # default to COOEE_ANDROID_DEFAULT_PLATFORM (API 36) when none are given.
@@ -94,6 +128,7 @@ module_android() {
     if (( ${#missing[@]} == 0 )); then
       add_env ANDROID_HOME "$sdk"
       add_env ANDROID_SDK_ROOT "$sdk"
+      cooee_android_pin_sdk_dir "$sdk"
       (( ${#params[@]} )) && warn "requested Android platforms: ${params[*]} (already present in $sdk)."
       ok "android: adopted complete SDK at $sdk ($(adb --version 2>/dev/null | head -1 || echo adb))."
       return 0
@@ -151,6 +186,7 @@ module_android() {
   sdk="$out/libexec/android-sdk"
   add_env ANDROID_HOME "$sdk"
   add_env ANDROID_SDK_ROOT "$sdk"
+  cooee_android_pin_sdk_dir "$sdk"
 
   # Put the SDK's tools on PATH (and persist it) so adb / sdkmanager / emulator
   # resolve in this and every later shell.

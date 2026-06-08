@@ -15,15 +15,10 @@ each requested module and streaming the result.
 This repo is the standalone home of the service (extracted from
 [`yschimke/skills`](https://github.com/yschimke/skills)). The dynamic renderer
 is **live** at [`env.coo.ee`](https://env.coo.ee/java,android) (see
-[`api/`](./api)). The checked-in [`java,android`](./java,android) is the
-**pre-rendered** response for that request, kept as a runnable, offline-friendly
-demo:
+[`api/`](./api)), rendered on demand from the [`modules/`](./modules) fragments:
 
 ```bash
-# live service (canonical)
 curl -fsSL https://env.coo.ee/java,android | bash
-# or from a checkout, with no network call to the service
-./java,android
 ```
 
 ## What the script does
@@ -358,14 +353,12 @@ _header.sh  +  [set_params ...]  +  base.sh  +  <module>.sh ...  +  _footer.sh
 ```
 
 The [`modules/`](./modules) directory holds the source fragments — the single
-source of truth. [`api/env/render.js`](./api/env/render.js) is the renderer that
-both the live service and the checked-in artifact go through, so there is only
-one way to produce a script. To re-render the checked-in artifact after editing
-the fragments:
+source of truth. [`api/env/render.js`](./api/env/render.js) is the renderer the
+live service goes through, so there is only one way to produce a script. To
+render a module set locally and syntax-check it after editing the fragments:
 
 ```bash
-node -e 'process.stdout.write(require("./api/env/render").render("java,android").body)' > 'java,android'
-bash -n 'java,android'   # syntax check
+node -e 'process.stdout.write(require("./api/env/render").render("java,android").body)' | bash -n -
 ```
 
 `render()` canonicalizes the module list — it dedupes, forces `base` first, and
@@ -482,7 +475,6 @@ api/env/recommend/[modules].js Vercel handler wrapping recommend()
 api/modules.js                 JSON module catalog (name + software blurb) for the picker
 public/index.html              landing page: autocomplete picker -> the one-liner
 vercel.json                    routes /env/:modules, /recommend/:modules, /:modules
-java,android                   M1 pre-rendered sample (kept as a runnable demo)
 ```
 
 `render()` sorts + dedupes modules and always puts `base` first, so
@@ -541,8 +533,9 @@ CI runs two checks on each push/PR:
 
 ## Hosting roadmap
 
-- **M1 — hardcoded.** *(done)* The checked-in [`java,android`](./java,android)
-  is a pre-rendered artifact. Zero infrastructure; demonstrates the contract.
+- **M1 — hardcoded.** *(superseded by M2)* Began as a single checked-in
+  pre-rendered `java,android` artifact — zero infrastructure, demonstrating the
+  contract — now removed in favour of the renderer below.
 - **M2 — dynamic renderer.** *(built, see [`api/`](./api))* A Vercel Node
   function parses `/env/:modules`, canonicalizes the list, concatenates the
   `modules/` fragments, and streams `text/x-shellscript`.
