@@ -54,6 +54,17 @@
     display: inline-flex; align-items: center; justify-content: center; padding: 0;
   }
   .chip .x:hover { background: rgba(255,255,255,0.45); }
+  .chip .param {
+    border: none; background: rgba(255,255,255,0.22); color: #fff;
+    border-radius: 5px; padding: 1px 5px; margin: 0 1px; font: inherit; font-size: 13px;
+    outline: none;
+  }
+  .chip .param::placeholder { color: rgba(255,255,255,0.7); }
+  .chip .bracket { opacity: 0.85; }
+  .opt .tag {
+    margin-left: auto; color: var(--accent); font-size: 11px; font-weight: 600;
+    background: #eaf0fe; border-radius: 999px; padding: 1px 8px; white-space: nowrap;
+  }
 
   .combo { position: relative; }
   #search {
@@ -127,7 +138,7 @@
     </div>
     <div class="actions">
       <a id="view" href="#" target="_blank" rel="noopener">View script&nbsp;&#8599;</a>
-      <span class="hint">Order doesn’t matter — the server canonicalizes it. <code style="font-family:ui-monospace,monospace">base</code> (Nix) is always included.</span>
+      <span class="hint">Order doesn’t matter — the server canonicalizes it. <code style="font-family:ui-monospace,monospace">base</code> (Nix) is always included. Some modules take params in <code style="font-family:ui-monospace,monospace">[brackets]</code> — e.g. <code style="font-family:ui-monospace,monospace">java[17,21]</code>.</span>
     </div>
   </section>
 
@@ -147,48 +158,98 @@
   var copyBtn = document.getElementById("copy");
   var viewLink = document.getElementById("view");
 
-  var catalog = [];      // selectable modules: [{name, software}]
+  var catalog = [];      // selectable modules: [{name, software, params, implies, example}]
   var implicit = [];     // always-included module names (e.g. "base")
-  var selected = [];     // chosen module names, in insertion order
+  var selected = [];     // chosen modules: [{name, params: [...]}], insertion order
   var active = -1;       // highlighted index in the current match list
   var matches = [];      // current filtered matches
+
+  function info(name) {
+    for (var i = 0; i < catalog.length; i++) if (catalog[i].name === name) return catalog[i];
+    return null;
+  }
+  function isSelected(name) {
+    return selected.some(function (e) { return e.name === name; });
+  }
+  // Pull the bracket example out of a `# params :` description, e.g.
+  // "java[17,21] picks the JDK majors" -> "17,21" (used as the input placeholder).
+  function exampleFor(m) {
+    var mm = (m.params || "").match(/\[([^\]]*)\]/);
+    return mm ? mm[1] : "";
+  }
+  // Split on top-level commas, leaving commas inside [...] intact (for the hash).
+  function splitTopLevel(s) {
+    var out = [], buf = "", depth = 0;
+    for (var i = 0; i < s.length; i++) {
+      var ch = s[i];
+      if (ch === "[") { depth++; buf += ch; }
+      else if (ch === "]") { depth = Math.max(0, depth - 1); buf += ch; }
+      else if (ch === "," && depth === 0) { out.push(buf); buf = ""; }
+      else buf += ch;
+    }
+    out.push(buf);
+    return out;
+  }
 
   // ---- data load -----------------------------------------------------------
   fetch("/api/modules")
     .then(function (r) { return r.json(); })
     .then(function (data) {
       (data.modules || []).forEach(function (m) {
-        if (m.implicit) implicit.push(m.name);
-        else catalog.push(m);
+        if (m.implicit) { implicit.push(m.name); return; }
+        m.example = exampleFor(m);
+        catalog.push(m);
       });
       initFromHash();
-      render();
+      renderAll();
     })
     .catch(function () {
       menu.innerHTML = '<div class="opt empty">Couldn’t load the module list.</div>';
     });
 
   // ---- selection helpers ----------------------------------------------------
-  function add(name) {
-    if (selected.indexOf(name) === -1 && catalog.some(function (m) { return m.name === name; })) {
-      selected.push(name);
-    }
+  function add(name, params) {
+    if (!isSelected(name) && info(name)) selected.push({ name: name, params: params || [] });
     search.value = "";
-    render();
+    renderAll();
     search.focus();
   }
   function remove(name) {
-    selected = selected.filter(function (n) { return n !== name; });
-    render();
+    selected = selected.filter(function (e) { return e.name !== name; });
+    renderAll();
+  }
+  // Modules pulled in transitively by `# coo.ee:implies`, minus any the user
+  // picked explicitly. -> [{name, by}] for display as auto chips.
+  function impliedChips() {
+    var explicit = {}; selected.forEach(function (e) { explicit[e.name] = true; });
+    var out = [], seen = {}, queue = [];
+    selected.forEach(function (e) { queue.push(e.name); });
+    while (queue.length) {
+      var m = info(queue.shift());
+      if (!m) continue;
+      (m.implies || []).forEach(function (dep) {
+        if (dep === "base" || explicit[dep] || seen[dep]) return;
+        seen[dep] = true;
+        out.push({ name: dep, by: m.name });
+        queue.push(dep);
+      });
+    }
+    return out;
+  }
+  function entrySeg(e) {
+    var p = (e.params || []).filter(Boolean);
+    return p.length ? e.name + "[" + p.join(",") + "]" : e.name;
   }
   function segment() {
-    return selected.length ? selected.join(",") : implicit.join(",") || "base";
+    return selected.length ? selected.map(entrySeg).join(",") : (implicit.join(",") || "base");
   }
 
   // ---- rendering ------------------------------------------------------------
-  function render() {
-    // chips: implicit (fixed) first, then selected (removable)
+  function renderAll() { renderChips(); renderCommand(); renderMenu(); }
+
+  function renderChips() {
     chipsEl.innerHTML = "";
+    // implicit (base) — always included, fixed
     implicit.forEach(function (name) {
       var c = document.createElement("span");
       c.className = "chip implicit";
@@ -196,31 +257,65 @@
       c.textContent = name;
       chipsEl.appendChild(c);
     });
-    selected.forEach(function (name) {
+    // selected — removable, with an inline param input when the module takes one
+    selected.forEach(function (e) {
+      var m = info(e.name) || {};
       var c = document.createElement("span");
       c.className = "chip";
-      c.appendChild(document.createTextNode(name));
+      c.appendChild(document.createTextNode(e.name));
+      if (m.params) {
+        c.appendChild(spanText("[", "bracket"));
+        var inp = document.createElement("input");
+        inp.className = "param"; inp.type = "text";
+        inp.value = (e.params || []).join(",");
+        inp.placeholder = m.example || "params";
+        inp.setAttribute("aria-label", e.name + " parameters");
+        inp.size = Math.max((inp.value || inp.placeholder).length, 6);
+        inp.addEventListener("input", function () {
+          e.params = inp.value.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
+          inp.size = Math.max(inp.value.length, 6);
+          renderCommand(); // update the one-liner without rebuilding chips (keep focus)
+        });
+        // don't let typing a space etc. bubble to the page picker shortcuts
+        inp.addEventListener("keydown", function (ev) { ev.stopPropagation(); });
+        c.appendChild(inp);
+        c.appendChild(spanText("]", "bracket"));
+      }
       var x = document.createElement("button");
-      x.className = "x"; x.type = "button"; x.setAttribute("aria-label", "Remove " + name);
+      x.className = "x"; x.type = "button"; x.setAttribute("aria-label", "Remove " + e.name);
       x.textContent = "×";
-      x.onclick = function () { remove(name); };
+      x.onclick = function () { remove(e.name); };
       c.appendChild(x);
       chipsEl.appendChild(c);
     });
+    // implied — added automatically, shown so the user sees what they'll get
+    impliedChips().forEach(function (im) {
+      var c = document.createElement("span");
+      c.className = "chip implicit";
+      c.title = "Pulled in automatically by " + im.by;
+      c.textContent = "↳ " + im.name;
+      chipsEl.appendChild(c);
+    });
+  }
 
-    // command + links
+  function spanText(t, cls) {
+    var s = document.createElement("span");
+    if (cls) s.className = cls;
+    s.textContent = t;
+    return s;
+  }
+
+  function renderCommand() {
     var seg = segment();
     cmdText.textContent = "curl -fsSL " + ORIGIN + "/" + seg + " | bash";
     viewLink.href = ORIGIN + "/" + seg;
-
-    renderMenu();
     syncHash();
   }
 
   function renderMenu() {
     var q = search.value.trim().toLowerCase();
     matches = catalog.filter(function (m) {
-      if (selected.indexOf(m.name) !== -1) return false;
+      if (isSelected(m.name)) return false;
       if (!q) return true;
       return m.name.indexOf(q) !== -1 || (m.software || "").toLowerCase().indexOf(q) !== -1;
     });
@@ -246,6 +341,9 @@
       var n = document.createElement("span"); n.className = "name"; n.textContent = m.name;
       var d = document.createElement("span"); d.className = "desc"; d.textContent = m.software || "";
       o.appendChild(n); o.appendChild(d);
+      // Hint when a module takes params or pulls others in.
+      var tag = m.params ? "[params]" : (m.implies && m.implies.length ? "+ " + m.implies.join(",") : "");
+      if (tag) { var t = document.createElement("span"); t.className = "tag"; t.textContent = tag; o.appendChild(t); }
       o.onmousedown = function (e) { e.preventDefault(); add(m.name); };
       menu.appendChild(o);
     });
@@ -297,21 +395,25 @@
     }
   });
 
-  // ---- shareable URL (#java,android) ---------------------------------------
+  // ---- shareable URL (#java[17,21],android) --------------------------------
   function initFromHash() {
     var raw = decodeURIComponent((location.hash || "").replace(/^#/, ""));
-    raw.split(",").map(function (s) { return s.trim().toLowerCase(); })
-      .filter(Boolean)
-      .forEach(function (name) {
-        if (name !== "base" && selected.indexOf(name) === -1 &&
-            catalog.some(function (m) { return m.name === name; })) {
-          selected.push(name);
-        }
-      });
+    splitTopLevel(raw).forEach(function (tok) {
+      tok = tok.trim();
+      if (!tok) return;
+      var mm = tok.match(/^([^[\]]+?)(?:\[([^\]]*)\])?$/);
+      if (!mm) return;
+      var name = mm[1].trim().toLowerCase();
+      if (name === "base" || isSelected(name) || !info(name)) return;
+      var params = mm[2] !== undefined
+        ? mm[2].split(",").map(function (s) { return s.trim(); }).filter(Boolean)
+        : [];
+      selected.push({ name: name, params: params });
+    });
   }
   var hashWrite = "";
   function syncHash() {
-    var h = selected.join(",");
+    var h = selected.map(entrySeg).join(",");
     if (h === hashWrite) return;
     hashWrite = h;
     history.replaceState(null, "", h ? "#" + h : location.pathname);

@@ -12,12 +12,16 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
+      - name: unit tests (renderer, params, implications)
+        run: node --test
       - name: render every module set and syntax-check the output
         run: |
           # Array form so bracketed sets can be quoted (the shell mustn't glob `[...]`).
-          sets=(base java android node python go rust skills tools \
+          sets=(base java android android-emulator node python go rust skills tools \
                 java,android node,python,go,rust \
                 java,android,node,python,go,rust \
+                "java[17,21]" "java[17,21],android[30,37,wear-33]" \
+                "android-emulator[34],java" \
                 "skills[yschimke/skills]" \
                 "skills[yschimke/skills,obra/superpowers],java,android" \
                 "tools[ripgrep,jq,gh]" \
