@@ -108,6 +108,41 @@
   .actions a:hover { text-decoration: underline; }
   .actions .hint { color: var(--muted); }
 
+  .hosts { margin-top: 28px; }
+  .hosts.empty { display: none; }
+  .hosts-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .hosts-head .label { margin-bottom: 0; }
+  .hosts-intro { margin: 8px 0 14px; color: var(--muted); font-size: 13px; }
+  #copy-hosts, #copy-hosts-all {
+    background: var(--card); color: var(--ink); border: 1px solid var(--border);
+    border-radius: 8px; padding: 6px 12px; font-size: 13px; cursor: pointer;
+  }
+  #copy-hosts:hover, #copy-hosts-all:hover { border-color: var(--accent); color: var(--accent); }
+  #copy-hosts.ok, #copy-hosts-all.ok { color: #15803d; border-color: #15803d; }
+  .host-list { list-style: none; margin: 0; padding: 0; }
+  .host-list li {
+    display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+    padding: 7px 0; border-bottom: 1px solid var(--border);
+  }
+  .host-list li:last-child { border-bottom: none; }
+  .host-list .host {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 13px; font-weight: 600; color: var(--ink);
+  }
+  .host-list .reason { color: var(--muted); font-size: 13px; }
+  .host-list .by {
+    margin-left: auto; color: var(--muted); font-size: 11px; white-space: nowrap;
+  }
+  #host-want-wrap { margin-top: 18px; }
+  #host-want-wrap summary {
+    display: flex; align-items: center; gap: 8px; cursor: pointer;
+    font-size: 13px; color: var(--muted); list-style-position: inside;
+  }
+  #host-want-wrap .want-title { font-weight: 600; color: var(--ink); }
+  #host-want-wrap .want-sub { flex: 1; }
+  #host-want-wrap[hidden] { display: none; }
+  #host-want-wrap ul { margin-top: 10px; }
+
   footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px solid var(--border); padding-top: 20px; }
   footer a { color: var(--accent); text-decoration: none; }
   footer a:hover { text-decoration: underline; }
@@ -148,6 +183,28 @@
     </div>
   </section>
 
+  <section class="hosts empty" id="hosts">
+    <div class="hosts-head">
+      <div class="label">Required hosts</div>
+      <button id="copy-hosts" type="button">Copy hosts</button>
+    </div>
+    <p class="hosts-intro">
+      Add these to your cloud environment's allowlist (Claude Code → Network
+      access → Custom → Allowed domains; Codex → Internet access → domain
+      allowlist; or your sandbox / runner network policy). The script probes
+      them on install and tells you precisely which are missing.
+    </p>
+    <ul class="host-list" id="host-need"></ul>
+    <details id="host-want-wrap">
+      <summary>
+        <span class="want-title">Recommended for builds</span>
+        <span class="want-sub">— allow these too if you'll build the project</span>
+        <button id="copy-hosts-all" type="button">Copy all</button>
+      </summary>
+      <ul class="host-list" id="host-want"></ul>
+    </details>
+  </section>
+
   <footer>
     Run it in a cloud setup script, a <code style="font-family:ui-monospace,monospace">SessionStart</code> hook, or GitHub Actions.
     See the <a href="https://github.com/yschimke/coo-ee-env">project README</a> for what each module installs and how rendering works.
@@ -168,9 +225,16 @@
   var cmdText = document.getElementById("cmd-text");
   var copyBtn = document.getElementById("copy");
   var viewLink = document.getElementById("view");
+  var hostsEl = document.getElementById("hosts");
+  var hostNeedEl = document.getElementById("host-need");
+  var hostWantEl = document.getElementById("host-want");
+  var hostWantWrap = document.getElementById("host-want-wrap");
+  var copyHostsBtn = document.getElementById("copy-hosts");
+  var copyHostsAllBtn = document.getElementById("copy-hosts-all");
 
-  var catalog = [];      // selectable modules: [{name, software, params, implies, example}]
+  var catalog = [];      // selectable modules: [{name, software, params, implies, hosts, example}]
   var implicit = [];     // always-included module names (e.g. "base")
+  var byName = {};       // every module by name, incl. implicit (for host lookup)
   var selected = [];     // chosen modules: [{name, params: [...]}], insertion order
   var active = -1;       // highlighted index in the current match list
   var matches = [];      // current filtered matches
@@ -207,6 +271,7 @@
     .then(function (r) { return r.json(); })
     .then(function (data) {
       (data.modules || []).forEach(function (m) {
+        byName[m.name] = m;
         if (m.implicit) { implicit.push(m.name); return; }
         m.example = exampleFor(m);
         catalog.push(m);
@@ -256,7 +321,7 @@
   }
 
   // ---- rendering ------------------------------------------------------------
-  function renderAll() { renderChips(); renderCommand(); renderMenu(); }
+  function renderAll() { renderChips(); renderCommand(); renderHosts(); renderMenu(); }
 
   function renderChips() {
     chipsEl.innerHTML = "";
@@ -321,6 +386,68 @@
     cmdText.textContent = "curl -fsSL " + ORIGIN + "/" + seg + " | bash";
     viewLink.href = ORIGIN + "/" + seg;
     syncHash();
+  }
+
+  // Every module that ends up in the rendered script: the implicit base, the
+  // user's explicit picks, and anything pulled in transitively. These are the
+  // modules whose host declarations the install will probe.
+  function activeModuleNames() {
+    var names = implicit.slice();
+    selected.forEach(function (e) { names.push(e.name); });
+    impliedChips().forEach(function (im) { names.push(im.name); });
+    return names;
+  }
+
+  // Collect the need/want hosts across all active modules, deduped by host and
+  // keyed to the module(s) that asked for them. A host needed by any module is
+  // required, so `need` wins over `want` for the same host.
+  function gatherHosts() {
+    var need = {}, want = {};
+    function add(bucket, mod, h) {
+      var e = bucket[h.host] || (bucket[h.host] = { host: h.host, reason: h.reason, mods: [] });
+      if (e.mods.indexOf(mod) === -1) e.mods.push(mod);
+    }
+    activeModuleNames().forEach(function (name) {
+      var m = byName[name];
+      if (!m || !m.hosts) return;
+      (m.hosts.need || []).forEach(function (h) { add(need, name, h); });
+      (m.hosts.want || []).forEach(function (h) { add(want, name, h); });
+    });
+    // A host that's required somewhere shouldn't also appear as merely recommended.
+    Object.keys(need).forEach(function (h) { delete want[h]; });
+    var toSorted = function (map) {
+      return Object.keys(map).sort().map(function (h) { return map[h]; });
+    };
+    return { need: toSorted(need), want: toSorted(want) };
+  }
+
+  function renderHostList(ul, list) {
+    ul.innerHTML = "";
+    list.forEach(function (h) {
+      var li = document.createElement("li");
+      li.appendChild(spanText(h.host, "host"));
+      if (h.reason) li.appendChild(spanText(h.reason, "reason"));
+      li.appendChild(spanText(h.mods.join(", "), "by"));
+      ul.appendChild(li);
+    });
+  }
+
+  var lastHosts = { need: [], want: [] };
+  function renderHosts() {
+    lastHosts = gatherHosts();
+    // Nothing selected and base has no hosts? Hide the panel entirely.
+    if (!lastHosts.need.length && !lastHosts.want.length) {
+      hostsEl.classList.add("empty");
+      return;
+    }
+    hostsEl.classList.remove("empty");
+    renderHostList(hostNeedEl, lastHosts.need);
+    renderHostList(hostWantEl, lastHosts.want);
+    hostWantWrap.hidden = !lastHosts.want.length;
+  }
+
+  function hostNames(list) {
+    return list.map(function (h) { return h.host; }).join("\n");
   }
 
   function renderMenu() {
@@ -389,21 +516,35 @@
     }
   });
 
-  copyBtn.addEventListener("click", function () {
-    var text = cmdText.textContent;
+  // Copy `text` to the clipboard, flashing the button label while it sticks.
+  function copyToClipboard(text, btn, label) {
+    var original = label || btn.textContent;
     var done = function () {
-      copyBtn.textContent = "Copied!"; copyBtn.classList.add("ok");
-      setTimeout(function () { copyBtn.textContent = "Copy"; copyBtn.classList.remove("ok"); }, 1500);
+      btn.textContent = "Copied!"; btn.classList.add("ok");
+      setTimeout(function () { btn.textContent = original; btn.classList.remove("ok"); }, 1500);
     };
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(done, fallbackCopy);
-    } else { fallbackCopy(); }
     function fallbackCopy() {
       var ta = document.createElement("textarea");
       ta.value = text; document.body.appendChild(ta); ta.select();
       try { document.execCommand("copy"); done(); } catch (_) {}
       document.body.removeChild(ta);
     }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fallbackCopy);
+    } else { fallbackCopy(); }
+  }
+
+  copyBtn.addEventListener("click", function () {
+    copyToClipboard(cmdText.textContent, copyBtn, "Copy");
+  });
+  copyHostsBtn.addEventListener("click", function () {
+    copyToClipboard(hostNames(lastHosts.need), copyHostsBtn, "Copy hosts");
+  });
+  copyHostsAllBtn.addEventListener("click", function (e) {
+    // Inside the <summary>; don't toggle the <details> open/closed when copying.
+    e.preventDefault(); e.stopPropagation();
+    var all = lastHosts.need.concat(lastHosts.want);
+    copyToClipboard(hostNames(all), copyHostsAllBtn, "Copy all");
   });
 
   // ---- shareable URL (#java[17,21],android) --------------------------------

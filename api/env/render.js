@@ -38,18 +38,47 @@ function readFragment(name) {
   return fs.readFileSync(path.join(MODULES_DIR, `${name}.sh`), "utf8");
 }
 
-// moduleInfo() -> [{ name, software, params, implies, implicit }], parsed from
-// each fragment's header comments (`# software : <desc>`, `# params : <desc>`)
-// and its `# coo.ee:implies` directive. The fragments stay the single source of
-// truth: the autocomplete UI reads this rather than keeping its own copy of the
-// module list, what each takes in brackets, or what it pulls in. `base` is
+// A fragment declares the hosts it touches with two directives, defined in
+// _header (need_host / want_host) but also the single source of truth for what
+// the UI advertises:
+//   need_host <host>          "<reason>"   — required to INSTALL (hard-fail if blocked)
+//   want_host <host|*.host>   "<reason>"   — recommended for BUILDS (advisory)
+// The host may be bare or double-quoted (wildcards like "*.jetbrains.com" are
+// quoted in shell); the reason is always double-quoted. Parsing the actual
+// calls — rather than the `# hosts :` header comment — keeps the catalog in
+// lockstep with what the rendered script will probe and print.
+const HOST_RE = /^(need|want)_host[ \t]+(?:"([^"]+)"|(\S+))[ \t]+"([^"]*)"/gm;
+
+function moduleHosts(name) {
+  const need = [];
+  const want = [];
+  for (const m of readFragment(name).matchAll(HOST_RE)) {
+    const entry = { host: m[2] || m[3], reason: m[4] };
+    (m[1] === "need" ? need : want).push(entry);
+  }
+  return { need, want };
+}
+
+// moduleInfo() -> [{ name, software, params, implies, implicit, hosts }], parsed
+// from each fragment's header comments (`# software : <desc>`, `# params : <desc>`),
+// its `# coo.ee:implies` directive, and its need_host/want_host declarations.
+// The fragments stay the single source of truth: the autocomplete UI reads this
+// rather than keeping its own copy of the module list, what each takes in
+// brackets, what it pulls in, or which hosts it needs allowlisted. `base` is
 // flagged implicit (always prepended, so the UI shows it as fixed).
 function moduleInfo() {
   return allowedModules().map((name) => {
     const src = readFragment(name);
     const software = (src.match(/^#\s*software\s*:\s*(.+?)\s*$/m) || [])[1] || "";
     const params = (src.match(/^#\s*params\s*:\s*(.+?)\s*$/m) || [])[1] || "";
-    return { name, software, params, implies: moduleImplies(name), implicit: name === "base" };
+    return {
+      name,
+      software,
+      params,
+      implies: moduleImplies(name),
+      implicit: name === "base",
+      hosts: moduleHosts(name),
+    };
   });
 }
 
