@@ -50,8 +50,21 @@ jobs:
 
           echo "OK: android,java environment is usable from a fresh shell"
 
-      - name: Verify idempotency (second run is a no-op)
+      - name: Verify idempotency — second run short-circuits
         run: |
           set -euo pipefail
-          bash /tmp/android-java.sh
-          echo "OK: re-running the installer succeeded"
+          # On a provisioned box the script must take the fast path and skip the
+          # install entirely, not re-run it.
+          out=$(bash /tmp/android-java.sh 2>&1) || { echo "$out"; exit 1; }
+          echo "$out"
+          echo "$out" | grep -qi "already provisioned" \
+            || { echo "FAIL: second run did not short-circuit"; exit 1; }
+          echo "OK: re-run short-circuited as already provisioned"
+
+      - name: Verify COOEE_FORCE re-provisions (bypasses short-circuit)
+        run: |
+          set -euo pipefail
+          out=$(COOEE_FORCE=1 bash /tmp/android-java.sh 2>&1) || { echo "$out"; exit 1; }
+          echo "$out" | grep -qi "already provisioned" \
+            && { echo "FAIL: COOEE_FORCE still short-circuited"; exit 1; }
+          echo "OK: COOEE_FORCE forced a re-provision"

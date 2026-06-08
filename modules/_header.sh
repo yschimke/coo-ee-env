@@ -29,16 +29,44 @@ die()  { printf '%s[coo.ee] XX%s %s\n' "$_c_red" "$_c_rst" "$*" >&2; exit 1; }
 # Everything we export is also written to a profile file so a *new* shell can
 # pick it up, and forwarded to the host harness env files when present
 # (Claude Code SessionStart: $CLAUDE_ENV_FILE, GitHub Actions: $GITHUB_ENV).
+#
+# Two files are kept: COOEE_PROFILE is `export KEY=value` (source-able in a
+# shell), COOEE_HARNESS_ENV is raw `KEY=value` (the format harness env files
+# want). They are truncated lazily — only when we actually (re)provision — so
+# the already-provisioned short-circuit can replay the PREVIOUS run's values.
 COOEE_PROFILE="${COOEE_PROFILE:-$HOME/.config/coo-ee/env.sh}"
+COOEE_HARNESS_ENV="${COOEE_HARNESS_ENV:-$HOME/.config/coo-ee/env.harness}"
 mkdir -p "$(dirname "$COOEE_PROFILE")"
-: > "$COOEE_PROFILE"
+
+cooee_init_profile() { : > "$COOEE_PROFILE"; : > "$COOEE_HARNESS_ENV"; }
+
+# Append a raw KEY=value line to whichever harness env files this run has.
+cooee_forward_to_harness() {  # cooee_forward_to_harness KEY=value
+  local kv=$1
+  [[ -n "${CLAUDE_ENV_FILE:-}" ]] && printf '%s\n' "$kv" >> "$CLAUDE_ENV_FILE" || true
+  [[ -n "${GITHUB_ENV:-}"     ]] && printf '%s\n' "$kv" >> "$GITHUB_ENV"     || true
+  return 0
+}
 
 add_env() {  # add_env KEY VALUE — export now and persist for later shells
   local key=$1 val=$2
   export "${key}=${val}"
   printf 'export %s=%q\n' "$key" "$val" >> "$COOEE_PROFILE"
-  [[ -n "${CLAUDE_ENV_FILE:-}" ]] && printf '%s=%s\n' "$key" "$val" >> "$CLAUDE_ENV_FILE" || true
-  [[ -n "${GITHUB_ENV:-}"     ]] && printf '%s=%s\n' "$key" "$val" >> "$GITHUB_ENV"     || true
+  printf '%s=%s\n'        "$key" "$val" >> "$COOEE_HARNESS_ENV"
+  cooee_forward_to_harness "${key}=${val}"
+}
+
+# Short-circuit replay: re-export the last run's env into THIS session without
+# reinstalling anything.
+cooee_forward_persisted_env() {
+  # shellcheck disable=SC1090
+  [[ -f "$COOEE_PROFILE" ]] && . "$COOEE_PROFILE" || true
+  if [[ -f "$COOEE_HARNESS_ENV" ]]; then
+    local line
+    while IFS= read -r line; do
+      [[ -n "$line" ]] && cooee_forward_to_harness "$line"
+    done < "$COOEE_HARNESS_ENV"
+  fi
 }
 
 # ---- idempotent nix package install ---------------------------------------
@@ -119,6 +147,41 @@ declare -A _WANT_REASON=()   # recommended for BUILDS — advisory only (may be 
 register_module() { MODULES+=("$1"); }
 need_host()       { _HOST_REASON["$1"]="$2"; }   # need_host <host> <reason>
 want_host()       { _WANT_REASON["$1"]="$2"; }   # want_host <host|*.host> <reason>
+
+# ---- provisioning state + cloud built-in awareness ------------------------
+# Each module declares the command that proves its tool is ALREADY present (on
+# a warm box, or shipped by the cloud provider's base image), and — when a
+# provider exposes a first-class version selector — which env var to point the
+# user at so they prefer the built-in over a redundant Nix install.
+declare -A _PROVIDES_CMD=()     # module -> command that resolves when present
+declare -A _BUILTIN_ENVVAR=()   # module -> provider env var that selects it
+provides_tool() {               # provides_tool <module> <command> [provider_env_var]
+  _PROVIDES_CMD["$1"]="$2"
+  [[ -n "${3:-}" ]] && _BUILTIN_ENVVAR["$1"]="$3"
+  return 0
+}
+module_present() {              # module_present <module> -> 0 if its tool is on PATH
+  local cmd=${_PROVIDES_CMD["$1"]:-}
+  [[ -n "$cmd" ]] && command -v "$cmd" >/dev/null 2>&1
+}
+
+# Stamp of the last successfully provisioned module set, used to short-circuit.
+COOEE_STAMP="${COOEE_STAMP:-$HOME/.config/coo-ee/provisioned}"
+
+# Detect the hosting agent so we can prefer its built-in toolchains. Codex ships
+# a base image whose languages are version-selected via CODEX_ENV_*_VERSION;
+# Claude Code / Gemini expose themselves through their own env markers.
+COOEE_PROVIDER=unknown
+COOEE_PROVIDER_LABEL="this environment"
+cooee_detect_provider() {
+  if compgen -v 2>/dev/null | grep -q '^CODEX_'; then
+    COOEE_PROVIDER=codex;  COOEE_PROVIDER_LABEL="the Codex base image"
+  elif [[ -n "${CLAUDECODE:-}" || -n "${CLAUDE_CODE_ENTRYPOINT:-}" || -n "${CLAUDE_ENV_FILE:-}" ]]; then
+    COOEE_PROVIDER=claude; COOEE_PROVIDER_LABEL="the Claude Code environment"
+  elif [[ -n "${GEMINI_CLI:-}" || -n "${GOOGLE_CLOUD_AGENT:-}" || -n "${ANTIGRAVITY:-}" ]]; then
+    COOEE_PROVIDER=gemini; COOEE_PROVIDER_LABEL="the Gemini / Antigravity sandbox"
+  fi
+}
 
 # ---- preconditions: tools, OS, and host reachability ----------------------
 probe_host() {
