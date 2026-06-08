@@ -70,7 +70,7 @@ treats an already-present package as success — so a partial/cold box is
 | `base`    | Nix (Determinate, daemonless)             | `install.determinate.systems`, `cache.nixos.org`, `channels.nixos.org`, `github.com`, `objects.githubusercontent.com` | — |
 | `java`    | Temurin JDK (default 17 + 21; `java[17,21]` to choose), `JAVA_HOME` | `cache.nixos.org` | base-image JDK |
 | `android` | Full SDK via `androidenv`: `platform-tools` (adb), `cmdline-tools`, the requested platform(s) + `build-tools`, `ANDROID_HOME`; `android[30,36,wear-33]` picks the platform API levels | `cache.nixos.org`, `dl.google.com`, `maven.google.com` | — |
-| `android-emulator` | Adds `emulator` + `system-images` to the SDK (via the implied `android` build) and configures `/dev/kvm` access (GitHub `99-kvm4all.rules`); `android-emulator[34,wear-33]` picks the image levels; **implies `android`** | `cache.nixos.org`, `dl.google.com` | — |
+| `android-emulator` | Adds `emulator` + `system-images` to the SDK (via the implied `android` build) and configures `/dev/kvm` access (GitHub `99-kvm4all.rules`); `android-emulator[36,wear-33]` picks the image levels; **implies `android`** | `cache.nixos.org`, `dl.google.com` | — |
 | `node`    | Node.js 22 LTS, npm                       | `cache.nixos.org`, `registry.npmjs.org` | Codex: `CODEX_ENV_NODE_VERSION` |
 | `playwright` | [Playwright agent CLI](https://playwright.dev/agent-cli/introduction) (`@playwright/cli`, the `playwright-cli` binary) via npm + the Playwright browsers from Nix; `playwright[0.1.13]` pins the CLI version; **implies `node`** | `cache.nixos.org`, `registry.npmjs.org` (`cdn.playwright.dev` only with `COOEE_PLAYWRIGHT_DOWNLOAD_BROWSERS=1`) | — |
 | `python`  | CPython 3 + pip                           | `cache.nixos.org`, `pypi.org`, `files.pythonhosted.org` | Codex: `CODEX_ENV_PYTHON_VERSION` |
@@ -116,7 +116,7 @@ curl -fsSL 'https://env.coo.ee/java[17,21],android[30,36,wear-33]' | bash
 `java[17,21]` installs each Temurin major (`nixpkgs#temurin-bin-<major>`, lowest
 owning the `java`/`javac` symlinks); bare `java` keeps the default 17 + 21.
 `android[30,36,wear-33]` installs those platform API levels (with their
-`build-tools`), and `android-emulator[34,wear-33]` installs the matching
+`build-tools`), and `android-emulator[36,wear-33]` installs the matching
 `emulator` system images — both built into the SDK by `androidenv` (see
 [Android: what `android` installs](#android-what-android-installs)). `ruby[3]`
 selects the major series (the nixpkgs default Ruby 3) and `ruby[3.4.9]` pins a

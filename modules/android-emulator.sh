@@ -5,7 +5,7 @@
 #               module installs the emulator and system images into the SDK
 #               (it reads this module's params); here we make KVM usable and
 #               record/verify the request.
-#    params   : android-emulator[34,wear-33] selects the system-image API levels
+#    params   : android-emulator[36,wear-33] selects the system-image API levels
 #               (also recorded in COOEE_ANDROID_EMULATOR_IMAGES)
 #    hosts    : cache.nixos.org (install)
 #             : dl.google.com (emulator binaries + system images)
@@ -61,7 +61,7 @@ cooee_configure_kvm() {
 }
 
 module_android-emulator() {
-  # (android-emulator[34,wear-33]); default to API 36 when none are given. The
+  # (android-emulator[36,wear-33]); default to API 36 when none are given. The
   # implied `android` module reads these same params and builds the emulator +
   # matching system images into the SDK, so by the time we run here the emulator
   # is already installed. Record them for reference / the androidenv flake.
