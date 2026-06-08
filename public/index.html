@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>coo.ee/env — build your dev-environment one-liner</title>
+<meta name="description" content="A gitignore.io-style picker for dev environments: choose modules, copy a single bash command that provisions them." />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ctext y='14' font-size='14'%3E%E2%9A%99%EF%B8%8F%3C/text%3E%3C/svg%3E" />
+<style>
+  :root {
+    --bg: #f7f8fa;
+    --card: #ffffff;
+    --ink: #1a1d21;
+    --muted: #6b7280;
+    --border: #e3e6ea;
+    --accent: #2563eb;
+    --accent-ink: #ffffff;
+    --term-bg: #0f1115;
+    --term-ink: #e6edf3;
+    --term-prompt: #7ee787;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 48px 20px 80px; }
+  header h1 { margin: 0; font-size: 28px; letter-spacing: -0.01em; }
+  header h1 .slash { color: var(--muted); font-weight: 400; }
+  header p { margin: 8px 0 0; color: var(--muted); }
+  header code {
+    background: #eef0f3; padding: 1px 6px; border-radius: 5px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.85em;
+  }
+
+  .picker { margin-top: 28px; }
+  .chips {
+    display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; min-height: 4px;
+  }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--accent); color: var(--accent-ink);
+    border-radius: 999px; padding: 5px 6px 5px 12px; font-size: 14px; font-weight: 500;
+  }
+  .chip.implicit {
+    background: #eef0f3; color: var(--muted); padding: 5px 12px; font-weight: 500;
+  }
+  .chip .x {
+    cursor: pointer; border: none; background: rgba(255,255,255,0.25); color: #fff;
+    width: 18px; height: 18px; border-radius: 999px; line-height: 1; font-size: 13px;
+    display: inline-flex; align-items: center; justify-content: center; padding: 0;
+  }
+  .chip .x:hover { background: rgba(255,255,255,0.45); }
+
+  .combo { position: relative; }
+  #search {
+    width: 100%; padding: 14px 16px; font-size: 16px;
+    border: 1px solid var(--border); border-radius: 12px; background: var(--card);
+    outline: none; transition: border-color .15s, box-shadow .15s;
+  }
+  #search:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.12); }
+  .menu {
+    position: absolute; z-index: 10; left: 0; right: 0; top: calc(100% + 6px);
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+    box-shadow: 0 12px 32px rgba(0,0,0,0.12); overflow: hidden; max-height: 320px; overflow-y: auto;
+    display: none;
+  }
+  .menu.open { display: block; }
+  .opt { display: flex; align-items: baseline; gap: 10px; padding: 10px 16px; cursor: pointer; }
+  .opt[aria-selected="true"], .opt:hover { background: #f1f5fd; }
+  .opt .name { font-weight: 600; }
+  .opt .desc { color: var(--muted); font-size: 13px; }
+  .opt.empty { color: var(--muted); cursor: default; }
+  .opt.empty:hover { background: transparent; }
+
+  .out { margin-top: 28px; }
+  .out .label { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 8px; }
+  .cmd {
+    position: relative; background: var(--term-bg); color: var(--term-ink);
+    border-radius: 12px; padding: 18px 16px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 14px; line-height: 1.5; overflow-x: auto;
+  }
+  .cmd .prompt { color: var(--term-prompt); user-select: none; }
+  #copy {
+    position: absolute; top: 10px; right: 10px;
+    background: #21262d; color: var(--term-ink); border: 1px solid #30363d;
+    border-radius: 8px; padding: 6px 12px; font-size: 13px; cursor: pointer;
+  }
+  #copy:hover { background: #2d333b; }
+  #copy.ok { color: var(--term-prompt); border-color: var(--term-prompt); }
+
+  .actions { margin-top: 14px; display: flex; gap: 18px; align-items: center; flex-wrap: wrap; font-size: 14px; }
+  .actions a { color: var(--accent); text-decoration: none; }
+  .actions a:hover { text-decoration: underline; }
+  .actions .hint { color: var(--muted); }
+
+  footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px solid var(--border); padding-top: 20px; }
+  footer a { color: var(--accent); text-decoration: none; }
+  footer a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>coo.ee<span class="slash">/env</span></h1>
+    <p>Pick your dev-environment modules — get one <code>bash</code> line that provisions them. Like
+      <a href="https://www.toptal.com/developers/gitignore">gitignore.io</a>, but for the toolchain instead of <code>.gitignore</code>.</p>
+  </header>
+
+  <section class="picker">
+    <div class="chips" id="chips"></div>
+    <div class="combo">
+      <input id="search" type="text" autocomplete="off" autocapitalize="off" spellcheck="false"
+             placeholder="Search modules — java, node, rust…" aria-label="Search modules" />
+      <div class="menu" id="menu" role="listbox"></div>
+    </div>
+  </section>
+
+  <section class="out">
+    <div class="label">Your one-liner</div>
+    <div class="cmd">
+      <button id="copy" type="button">Copy</button>
+      <span class="prompt">$ </span><span id="cmd-text"></span>
+    </div>
+    <div class="actions">
+      <a id="view" href="#" target="_blank" rel="noopener">View script&nbsp;&#8599;</a>
+      <span class="hint">Order doesn’t matter — the server canonicalizes it. <code style="font-family:ui-monospace,monospace">base</code> (Nix) is always included.</span>
+    </div>
+  </section>
+
+  <footer>
+    Run it in a cloud setup script, a <code style="font-family:ui-monospace,monospace">SessionStart</code> hook, or GitHub Actions.
+    See the <a href="https://github.com/yschimke/coo-ee-env">project README</a> for what each module installs and how rendering works.
+  </footer>
+</div>
+
+<script>
+(function () {
+  var ORIGIN = location.origin;
+  var search = document.getElementById("search");
+  var menu = document.getElementById("menu");
+  var chipsEl = document.getElementById("chips");
+  var cmdText = document.getElementById("cmd-text");
+  var copyBtn = document.getElementById("copy");
+  var viewLink = document.getElementById("view");
+
+  var catalog = [];      // selectable modules: [{name, software}]
+  var implicit = [];     // always-included module names (e.g. "base")
+  var selected = [];     // chosen module names, in insertion order
+  var active = -1;       // highlighted index in the current match list
+  var matches = [];      // current filtered matches
+
+  // ---- data load -----------------------------------------------------------
+  fetch("/api/modules")
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      (data.modules || []).forEach(function (m) {
+        if (m.implicit) implicit.push(m.name);
+        else catalog.push(m);
+      });
+      initFromHash();
+      render();
+    })
+    .catch(function () {
+      menu.innerHTML = '<div class="opt empty">Couldn’t load the module list.</div>';
+    });
+
+  // ---- selection helpers ----------------------------------------------------
+  function add(name) {
+    if (selected.indexOf(name) === -1 && catalog.some(function (m) { return m.name === name; })) {
+      selected.push(name);
+    }
+    search.value = "";
+    render();
+    search.focus();
+  }
+  function remove(name) {
+    selected = selected.filter(function (n) { return n !== name; });
+    render();
+  }
+  function segment() {
+    return selected.length ? selected.join(",") : implicit.join(",") || "base";
+  }
+
+  // ---- rendering ------------------------------------------------------------
+  function render() {
+    // chips: implicit (fixed) first, then selected (removable)
+    chipsEl.innerHTML = "";
+    implicit.forEach(function (name) {
+      var c = document.createElement("span");
+      c.className = "chip implicit";
+      c.title = "Always included";
+      c.textContent = name;
+      chipsEl.appendChild(c);
+    });
+    selected.forEach(function (name) {
+      var c = document.createElement("span");
+      c.className = "chip";
+      c.appendChild(document.createTextNode(name));
+      var x = document.createElement("button");
+      x.className = "x"; x.type = "button"; x.setAttribute("aria-label", "Remove " + name);
+      x.textContent = "×";
+      x.onclick = function () { remove(name); };
+      c.appendChild(x);
+      chipsEl.appendChild(c);
+    });
+
+    // command + links
+    var seg = segment();
+    cmdText.textContent = "curl -fsSL " + ORIGIN + "/" + seg + " | bash";
+    viewLink.href = ORIGIN + "/" + seg;
+
+    renderMenu();
+    syncHash();
+  }
+
+  function renderMenu() {
+    var q = search.value.trim().toLowerCase();
+    matches = catalog.filter(function (m) {
+      if (selected.indexOf(m.name) !== -1) return false;
+      if (!q) return true;
+      return m.name.indexOf(q) !== -1 || (m.software || "").toLowerCase().indexOf(q) !== -1;
+    });
+    if (active >= matches.length) active = matches.length - 1;
+
+    menu.innerHTML = "";
+    if (!matches.length) {
+      if (document.activeElement === search) {
+        menu.innerHTML = '<div class="opt empty">' +
+          (catalog.length && selected.length >= catalog.length ? "All modules added." : "No matching module.") +
+          '</div>';
+        menu.classList.add("open");
+      } else {
+        menu.classList.remove("open");
+      }
+      return;
+    }
+    matches.forEach(function (m, i) {
+      var o = document.createElement("div");
+      o.className = "opt";
+      o.setAttribute("role", "option");
+      o.setAttribute("aria-selected", i === active ? "true" : "false");
+      var n = document.createElement("span"); n.className = "name"; n.textContent = m.name;
+      var d = document.createElement("span"); d.className = "desc"; d.textContent = m.software || "";
+      o.appendChild(n); o.appendChild(d);
+      o.onmousedown = function (e) { e.preventDefault(); add(m.name); };
+      menu.appendChild(o);
+    });
+    if (document.activeElement === search) menu.classList.add("open");
+  }
+
+  function openMenu() { active = -1; renderMenu(); }
+  function closeMenu() { menu.classList.remove("open"); }
+
+  // ---- events ---------------------------------------------------------------
+  search.addEventListener("input", function () { active = -1; renderMenu(); });
+  search.addEventListener("focus", openMenu);
+  search.addEventListener("blur", function () { setTimeout(closeMenu, 120); });
+
+  search.addEventListener("keydown", function (e) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      if (!matches.length) return;
+      active = (active + 1) % matches.length; renderMenu();
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      if (!matches.length) return;
+      active = (active - 1 + matches.length) % matches.length; renderMenu();
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      var pick = matches[active >= 0 ? active : 0];
+      if (pick) add(pick.name);
+    } else if (e.key === "Escape") {
+      closeMenu();
+    } else if (e.key === "Backspace" && !search.value && selected.length) {
+      remove(selected[selected.length - 1]);
+    }
+  });
+
+  copyBtn.addEventListener("click", function () {
+    var text = cmdText.textContent;
+    var done = function () {
+      copyBtn.textContent = "Copied!"; copyBtn.classList.add("ok");
+      setTimeout(function () { copyBtn.textContent = "Copy"; copyBtn.classList.remove("ok"); }, 1500);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fallbackCopy);
+    } else { fallbackCopy(); }
+    function fallbackCopy() {
+      var ta = document.createElement("textarea");
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); done(); } catch (_) {}
+      document.body.removeChild(ta);
+    }
+  });
+
+  // ---- shareable URL (#java,android) ---------------------------------------
+  function initFromHash() {
+    var raw = decodeURIComponent((location.hash || "").replace(/^#/, ""));
+    raw.split(",").map(function (s) { return s.trim().toLowerCase(); })
+      .filter(Boolean)
+      .forEach(function (name) {
+        if (name !== "base" && selected.indexOf(name) === -1 &&
+            catalog.some(function (m) { return m.name === name; })) {
+          selected.push(name);
+        }
+      });
+  }
+  var hashWrite = "";
+  function syncHash() {
+    var h = selected.join(",");
+    if (h === hashWrite) return;
+    hashWrite = h;
+    history.replaceState(null, "", h ? "#" + h : location.pathname);
+  }
+})();
+</script>
+</body>
+</html>
