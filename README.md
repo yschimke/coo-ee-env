@@ -260,6 +260,21 @@ automatically if the Nix browser build fails.
 | --- | --- |
 | `COOEE_PLAYWRIGHT_DOWNLOAD_BROWSERS=1` | Skip the Nix browsers; let `playwright-cli install-browser` download them (needs `cdn.playwright.dev` + OS libraries). |
 
+**Version selection.** The CLI is a *tool an agent runs*, not a dependency a
+project locks (that role belongs to `@playwright/test` in the repo's own
+`package.json`), so the default is **`@latest`** — like `gh` or `curl`. An
+explicit **`playwright[0.1.13]`** pin overrides it, for reproducible installs and
+as a second escape hatch when `@latest` ships a core whose browser revision the
+nixpkgs driver lacks. The precedence is simply `explicit param > latest`.
+
+> **Lockfile awareness — later.** A third tier — *detect the project's Playwright
+> version and align the CLI + browsers to it* — would give CLI↔test parity, but
+> it only pays off paired with `COOEE_PLAYWRIGHT_DOWNLOAD_BROWSERS=1`: the pinned
+> nixpkgs browser closure can't serve an arbitrary project-pinned revision, so
+> matching a lockfile means downloading that revision from the CDN. That's a
+> distinct install mode with its own host/OS-dep story, so it's deferred until a
+> concrete need rather than built speculatively.
+
 **Agent skills.** The CLI ships optional skills for coding agents
 (`playwright-cli install --skills`). Those are per-project, so the module doesn't
 run it for you — invoke it inside the repo where you want the skills. (For
