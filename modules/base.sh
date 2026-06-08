@@ -10,6 +10,16 @@ need_host github.com                     "nixpkgs + flake inputs"
 need_host objects.githubusercontent.com  "GitHub release assets for flake inputs"
 
 module_base() {
+  # A CI cache (e.g. actions/cache or cache-nix-action restoring /nix) brings
+  # the store back without nix on PATH. Adopt it before deciding to install, so
+  # we report "already installed" and skip the installer — which otherwise
+  # refuses to run over an existing /nix. Also strengthens warm-box idempotency.
+  if ! command -v nix >/dev/null 2>&1 \
+     && [[ -e /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]]; then
+    # shellcheck disable=SC1091
+    . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+  fi
+
   if command -v nix >/dev/null 2>&1; then
     ok "Nix already installed: $(nix --version)"
   else
@@ -35,7 +45,12 @@ module_base() {
   echo 'export PATH="$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin:$PATH"' \
     >> "$COOEE_PROFILE"
   [[ -n "${CLAUDE_ENV_FILE:-}" ]] && printf 'PATH=%s\n' "$PATH" >> "$CLAUDE_ENV_FILE" || true
-  [[ -n "${GITHUB_ENV:-}"     ]] && printf 'PATH=%s\n' "$PATH" >> "$GITHUB_ENV"     || true
+  # GitHub Actions: prepend just our dirs via $GITHUB_PATH (the idiom), rather
+  # than freezing a full PATH snapshot into $GITHUB_ENV that later steps inherit
+  # and could clobber. add_env still routes other vars (JAVA_HOME, …) to it.
+  if [[ -n "${GITHUB_PATH:-}" ]]; then
+    printf '%s\n' "$HOME/.nix-profile/bin" "/nix/var/nix/profiles/default/bin" >> "$GITHUB_PATH"
+  fi
 
   ok "base ready: $(nix --version)"
 }

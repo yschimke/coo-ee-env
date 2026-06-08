@@ -1,0 +1,53 @@
+# Example consumer of the coo.ee/env composite action.
+#
+# Demonstrates the GitHub Actions bridge: bootstrap an identical environment to
+# the curl|bash one-liner, with the toolchain carried into later steps via
+# $GITHUB_ENV / $GITHUB_PATH (the script writes both), and the Nix store cached
+# across runs so the large JDK/android downloads aren't repeated.
+name: env-example
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - modules/**
+      - action.yml
+      - .github/workflows/env-example.yml
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Cache /nix so Temurin 17+21 + android-tools aren't re-fetched every run.
+      # The key tracks the module fragments + the requested set — the same
+      # canonical cache key the CDN uses, so it invalidates only when a fragment
+      # changes. base.sh adopts a restored /nix instead of reinstalling over it.
+      #
+      # NOTE: store-level caching of a self-installed daemonless Nix is the one
+      # piece that needs validating on a live runner; the bootstrap itself works
+      # cache-hit or miss (a cold cache just installs normally, then saves).
+      - name: Cache Nix store
+        uses: nix-community/cache-nix-action@v6
+        with:
+          primary-key: cooee-${{ runner.os }}-${{ hashFiles('modules/*.sh') }}-java,android
+          restore-prefixes-first-match: cooee-${{ runner.os }}-
+          paths: |
+            /nix
+
+      # Uses the action from this repo (./). Consumers would pin a tag:
+      #   - uses: yschimke/coo-ee-env@v1
+      #     with: { modules: java,android }
+      - name: Bootstrap env
+        uses: ./
+        with:
+          modules: java,android
+
+      # Proves the env handoff: these vars/binaries come from the step above.
+      - name: Verify toolchain
+        shell: bash
+        run: |
+          echo "JAVA_HOME=$JAVA_HOME"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          java -version
+          adb --version || true

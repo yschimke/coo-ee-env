@@ -1,0 +1,24 @@
+name: "coo.ee/env"
+description: "Bootstrap a composable Nix dev environment (java, android, …) from env.coo.ee."
+author: "coo.ee"
+branding:
+  icon: "package"
+  color: "blue"
+
+inputs:
+  modules:
+    description: >-
+      Comma-separated module list, e.g. "java,android". The "base" module
+      (Nix) is always included implicitly. Order is canonicalized server-side.
+    required: false
+    default: "java,android"
+
+runs:
+  using: "composite"
+  steps:
+    # One idempotent line — the same contract as a local shell or a cloud setup
+    # script. The rendered script writes JAVA_HOME/ANDROID_HOME/JAVA_TOOL_OPTIONS
+    # to $GITHUB_ENV and prepends the Nix bin dirs to $GITHUB_PATH itself, so the
+    # toolchain is on PATH for every later step with no extra wiring here.
+    - shell: bash
+      run: curl -fsSL "https://env.coo.ee/${{ inputs.modules }}" | bash

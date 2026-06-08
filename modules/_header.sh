@@ -1,17 +1,27 @@
 #!/usr/bin/env bash
 # ===========================================================================
-#  coo.ee/env — composable dev-environment bootstrapper   (SIMULATION)
+#  coo.ee/env — composable dev-environment bootstrapper
 # ---------------------------------------------------------------------------
 #  This is the HEADER fragment. The hosted service concatenates:
 #       _header.sh  +  <module>.sh ...  +  _footer.sh
-#  to produce the script served at  https://coo.ee/env/<modules>.
+#  to produce the script served at  https://env.coo.ee/<modules>.
 #  The checked-in file  java,android  is one such rendering.
 #  Edit fragments here; do not hand-edit the rendered artifact.
 #  See README.md.
 # ===========================================================================
 set -euo pipefail
 
-COOEE_VERSION="0.1.0-sim"
+COOEE_VERSION="0.1.0"
+
+# ---- GitHub Actions awareness ---------------------------------------------
+# GitHub is just another cloud target, but it has its own log + env protocol.
+# When running inside a runner we mirror our output into the workflow log:
+# collapsible ::group:: sections per module (see _footer) and ::warning::/
+# ::error:: annotations that surface on the run summary. No-op everywhere else.
+COOEE_GHA=0
+[[ "${GITHUB_ACTIONS:-}" == "true" ]] && COOEE_GHA=1
+gha_group()    { [[ $COOEE_GHA == 1 ]] && printf '::group::%s\n' "$*" >&2 || true; }
+gha_endgroup() { [[ $COOEE_GHA == 1 ]] && printf '::endgroup::\n'     >&2 || true; }
 
 # ---- logging --------------------------------------------------------------
 if [[ -t 2 ]]; then
@@ -22,8 +32,10 @@ else
 fi
 log()  { printf '%s[coo.ee]%s %s\n'   "$_c_blu" "$_c_rst" "$*" >&2; }
 ok()   { printf '%s[coo.ee] OK%s %s\n' "$_c_grn" "$_c_rst" "$*" >&2; }
-warn() { printf '%s[coo.ee] !!%s %s\n' "$_c_yel" "$_c_rst" "$*" >&2; }
-die()  { printf '%s[coo.ee] XX%s %s\n' "$_c_red" "$_c_rst" "$*" >&2; exit 1; }
+warn() { printf '%s[coo.ee] !!%s %s\n' "$_c_yel" "$_c_rst" "$*" >&2
+         [[ $COOEE_GHA == 1 ]] && printf '::warning::%s\n' "$*" >&2 || true; }
+die()  { printf '%s[coo.ee] XX%s %s\n' "$_c_red" "$_c_rst" "$*" >&2
+         [[ $COOEE_GHA == 1 ]] && printf '::error::%s\n' "$*" >&2 || true; exit 1; }
 
 # ---- persisted environment ------------------------------------------------
 # Everything we export is also written to a profile file so a *new* shell can
@@ -150,6 +162,9 @@ print_allowlist_help() {
     echo "${_c_yel}|${_c_rst}       add to the domain allowlist (allow GET/HEAD)."
     echo "${_c_yel}|${_c_rst}   - Antigravity / Gemini Managed Agents: declare the hosts"
     echo "${_c_yel}|${_c_rst}       in the sandbox network allowlist."
+    echo "${_c_yel}|${_c_rst}   - GitHub Actions: hosted runners have open egress, so this"
+    echo "${_c_yel}|${_c_rst}       rarely fires; on self-hosted/firewalled runners, allow"
+    echo "${_c_yel}|${_c_rst}       these in the runner network policy or corporate proxy."
     echo "${_c_yel}+-------------------------------------------------------------${_c_rst}"
     echo
   } >&2
