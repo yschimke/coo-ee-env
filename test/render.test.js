@@ -65,6 +65,46 @@ test("unknown modules return 400 with the available list", () => {
   assert.match(o.body, /available:/);
 });
 
+test("android-emulator implies android (transitively pulled in)", () => {
+  assert.deepEqual(names("android-emulator"), [
+    "base",
+    "android",
+    "android-emulator",
+  ]);
+  assert.deepEqual(names("android-emulator,java"), [
+    "base",
+    "android",
+    "android-emulator",
+    "java",
+  ]);
+});
+
+test("an implied module added on its own carries no versions", () => {
+  assert.deepEqual(canon("android-emulator[34,wear-33]"), [
+    "base",
+    "android",
+    "android-emulator[34,wear-33]",
+  ]);
+});
+
+test("an explicitly-requested implied module keeps its own versions", () => {
+  assert.deepEqual(canon("android[30],android-emulator"), [
+    "base",
+    "android[30]",
+    "android-emulator",
+  ]);
+});
+
+test("implied modules run after their requesters (alphabetical order holds)", () => {
+  // android (adb/ANDROID_HOME) must register before android-emulator uses it.
+  const body = render("android-emulator").body;
+  assert.ok(
+    body.indexOf("register_module android\n") <
+      body.indexOf("register_module android-emulator"),
+    "android should be concatenated before android-emulator",
+  );
+});
+
 test("the full example from the brief renders and is well-formed", () => {
   const o = render("java[17,21],android[30,37,wear-33]");
   assert.equal(o.status, 200);

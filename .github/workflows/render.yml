@@ -16,10 +16,11 @@ jobs:
         run: node --test
       - name: render every module set and syntax-check the output
         run: |
-          for m in base java android node python go rust \
+          for m in base java android android-emulator node python go rust \
                    java,android node,python,go,rust \
                    java,android,node,python,go,rust \
-                   'java[17,21]' 'java[17,21],android[30,37,wear-33]'; do
+                   'java[17,21]' 'java[17,21],android[30,37,wear-33]' \
+                   'android-emulator[34],java'; do
             echo "== $m =="
             node -e "process.stdout.write(require('./api/env/render').render('$m').body)" | bash -n -
           done

@@ -103,9 +103,35 @@ function parseEntry(raw) {
   return { name, versions };
 }
 
+// A fragment may declare render-time dependencies with a directive comment:
+//   # coo.ee:implies <name> [<name> ...]
+// Requesting the module then pulls the implied modules into the render, so
+// `android-emulator` alone yields base + android + android-emulator. Keeping
+// the declaration in the fragment (not a map here) means a module's full
+// definition — what it installs, the hosts it needs, what it implies — lives in
+// one file. Implications are render-time only; the line is a plain comment at
+// runtime. Names are validated against the available modules in render().
+const IMPLIES_RE = /^#[ \t]*coo\.ee:implies[ \t]+(.+?)[ \t]*$/gm;
+
+function moduleImplies(name) {
+  const file = path.join(MODULES_DIR, `${name}.sh`);
+  if (!fs.existsSync(file)) return []; // unknown modules are caught in render()
+  const text = fs.readFileSync(file, "utf8");
+  const names = [];
+  for (const m of text.matchAll(IMPLIES_RE)) {
+    for (const n of m[1].split(/[\s,]+/)) {
+      const t = n.trim().toLowerCase();
+      if (t) names.push(t);
+    }
+  }
+  return names;
+}
+
 // Parse the path segment into a canonical module list:
 //   - { name, versions } entries
 //   - blanks dropped, modules deduped (versions merged), `base` forced first
+//   - implied modules pulled in transitively (with no version request of their
+//     own; an explicit entry with versions is kept)
 //   - modules sorted by name; versions sorted within each
 // Canonical order means android,java and java,android render identically and
 // share a CDN cache entry; the same holds for version order within a module.
@@ -123,6 +149,18 @@ function canonicalize(segment) {
       ].sort(cmpVersion);
     } else {
       byName.set(entry.name, entry);
+    }
+  }
+
+  // Resolve implications transitively. Implied modules arrive version-less; if
+  // the user also named one explicitly (with versions) it is already in the map
+  // and left untouched.
+  const queue = [...byName.keys()];
+  while (queue.length) {
+    for (const dep of moduleImplies(queue.shift())) {
+      if (dep === "base" || byName.has(dep)) continue;
+      byName.set(dep, { name: dep, versions: [] });
+      queue.push(dep);
     }
   }
 

@@ -87,6 +87,7 @@ treats an already-present package as success — so a partial/cold box is
 | `base`    | Nix (Determinate, daemonless)             | `install.determinate.systems`, `cache.nixos.org`, `channels.nixos.org`, `github.com`, `objects.githubusercontent.com` | — |
 | `java`    | Temurin JDK (default 17 + 21; `java[17,21]` to choose), `JAVA_HOME` | `cache.nixos.org` | base-image JDK |
 | `android` | `android-tools` (adb/fastboot), `ANDROID_HOME`; `android[30,37,wear-33]` records platforms in `COOEE_ANDROID_PLATFORMS` | `cache.nixos.org`, `dl.google.com`, `maven.google.com` | — |
+| `android-emulator` | Configures `/dev/kvm` access (GitHub `99-kvm4all.rules`); records system images in `COOEE_ANDROID_EMULATOR_IMAGES`; **implies `android`** | `cache.nixos.org`, `dl.google.com` | — |
 | `node`    | Node.js 22 LTS, npm                       | `cache.nixos.org`, `registry.npmjs.org` | Codex: `CODEX_ENV_NODE_VERSION` |
 | `python`  | CPython 3 + pip                           | `cache.nixos.org`, `pypi.org`, `files.pythonhosted.org` | Codex: `CODEX_ENV_PYTHON_VERSION` |
 | `go`      | Go toolchain, `GOPATH`                    | `cache.nixos.org`, `proxy.golang.org`, `sum.golang.org` | Codex: `CODEX_ENV_GO_VERSION` |
@@ -148,6 +149,13 @@ each module, then injected as a `COOEE_VERSIONS` associative array that the
 fragments read. A version-less request emits no version block, so it stays
 byte-identical to the pre-versions rendering. To preview a different
 combination, pass a different segment to `render()`.
+
+A module can also declare render-time dependencies with a directive comment in
+its fragment — `# coo.ee:implies <name>` — and `render()` pulls those in
+(transitively) before canonicalizing. So `android-emulator`, which implies
+`android`, renders as `base,android,android-emulator` even though only the
+emulator was requested. Keeping the declaration in the fragment means a module's
+full definition lives in one file.
 
 ## Wiring it into an agent environment
 
