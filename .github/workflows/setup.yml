@@ -5,9 +5,12 @@ name: setup
 # render.yml (which only syntax-checks the rendered output) by exercising the
 # real Nix install, the persisted profile, and the JDK/Android tooling.
 
+# PRs run on pull_request; push is scoped to main so an open PR's commits
+# don't trigger a second (duplicate) run.
 on:
-  push:
   pull_request:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 jobs:

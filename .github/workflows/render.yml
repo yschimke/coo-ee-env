@@ -1,5 +1,10 @@
 name: render
-on: [push, pull_request]
+# PRs run on pull_request; branch pushes that have an open PR don't double-run
+# because push is scoped to main (covers the post-merge commit).
+on:
+  pull_request:
+  push:
+    branches: [main]
 jobs:
   check:
     runs-on: ubuntu-latest
