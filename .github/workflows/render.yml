@@ -15,11 +15,13 @@ jobs:
       - name: render every module set and syntax-check the output
         run: |
           # Array form so bracketed sets can be quoted (the shell mustn't glob `[...]`).
-          sets=(base java android node python go rust skills \
+          sets=(base java android node python go rust skills tools \
                 java,android node,python,go,rust \
                 java,android,node,python,go,rust \
                 "skills[yschimke/skills]" \
-                "skills[yschimke/skills,obra/superpowers],java,android")
+                "skills[yschimke/skills,obra/superpowers],java,android" \
+                "tools[ripgrep,jq,gh]" \
+                "tools[ripgrep,jq],skills[yschimke/skills],node")
           for m in "${sets[@]}"; do
             echo "== $m =="
             node -e "process.stdout.write(require('./api/env/render').render(process.argv[1]).body)" "$m" | bash -n -
