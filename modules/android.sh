@@ -5,8 +5,9 @@
 #               cmdline-tools, the requested platforms + build-tools (and, when
 #               android-emulator is also requested, the emulator + system
 #               images). ANDROID_HOME / ANDROID_SDK_ROOT point at it.
-#    params   : android[30,37,wear-33] selects the platform API levels to
-#               install; bare `android` installs the default (API 36).
+#    params   : android[36] selects the platform API level(s) to install
+#               (e.g. android[30,36,wear-33]); bare `android` installs the
+#               default (API 36).
 #    hosts    : cache.nixos.org (install), dl.google.com (SDK component sources)
 #             : Google / JetBrains / fonts registries (build, advisory)
 #  Host set mirrors skills/compose-preview/references/agent-cloud.md.
@@ -56,7 +57,7 @@ cooee_sdk_is_complete() {  # cooee_sdk_is_complete <sdk dir>
 }
 
 module_android() {
-  # Requested platform API levels come from the params (android[30,37,wear-33]);
+  # Requested platform API levels come from the params (android[30,36,wear-33]);
   # default to COOEE_ANDROID_DEFAULT_PLATFORM (API 36) when none are given.
   # Recorded in COOEE_ANDROID_PLATFORMS for reference; the module installs them
   # below (independent of where adb comes from, so record before the branch).
