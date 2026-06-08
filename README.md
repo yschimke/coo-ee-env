@@ -67,8 +67,8 @@ treats an already-present package as success — so a partial/cold box is
 | --------- | ----------------------------------------- | ----------------------- | ----------------------- |
 | `base`    | Nix (Determinate, daemonless)             | `install.determinate.systems`, `cache.nixos.org`, `channels.nixos.org`, `github.com`, `objects.githubusercontent.com` | — |
 | `java`    | Temurin JDK (default 17 + 21; `java[17,21]` to choose), `JAVA_HOME` | `cache.nixos.org` | base-image JDK |
-| `android` | `android-tools` (adb/fastboot), `ANDROID_HOME`; `android[30,37,wear-33]` records platforms in `COOEE_ANDROID_PLATFORMS` | `cache.nixos.org`, `dl.google.com`, `maven.google.com` | — |
-| `android-emulator` | Configures `/dev/kvm` access (GitHub `99-kvm4all.rules`); records system images in `COOEE_ANDROID_EMULATOR_IMAGES`; **implies `android`** | `cache.nixos.org`, `dl.google.com` | — |
+| `android` | Full SDK via `androidenv`: `platform-tools` (adb), `cmdline-tools`, the requested platform(s) + `build-tools`, `ANDROID_HOME`; `android[30,37,wear-33]` picks the platform API levels | `cache.nixos.org`, `dl.google.com`, `maven.google.com` | — |
+| `android-emulator` | Adds `emulator` + `system-images` to the SDK (via the implied `android` build) and configures `/dev/kvm` access (GitHub `99-kvm4all.rules`); `android-emulator[34,wear-33]` picks the image levels; **implies `android`** | `cache.nixos.org`, `dl.google.com` | — |
 | `node`    | Node.js 22 LTS, npm                       | `cache.nixos.org`, `registry.npmjs.org` | Codex: `CODEX_ENV_NODE_VERSION` |
 | `python`  | CPython 3 + pip                           | `cache.nixos.org`, `pypi.org`, `files.pythonhosted.org` | Codex: `CODEX_ENV_PYTHON_VERSION` |
 | `go`      | Go toolchain, `GOPATH`                    | `cache.nixos.org`, `proxy.golang.org`, `sum.golang.org` | Codex: `CODEX_ENV_GO_VERSION` |
@@ -111,11 +111,12 @@ curl -fsSL 'https://env.coo.ee/java[17,21],android[30,37,wear-33]' | bash
 
 `java[17,21]` installs each Temurin major (`nixpkgs#temurin-bin-<major>`, lowest
 owning the `java`/`javac` symlinks); bare `java` keeps the default 17 + 21.
-`android[30,37,wear-33]` records platform API levels in `COOEE_ANDROID_PLATFORMS`,
-and `android-emulator[34,wear-33]` records system-image levels in
-`COOEE_ANDROID_EMULATOR_IMAGES`, both for the project's `androidenv` flake to
-provision. A param-less request injects nothing, so it renders byte-identically
-to before parameters existed.
+`android[30,37,wear-33]` installs those platform API levels (with their
+`build-tools`), and `android-emulator[34,wear-33]` installs the matching
+`emulator` system images — both built into the SDK by `androidenv` (see
+[Android: what `android` installs](#android-what-android-installs)). A param-less
+request injects nothing, so it renders byte-identically to before parameters
+existed.
 
 ### Module implications
 
@@ -139,84 +140,51 @@ curl -fsSL 'https://env.coo.ee/tools[ripgrep,jq],node,skills' | bash
 Nested attributes work too (`tools[nodePackages.prettier]`); an unknown name
 just warns and is skipped, so one typo doesn't fail the whole environment.
 
-### Android: the bootstrap / `androidenv` flake split
+### Android: what `android` installs
 
-The `android` and `android-emulator` modules deliberately install **only the
-unlicensed pieces** — `platform-tools` (`adb`/`fastboot`) and a conventional
-`ANDROID_HOME` — and stop there. The full SDK (`platforms;android-<level>`,
-`build-tools`, emulator system images) is **licensed, large, and
-version-specific to the project**, so the bootstrap doesn't fetch it. Instead it
-records *what you asked for* and hands off to the project's own `androidenv`
-flake. That is the "see README.md" the script points at, and this is it.
-
-The handoff is two environment variables, exported by the bootstrap (and
-forwarded to `$GITHUB_ENV` / `$CLAUDE_ENV_FILE` like every other `add_env`):
-
-| Variable | Set by | Carries |
-| --- | --- | --- |
-| `ANDROID_HOME` | `android` | SDK root the flake should populate (default `~/.android/sdk`) |
-| `COOEE_ANDROID_PLATFORMS` | `android[30,37,wear-33]` | space-separated platform API levels to provision |
-| `COOEE_ANDROID_EMULATOR_IMAGES` | `android-emulator[34,wear-33]` | space-separated system-image API levels for AVDs |
-
-So a request like
+The `android` module installs a **complete, buildable SDK** — `platform-tools`
+(`adb`/`fastboot`), `cmdline-tools`, the requested platform(s) and
+`build-tools` — using [`nixpkgs`
+`androidenv`](https://nixos.org/manual/nixpkgs/stable/#android), and points
+`ANDROID_HOME` / `ANDROID_SDK_ROOT` at it. Add `android-emulator` and the same
+build also includes the `emulator` and matching `system-images`. So
 
 ```bash
 curl -fsSL 'https://env.coo.ee/java[21],android[34],android-emulator[34]' | bash
 ```
 
-leaves you with `adb`, a JDK, a configured `/dev/kvm`, and
-`COOEE_ANDROID_PLATFORMS=34` / `COOEE_ANDROID_EMULATOR_IMAGES=34` in the
-environment — but **not** the API-34 platform or build-tools. The project's
-flake reads those levels and provisions them into `ANDROID_HOME` via
-[`nixpkgs` `androidenv`](https://nixos.org/manual/nixpkgs/stable/#android), e.g.
-`<repo>/flake.nix`:
+leaves you with a JDK, `adb`, the API-34 platform + build-tools, the emulator,
+an API-34 system image, and a configured `/dev/kvm` — ready for
+`./gradlew assembleDebug` or to boot an AVD, no extra flake step.
 
-```nix
-{
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-  outputs = { self, nixpkgs }:
-    let
-      system = "x86_64-linux";
-      pkgs = import nixpkgs { inherit system; config.allowUnfree = true; };
-      android = pkgs.androidenv.composeAndroidPackages {
-        platformVersions = [ "34" ];          # mirror COOEE_ANDROID_PLATFORMS
-        buildToolsVersions = [ "34.0.0" ];
-        systemImageTypes = [ "google_apis" ]; # for COOEE_ANDROID_EMULATOR_IMAGES
-        abiVersions = [ "x86_64" ];
-        includeEmulator = true;
-        includeSystemImages = true;
-        platformToolsVersion = "34.0.5";
-      };
-    in {
-      devShells.${system}.default = pkgs.mkShell {
-        buildInputs = [ android.androidsdk ];
-        # androidenv builds its own SDK root; point ANDROID_HOME at it so adb,
-        # Gradle, and the emulator all agree.
-        ANDROID_HOME = "${android.androidsdk}/libexec/android-sdk";
-      };
-    };
-}
-```
+**Which versions.** The bracketed params pick the platform API levels
+(`android[30,37,wear-33]`); a `wear-NN` level also pulls the `android-wear`
+system image. A bare `android` installs one default platform. Two knobs tune the
+rest (set them in the environment before running):
 
-```bash
-nix develop          # platforms + build-tools + emulator now under ANDROID_HOME
-./gradlew assembleDebug
-```
+| Variable | Default | Selects |
+| --- | --- | --- |
+| `COOEE_ANDROID_DEFAULT_PLATFORM` | `34` | platform API level for a param-less `android` |
+| `COOEE_ANDROID_BUILD_TOOLS` | `34.0.0` | the `build-tools` revision to install |
 
-Keep `platformVersions` / system-image levels in sync with what you passed the
-bootstrap (the `COOEE_ANDROID_*` values are the record of the request). A repo
-that pins exact versions in `flake.lock` is reproducible across every agent and
-CI run; the bootstrap stays small and unlicensed.
+Because the SDK is built through Nix, it is reproducible and survives
+`nix store gc` (the build is anchored by a GC root under `~/.cache/coo-ee/`). On
+a box that already has a **complete** SDK (a CI runner, or a warm box with
+platforms + build-tools), the module adopts it instead of rebuilding — and only
+falls back to a Nix build if an explicitly requested platform is missing. The
+recorded `COOEE_ANDROID_PLATFORMS` / `COOEE_ANDROID_EMULATOR_IMAGES` values are
+kept as a description of the request.
 
-**Allowlist for builds.** Installing the bootstrap only needs `cache.nixos.org`.
-*Building* the project additionally needs the Android/JetBrains registries the
-`android` module lists under **"Recommended for builds"** (`dl.google.com`,
-`maven.google.com`, `packages.jetbrains.team`, `*.jetbrains.com`,
+**Allowlist.** Installing now fetches the SDK components, so beyond
+`cache.nixos.org` (the Nix closure) the module needs **`dl.google.com`** (the
+platform / build-tools / system-image sources). *Building* the project
+additionally wants the registries the module lists under **"Recommended for
+builds"** (`maven.google.com`, `packages.jetbrains.team`, `*.jetbrains.com`,
 `fonts.googleapis.com`, `fonts.gstatic.com`), plus whatever your Gradle build
 resolves from — commonly `services.gradle.org` (the Gradle distribution),
 `repo.maven.apache.org` / `repo1.maven.org` (Maven Central), and `jitpack.io`.
-These are advisory: the script never probes them and never fails on them, it
-just reminds you to allow them before `./gradlew build`.
+The build-time registries are advisory: the script never probes them and never
+fails on them, it just reminds you to allow them before `./gradlew build`.
 
 ## Cloud built-ins & short-circuit
 
