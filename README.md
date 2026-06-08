@@ -313,10 +313,33 @@ Knobs:
 | `COOEE_FORCE=1` | Ignore the short-circuit and adoption; force a fresh Nix install / repair. |
 | `COOEE_IGNORE_HOST_CHECK=1` | Continue even if a required install host is blocked. |
 | `COOEE_NO_ACTIVATE=1` | Skip [auto-activation](#auto-activation) — don't touch shell rc files or `.claude/settings.json`. |
+| `COOEE_NO_DEPS=1` | Skip [build-dependency prefetch](#build-dependency-prefetch) — install the toolchain only, don't resolve the project's dependencies. |
+| `COOEE_GRADLE_DEPS_TASK` | Gradle task used to prefetch dependencies (default `dependencies`); e.g. a multi-project `resolveAll` or `assemble`. |
 | `COOEE_BASE_URL` | Service base URL baked into the installed SessionStart hook (default `https://env.coo.ee`). |
 
 The provisioning stamp lives at `~/.config/coo-ee/provisioned` (the canonical
 module set); delete it to force the next run to re-probe.
+
+## Build-dependency prefetch
+
+Installing the toolchain is only half the job — the first real build still has
+to download the project's dependencies, and in a sandbox that's exactly when
+egress may be locked down. So once a language module finishes, it **warms the
+build cache** while the registries are still reachable:
+
+- **`java`** runs the Gradle wrapper's `dependencies` task (override with
+  `COOEE_GRADLE_DEPS_TASK`), resolving and downloading the build's
+  configurations — including the Gradle distribution and plugins — without
+  compiling. It prefers the project's `./gradlew` (pinned version) over any
+  system `gradle`.
+- **`node`** runs `npm ci` when there's a clean lockfile (falling back to
+  `npm install`), otherwise `npm install`.
+
+The step targets the consuming project (`$CLAUDE_PROJECT_DIR`, else the current
+directory) and is a no-op when there's no Gradle build / `package.json` there.
+It is **best-effort**: a failure (e.g. a registry host that isn't allowlisted)
+warns but never fails provisioning, since the toolchain itself is already in
+place. Opt out entirely with `COOEE_NO_DEPS=1`.
 
 ## Auto-activation
 

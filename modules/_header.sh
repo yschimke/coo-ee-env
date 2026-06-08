@@ -285,6 +285,25 @@ cooee_trust_cas_in_jdk() {  # cooee_trust_cas_in_jdk <java_home>
   ok "JDK now trusts ${#extra[@]} extra CA(s) via JAVA_TOOL_OPTIONS."
 }
 
+# ---- build dependency prefetch --------------------------------------------
+# Once a language toolchain is ready, optionally warm its build cache by
+# resolving the project's dependencies now — while the build/registry hosts are
+# still reachable — so a later build (under possibly tighter egress, or none)
+# can run from cache. Best-effort: a failure here warns but never fails
+# provisioning. The work itself lives in each language module (cooee_prefetch_*),
+# which calls these shared helpers; opt out everywhere with COOEE_NO_DEPS=1.
+
+# The consuming project's root: the harness-provided project dir when set,
+# otherwise the current directory (where the bootstrap was invoked).
+cooee_project_dir() {
+  if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then printf '%s' "$CLAUDE_PROJECT_DIR"
+  else printf '%s' "$PWD"; fi
+}
+
+# False when dependency prefetch is opted out (COOEE_NO_DEPS=1). A module's
+# prefetch step calls this first and skips quietly when it returns non-zero.
+cooee_deps_enabled() { [[ "${COOEE_NO_DEPS:-0}" != 1 ]]; }
+
 # ---- module + host registry ----------------------------------------------
 # Modules register themselves (so _footer runs them in order) and declare the
 # hosts they need, each with a human reason used in the remediation banner.
