@@ -57,6 +57,7 @@ main() {
   if cooee_already_provisioned; then
     ok "Already provisioned (${MODULES[*]:-}); skipping install."
     cooee_forward_persisted_env
+    cooee_install_activation   # idempotent: ensure auto-activation is wired up
     log "Re-exported env from ${COOEE_PROFILE} (source it in a fresh shell)."
     log "Force a re-provision with COOEE_FORCE=1."
     return 0
@@ -110,9 +111,13 @@ main() {
   done
 
   printf '%s' "${MODULES[*]:-}" > "$COOEE_STAMP"
+
+  # Wire up auto-activation so the env applies without a manual `source`.
+  cooee_install_activation
+
   echo
   ok "Environment ready: ${MODULES[*]:-}"
   log "Persisted env -> ${COOEE_PROFILE}"
-  log "In a fresh shell:  source ${COOEE_PROFILE}"
+  log "Auto-activation installed; new shells/sessions pick it up (opt out: COOEE_NO_ACTIVATE=1)."
 }
 main "$@"

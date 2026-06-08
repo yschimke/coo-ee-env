@@ -52,6 +52,8 @@ curl -fsSL https://env.coo.ee/java,android | bash
    17 + 21, `node` → Node.js 22).
 6. **Persists the environment** to `~/.config/coo-ee/env.sh` and, when running
    inside a harness, to `$CLAUDE_ENV_FILE` / `$GITHUB_ENV`.
+7. **Activates itself** so the env applies without a manual `source` — see
+   [Auto-activation](#auto-activation) below.
 
 ### Idempotent by design
 
@@ -209,9 +211,36 @@ Knobs:
 | --- | --- |
 | `COOEE_FORCE=1` | Ignore the short-circuit and adoption; force a fresh Nix install / repair. |
 | `COOEE_IGNORE_HOST_CHECK=1` | Continue even if a required install host is blocked. |
+| `COOEE_NO_ACTIVATE=1` | Skip [auto-activation](#auto-activation) — don't touch shell rc files or `.claude/settings.json`. |
+| `COOEE_BASE_URL` | Service base URL baked into the installed SessionStart hook (default `https://env.coo.ee`). |
 
 The provisioning stamp lives at `~/.config/coo-ee/provisioned` (the canonical
 module set); delete it to force the next run to re-probe.
+
+## Auto-activation
+
+Persisting the env to `~/.config/coo-ee/env.sh` doesn't help if nothing loads
+it. So a normal run also **wires up activation** for the consuming project — no
+manual `source`, no per-project boilerplate:
+
+- **Shell rc.** A guarded block is appended to `~/.bashrc`, `~/.profile` (and
+  `~/.zshrc` when zsh is in play) that sources the persisted env, so every
+  future shell has the toolchain on `PATH`. The block is fenced by
+  `# >>> coo.ee/env >>>` markers and added at most once.
+- **Claude Code SessionStart hook.** The script installs (or merges) a
+  `SessionStart` hook into the consuming project's `.claude/settings.json` that
+  re-runs the *same request* — `curl -fsSL https://env.coo.ee/<your,modules> | bash` —
+  so a fresh web session re-provisions automatically. It reconstructs the
+  request (modules + params) from the run itself, merges with `jq`/`python3`/
+  `node` so existing settings are preserved (and warns with the snippet if none
+  is available), and is idempotent — the hook is added at most once. The target
+  is `$CLAUDE_PROJECT_DIR`, falling back to the current directory when it's a
+  git repo.
+
+This is generic plumbing baked into the bootstrapper, so **any** project that
+pulls in coo.ee/env gets it — nothing is specific to one repo. GitHub Actions
+has its own activation (`$GITHUB_ENV` / `$GITHUB_PATH`), so the step is skipped
+there. Opt out entirely with `COOEE_NO_ACTIVATE=1`.
 
 ## How rendering works
 
@@ -254,7 +283,9 @@ curl -fsSL https://env.coo.ee/java,android | bash
 ```
 
 **Project config / `SessionStart` hook** (`.claude/settings.json`) — runs in
-both local and cloud sessions; idempotency keeps it cheap:
+both local and cloud sessions; idempotency keeps it cheap. You usually don't
+write this by hand: the first run [auto-installs](#auto-activation) exactly this
+hook into the consuming project. The shape it writes (or merges) is:
 
 ```json
 {
