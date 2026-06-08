@@ -383,8 +383,13 @@
 
   function renderCommand() {
     var seg = segment();
-    cmdText.textContent = "curl -fsSL " + ORIGIN + "/" + seg + " | bash";
-    viewLink.href = ORIGIN + "/" + seg;
+    var url = ORIGIN + "/" + seg;
+    // Bracketed params (java[17,21]) need single-quoting so the shell doesn't
+    // try to glob the '[' / ']'. Plain requests (java,android) don't — a comma
+    // isn't a shell metacharacter — so keep those quote-free, matching the docs.
+    var cmd = seg.indexOf("[") >= 0 ? "'" + url + "'" : url;
+    cmdText.textContent = "curl -fsSL " + cmd + " | bash";
+    viewLink.href = url;
     syncHash();
   }
 
