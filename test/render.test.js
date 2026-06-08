@@ -91,6 +91,24 @@ test("implied modules are concatenated before their requesters", () => {
   );
 });
 
+test("playwright implies node and takes a version param", () => {
+  // The agent CLI needs npm, so playwright pulls in node (canonical: before it).
+  assert.deepEqual(names("playwright"), ["base", "node", "playwright"]);
+  assert.deepEqual(canon("playwright[0.1.13]"), [
+    "base",
+    "node",
+    "playwright[0.1.13]",
+  ]);
+  const body = render("playwright").body;
+  assert.ok(
+    body.indexOf("register_module node\n") <
+      body.indexOf("register_module playwright"),
+    "node should be concatenated before playwright (npm ready first)",
+  );
+  // The version param is injected for the fragment to read.
+  assert.ok(render("playwright[0.1.13]").body.includes("set_params playwright '0.1.13'"));
+});
+
 test("invalid params and malformed tokens return 400", () => {
   for (const seg of ["java[17;rm]", "java[17 21]", "java[$(x)]"]) {
     assert.equal(render(seg).status, 400, `expected 400 for ${JSON.stringify(seg)}`);

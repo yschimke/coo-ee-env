@@ -72,6 +72,7 @@ treats an already-present package as success — so a partial/cold box is
 | `android` | Full SDK via `androidenv`: `platform-tools` (adb), `cmdline-tools`, the requested platform(s) + `build-tools`, `ANDROID_HOME`; `android[30,37,wear-33]` picks the platform API levels | `cache.nixos.org`, `dl.google.com`, `maven.google.com` | — |
 | `android-emulator` | Adds `emulator` + `system-images` to the SDK (via the implied `android` build) and configures `/dev/kvm` access (GitHub `99-kvm4all.rules`); `android-emulator[34,wear-33]` picks the image levels; **implies `android`** | `cache.nixos.org`, `dl.google.com` | — |
 | `node`    | Node.js 22 LTS, npm                       | `cache.nixos.org`, `registry.npmjs.org` | Codex: `CODEX_ENV_NODE_VERSION` |
+| `playwright` | [Playwright agent CLI](https://playwright.dev/agent-cli/introduction) (`@playwright/cli`, the `playwright-cli` binary) via npm + the Playwright browsers from Nix; `playwright[0.1.13]` pins the CLI version; **implies `node`** | `cache.nixos.org`, `registry.npmjs.org` (`cdn.playwright.dev` only with `COOEE_PLAYWRIGHT_DOWNLOAD_BROWSERS=1`) | — |
 | `python`  | CPython 3 + pip                           | `cache.nixos.org`, `pypi.org`, `files.pythonhosted.org` | Codex: `CODEX_ENV_PYTHON_VERSION` |
 | `go`      | Go toolchain, `GOPATH`                    | `cache.nixos.org`, `proxy.golang.org`, `sum.golang.org` | Codex: `CODEX_ENV_GO_VERSION` |
 | `rust`    | `rustc` + `cargo`                         | `cache.nixos.org`, `static.crates.io`, `index.crates.io` | Codex: `CODEX_ENV_RUST_VERSION` |
@@ -144,6 +145,29 @@ curl -fsSL 'https://env.coo.ee/tools[ripgrep,jq],node,skills' | bash
 Nested attributes work too (`tools[nodePackages.prettier]`); an unknown name
 just warns and is skipped, so one typo doesn't fail the whole environment.
 
+#### Recommended tools
+
+A CLI gets its **own module** only when installing it needs logic beyond a
+nixpkgs attribute name — e.g. `playwright` (npm + browsers + env vars). Everything
+else is the long tail the `tools` module already covers: pick the nixpkgs
+attribute name and request it. The high-demand picks, by job:
+
+| Job | `tools[...]` request | nixpkgs attributes |
+| --- | --- | --- |
+| **Search / navigate** | `tools[ripgrep,fd,fzf,tree]` | `ripgrep` (rg), `fd`, `fzf`, `tree` |
+| **JSON / YAML / data** | `tools[jq,yq,jaq]` | `jq`, `yq` (yq-go), `jaq` |
+| **GitHub / git** | `tools[gh,git,lazygit,delta,gitleaks]` | `gh`, `git`, `lazygit`, `delta`, `gitleaks` |
+| **HTTP / APIs** | `tools[curl,wget,httpie,websocat]` | `curl`, `wget`, `httpie` (http), `websocat` |
+| **Containers / k8s** | `tools[docker-client,kubectl,k9s,kubernetes-helm]` | `docker-client`, `kubectl`, `k9s`, `kubernetes-helm` (helm) |
+| **Cloud / IaC** | `tools[awscli2,terraform,opentofu]` | `awscli2` (aws), `terraform`, `opentofu` (tofu) |
+| **Build / make** | `tools[just,gnumake,cmake,ninja]` | `just`, `gnumake` (make), `cmake`, `ninja` |
+| **Editors / nicer shell** | `tools[neovim,bat,eza,zoxide,direnv]` | `neovim` (nvim), `bat`, `eza`, `zoxide`, `direnv` |
+| **JS/TS formatters** | `tools[nodePackages.prettier,nodePackages.pnpm]` | nested `nodePackages.*` |
+
+These are advisory — any other [nixpkgs](https://search.nixos.org/packages)
+attribute works the same way. Mix them with anything else, e.g.
+`tools[ripgrep,jq,gh],node,playwright`.
+
 ### Android: what `android` installs
 
 The `android` module installs a **complete, buildable SDK** — `platform-tools`
@@ -189,6 +213,57 @@ resolves from — commonly `services.gradle.org` (the Gradle distribution),
 `repo.maven.apache.org` / `repo1.maven.org` (Maven Central), and `jitpack.io`.
 The build-time registries are advisory: the script never probes them and never
 fails on them, it just reminds you to allow them before `./gradlew build`.
+
+## Playwright
+
+The [`playwright`](https://playwright.dev/agent-cli/introduction) module installs
+the **Playwright agent CLI** — the `playwright-cli` tool published as
+[`@playwright/cli`](https://www.npmjs.com/package/@playwright/cli) — together with
+the browsers it drives:
+
+```bash
+curl -fsSL https://env.coo.ee/playwright | bash      # @latest
+curl -fsSL 'https://env.coo.ee/playwright[0.1.13]' | bash   # pin the CLI version
+```
+
+**Is it on Nix?** Two halves, two answers:
+
+- **The CLI is not.** `@playwright/cli` is a young (0.1.x) npm package and isn't
+  in nixpkgs, so it can only come from **npm**. That's why the module *implies
+  `node`* (the agent CLI needs Node 18+ / npm). To avoid the classic
+  `npm install -g` failure where npm's global prefix is the **read-only Nix
+  store**, the module points npm at a writable `~/.npm-global` prefix
+  (`NPM_CONFIG_PREFIX`) and puts `~/.npm-global/bin` on `PATH`.
+- **The browsers are** — `nixpkgs#playwright-driver.browsers` ships
+  Chromium/Firefox/WebKit **with their shared-library closure**. The module
+  builds that (anchoring a GC root under `~/.cache/coo-ee/` so it survives
+  `nix store gc`, exactly like the Android SDK) and exports
+  `PLAYWRIGHT_BROWSERS_PATH` at the store path, plus
+  `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1` and
+  `PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=1`. So **no `apt`/`install-deps`
+  step and nothing fetched from the Playwright CDN** — the only install hosts are
+  `cache.nixos.org` (browsers) and `registry.npmjs.org` (the CLI).
+
+This split is deliberate: the npm CLI tracks upstream releases, while the heavy,
+OS-coupled browser binaries come from Nix where their dependencies are pinned and
+cached.
+
+**The version-drift escape hatch.** Playwright expects the browser revisions that
+match its bundled core; if the nixpkgs `playwright-driver` revision ever drifts
+from the CLI's, set `COOEE_PLAYWRIGHT_DOWNLOAD_BROWSERS=1` to skip the Nix
+browsers and let the CLI download its own into `PLAYWRIGHT_BROWSERS_PATH` instead
+(this then needs **`cdn.playwright.dev`** on the allowlist and the OS libraries
+Playwright's browsers link against). The module also falls back to this path
+automatically if the Nix browser build fails.
+
+| Variable | Effect |
+| --- | --- |
+| `COOEE_PLAYWRIGHT_DOWNLOAD_BROWSERS=1` | Skip the Nix browsers; let `playwright-cli install-browser` download them (needs `cdn.playwright.dev` + OS libraries). |
+
+**Agent skills.** The CLI ships optional skills for coding agents
+(`playwright-cli install --skills`). Those are per-project, so the module doesn't
+run it for you — invoke it inside the repo where you want the skills. (For
+*Claude Code* skills, see the [`skills`](#parameterized-modules) module instead.)
 
 ## Cloud built-ins & short-circuit
 
