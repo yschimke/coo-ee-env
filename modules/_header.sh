@@ -116,9 +116,11 @@ cooee_trust_cas_in_jdk() {  # cooee_trust_cas_in_jdk <java_home>
 MODULES=()
 declare -A _HOST_REASON=()   # required to INSTALL — probed, hard-fail if blocked
 declare -A _WANT_REASON=()   # recommended for BUILDS — advisory only (may be wildcards)
+declare -A _MODULE_PARAMS=() # request params per module (comma-joined), injected by the renderer
 register_module() { MODULES+=("$1"); }
 need_host()       { _HOST_REASON["$1"]="$2"; }   # need_host <host> <reason>
 want_host()       { _WANT_REASON["$1"]="$2"; }   # want_host <host|*.host> <reason>
+set_params()      { _MODULE_PARAMS["$1"]="$2"; } # set_params <module> <comma-joined params>
 
 # ---- preconditions: tools, OS, and host reachability ----------------------
 probe_host() {

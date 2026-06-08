@@ -54,15 +54,40 @@ on a warm box and a **repair** on a cold or partially-broken one.
 | `base`    | Nix (Determinate, daemonless)             | `install.determinate.systems`, `cache.nixos.org`, `channels.nixos.org`, `github.com`, `objects.githubusercontent.com` |
 | `java`    | Temurin JDK 17 + 21, `JAVA_HOME`          | `cache.nixos.org` |
 | `android` | `android-tools` (adb/fastboot), `ANDROID_HOME` | `cache.nixos.org`, `dl.google.com`, `maven.google.com` |
+| `skills`  | Claude Code agent skills, linked into `~/.claude/skills/` | `github.com` (`cache.nixos.org` if `git` is absent) |
 
 `base` is always included; it is the implicit preamble for every request.
 
+### Parameterized modules
+
+A module isn't necessarily a Nix package — `skills` is the first **other kind
+of dependency**. It clones one or more skill repos and symlinks every skill
+(any directory with a `SKILL.md`) into `~/.claude/skills/`. Which repos is a
+**request parameter**, given in brackets:
+
+```bash
+# default: the skills repo this service was extracted from
+curl -fsSL https://coo.ee/env/skills | bash
+# explicit source(s), with an optional @ref (branch/tag/sha)
+curl -fsSL 'https://coo.ee/env/skills[yschimke/skills]' | bash
+curl -fsSL 'https://coo.ee/env/skills[yschimke/skills@v1,owner/more-skills],java' | bash
+```
+
+The bracketed list is the module's request-time input. The renderer validates
+it (lowercase module names; `[A-Za-z0-9._/@-]` params, so a URL can't inject
+shell), dedupes and sorts it, and injects it into the script as
+`set_params skills '<owner/repo,...>'`. The shell fragment stays a static
+source of truth for *logic* while the renderer supplies the *data*. Re-running
+is idempotent: the repo is cached under `~/.cache/coo-ee/skills/` and re-pulled,
+and the symlinks are refreshed in place.
+
 ## How rendering works
 
-The served script is just a concatenation:
+The served script is just a concatenation (plus, for parameterized requests, a
+small injected `set_params` block between the header and the modules):
 
 ```
-_header.sh  +  base.sh  +  <module>.sh ...  +  _footer.sh
+_header.sh  +  [set_params ...]  +  base.sh  +  <module>.sh ...  +  _footer.sh
 ```
 
 The [`modules/`](./modules) directory holds the source fragments — the single
@@ -79,7 +104,11 @@ bash -n 'java,android'   # syntax check
 `render()` canonicalizes the module list — it dedupes, forces `base` first, and
 sorts the rest alphabetically — so `java,android` and `android,java` render
 byte-identically (the `android` block comes before the `java` block in both).
-To preview a different combination, pass a different segment to `render()`.
+Parameterized modules canonicalize the same way: their bracketed params are
+deduped and sorted, and a module named twice merges its params, so
+`skills[b,a]` and `skills[a,b]` (and `skills[a],skills[b]`) all share one cache
+entry. To preview a different combination, pass a different segment to
+`render()`.
 
 ## Wiring it into an agent environment
 
@@ -123,7 +152,9 @@ java,android          M1 pre-rendered sample (kept as a runnable demo)
 
 `render()` sorts + dedupes modules and always puts `base` first, so
 `java,android` and `android,java` produce byte-identical output and share one
-CDN cache entry. Unknown modules return `400` with the available list.
+CDN cache entry; bracketed params (`skills[a,b]`) are canonicalized the same
+way. Unknown modules — or malformed names/params — return `400` with the
+available list.
 
 **Run it locally:**
 
