@@ -73,6 +73,7 @@ treats an already-present package as success — so a partial/cold box is
 | `python`  | CPython 3 + pip                           | `cache.nixos.org`, `pypi.org`, `files.pythonhosted.org` | Codex: `CODEX_ENV_PYTHON_VERSION` |
 | `go`      | Go toolchain, `GOPATH`                    | `cache.nixos.org`, `proxy.golang.org`, `sum.golang.org` | Codex: `CODEX_ENV_GO_VERSION` |
 | `rust`    | `rustc` + `cargo`                         | `cache.nixos.org`, `static.crates.io`, `index.crates.io` | Codex: `CODEX_ENV_RUST_VERSION` |
+| `ruby`    | Ruby + RubyGems (default 3; `ruby[3.4.9]` to pin) | `cache.nixos.org`, `rubygems.org`, `index.rubygems.org` | Codex: `CODEX_ENV_RUBY_VERSION` |
 | `skills`  | Claude Code agent skills, linked into `~/.claude/skills/` | `github.com` (`cache.nixos.org` if `git` is absent) | — |
 | `tools`   | Arbitrary CLI tools from nixpkgs, by name (`tools[ripgrep,jq,gh]`) | `cache.nixos.org` | — |
 
@@ -114,8 +115,10 @@ owning the `java`/`javac` symlinks); bare `java` keeps the default 17 + 21.
 `android[30,37,wear-33]` records platform API levels in `COOEE_ANDROID_PLATFORMS`,
 and `android-emulator[34,wear-33]` records system-image levels in
 `COOEE_ANDROID_EMULATOR_IMAGES`, both for the project's `androidenv` flake to
-provision. A param-less request injects nothing, so it renders byte-identically
-to before parameters existed.
+provision. `ruby[3]` selects the major series (the nixpkgs default Ruby 3) and
+`ruby[3.4.9]` pins a full version down to its `ruby_3_4` major.minor attribute. A
+param-less request injects nothing, so it renders byte-identically to before
+parameters existed.
 
 ### Module implications
 
