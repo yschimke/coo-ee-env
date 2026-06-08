@@ -81,6 +81,15 @@ cooee_forward_persisted_env() {
   fi
 }
 
+# ---- privilege helper -----------------------------------------------------
+# Run a command as root: directly when already root, via sudo when available,
+# otherwise return 127 so the caller can degrade gracefully (warn, not die).
+cooee_sudo() {
+  if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then "$@"
+  elif command -v sudo >/dev/null 2>&1; then sudo "$@"
+  else return 127; fi
+}
+
 # ---- idempotent nix package install ---------------------------------------
 # Safe to run repeatedly: installs only what's missing, treats an already
 # present package as success, so the whole script is a no-op on a warm box

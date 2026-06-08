@@ -67,9 +67,33 @@ function splitTopLevel(segment) {
   return out;
 }
 
+// A fragment may declare render-time dependencies with a directive comment:
+//   # coo.ee:implies <name> [<name> ...]
+// Requesting the module then pulls the implied modules into the render
+// (transitively), so `android-emulator` alone yields base + android +
+// android-emulator. Keeping the declaration in the fragment means a module's
+// full definition — what it installs, the hosts it needs, what it implies —
+// lives in one file. Implications are render-time only; the line is a plain
+// comment at run time. Implied names are validated like any other module below.
+const IMPLIES_RE = /^#[ \t]*coo\.ee:implies[ \t]+(.+?)[ \t]*$/gm;
+
+function moduleImplies(name) {
+  const file = path.join(MODULES_DIR, `${name}.sh`);
+  if (!fs.existsSync(file)) return []; // unknown modules are caught in render()
+  const out = [];
+  for (const m of fs.readFileSync(file, "utf8").matchAll(IMPLIES_RE)) {
+    for (const n of m[1].split(/[\s,]+/)) {
+      const t = n.trim().toLowerCase();
+      if (t) out.push(t);
+    }
+  }
+  return out;
+}
+
 // canonicalize(segment) -> { entries, errors }
 //   entries: [{ name, params: [...] }] — `base` forced first, the rest sorted
 //            by name; duplicate modules merge their params; params deduped+sorted.
+//            Implied modules (see moduleImplies) are pulled in with no params.
 //   errors:  human-readable strings for malformed tokens (renderer -> 400).
 // Canonical order means android,java and java,android (and skills[b,a] vs
 // skills[a,b]) render byte-identically and share a CDN cache entry.
@@ -105,10 +129,27 @@ function canonicalize(segment) {
     params.set(name, set);
   }
 
+  // Resolve implications transitively. Implied modules arrive with no params of
+  // their own; an explicitly-requested module (with params) is already present
+  // and left untouched.
+  const queue = [...params.keys()];
+  while (queue.length) {
+    for (const dep of moduleImplies(queue.shift())) {
+      if (dep === "base" || params.has(dep)) continue;
+      params.set(dep, new Set());
+      queue.push(dep);
+    }
+  }
+
   const rest = [...params.keys()].filter((n) => n !== "base").sort();
   const entries = ["base", ...rest].map((name) => ({
     name,
-    params: [...(params.get(name) || new Set())].sort(),
+    // Numeric-aware so version params order naturally (9 < 17 < 21 < wear-33),
+    // not lexically (which would give 17 < 8). Harmless for non-numeric params
+    // like repo slugs.
+    params: [...(params.get(name) || new Set())].sort((a, b) =>
+      a.localeCompare(b, "en", { numeric: true }),
+    ),
   }));
 
   return { entries, errors };

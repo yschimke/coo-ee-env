@@ -66,8 +66,9 @@ treats an already-present package as success — so a partial/cold box is
 | Module    | Installs                                  | Needs network access to | Cloud built-in selector |
 | --------- | ----------------------------------------- | ----------------------- | ----------------------- |
 | `base`    | Nix (Determinate, daemonless)             | `install.determinate.systems`, `cache.nixos.org`, `channels.nixos.org`, `github.com`, `objects.githubusercontent.com` | — |
-| `java`    | Temurin JDK 17 + 21, `JAVA_HOME`          | `cache.nixos.org` | base-image JDK |
-| `android` | `android-tools` (adb/fastboot), `ANDROID_HOME` | `cache.nixos.org`, `dl.google.com`, `maven.google.com` | — |
+| `java`    | Temurin JDK (default 17 + 21; `java[17,21]` to choose), `JAVA_HOME` | `cache.nixos.org` | base-image JDK |
+| `android` | `android-tools` (adb/fastboot), `ANDROID_HOME`; `android[30,37,wear-33]` records platforms in `COOEE_ANDROID_PLATFORMS` | `cache.nixos.org`, `dl.google.com`, `maven.google.com` | — |
+| `android-emulator` | Configures `/dev/kvm` access (GitHub `99-kvm4all.rules`); records system images in `COOEE_ANDROID_EMULATOR_IMAGES`; **implies `android`** | `cache.nixos.org`, `dl.google.com` | — |
 | `node`    | Node.js 22 LTS, npm                       | `cache.nixos.org`, `registry.npmjs.org` | Codex: `CODEX_ENV_NODE_VERSION` |
 | `python`  | CPython 3 + pip                           | `cache.nixos.org`, `pypi.org`, `files.pythonhosted.org` | Codex: `CODEX_ENV_PYTHON_VERSION` |
 | `go`      | Go toolchain, `GOPATH`                    | `cache.nixos.org`, `proxy.golang.org`, `sum.golang.org` | Codex: `CODEX_ENV_GO_VERSION` |
@@ -96,11 +97,34 @@ curl -fsSL 'https://env.coo.ee/skills[yschimke/skills@v1,owner/more-skills],java
 
 The bracketed list is the module's request-time input. The renderer validates
 it (lowercase module names; `[A-Za-z0-9._/@-]` params, so a URL can't inject
-shell), dedupes and sorts it, and injects it into the script as
-`set_params skills '<owner/repo,...>'`. The shell fragment stays a static
-source of truth for *logic* while the renderer supplies the *data*. Re-running
-is idempotent: the repo is cached under `~/.cache/coo-ee/skills/` and re-pulled,
-and the symlinks are refreshed in place.
+shell), dedupes and sorts it (numerically, so `9 < 17 < 21`), and injects it
+into the script as `set_params skills '<owner/repo,...>'`. The shell fragment
+stays a static source of truth for *logic* while the renderer supplies the
+*data*. Re-running is idempotent: the repo is cached under
+`~/.cache/coo-ee/skills/` and re-pulled, and the symlinks are refreshed in place.
+
+The same brackets carry **versions** for the toolchain modules:
+
+```bash
+curl -fsSL 'https://env.coo.ee/java[17,21],android[30,37,wear-33]' | bash
+```
+
+`java[17,21]` installs each Temurin major (`nixpkgs#temurin-bin-<major>`, lowest
+owning the `java`/`javac` symlinks); bare `java` keeps the default 17 + 21.
+`android[30,37,wear-33]` records platform API levels in `COOEE_ANDROID_PLATFORMS`,
+and `android-emulator[34,wear-33]` records system-image levels in
+`COOEE_ANDROID_EMULATOR_IMAGES`, both for the project's `androidenv` flake to
+provision. A param-less request injects nothing, so it renders byte-identically
+to before parameters existed.
+
+### Module implications
+
+A fragment can declare render-time dependencies with a directive comment —
+`# coo.ee:implies <name>` — and the renderer pulls them in (transitively) before
+canonicalizing. `android-emulator` implies `android`, so requesting just the
+emulator renders as `base,android,android-emulator` (with `android` first, so
+its `adb`/`ANDROID_HOME` are ready before the emulator block). Keeping the
+declaration in the fragment means a module's full definition lives in one file.
 
 `tools` is the same idea for the long tail of CLIs that don't deserve their own
 module — each parameter is a nixpkgs attribute name, installed through the same
