@@ -278,6 +278,9 @@ need_host objects.githubusercontent.com  "GitHub release assets for flake inputs
 #   ourselves afterwards.
 cooee_nix_daemon_socket=/nix/var/nix/daemon-socket/socket
 
+cooee_is_root()     { [[ "${EUID:-$(id -u)}" -eq 0 ]]; }
+cooee_has_systemd() { [[ -d /run/systemd/system ]]; }
+
 cooee_start_nix_daemon() {  # bring up nix-daemon when there is no init to do it
   [[ -S "$cooee_nix_daemon_socket" ]] && return 0
   command -v sudo >/dev/null 2>&1 || { warn "non-root Nix install but no sudo to start nix-daemon; installs may fail."; return 0; }
@@ -299,16 +302,14 @@ module_base() {
     # Pick the daemon strategy from who we are and whether systemd is around.
     local -a init_flags=(--init none)
     local manage_daemon=0
-    if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
-      if [[ -d /run/systemd/system ]]; then
-        init_flags=(--init systemd)   # let the installer start nix-daemon.service
-        log "Installing Nix (Determinate, systemd daemon — non-root host)..."
-      else
-        manage_daemon=1               # no init: we'll start the daemon ourselves
-        log "Installing Nix (Determinate, daemon started manually — non-root, no systemd)..."
-      fi
-    else
+    if cooee_is_root; then
       log "Installing Nix (Determinate Systems installer, daemonless — running as root)..."
+    elif cooee_has_systemd; then
+      init_flags=(--init systemd)     # let the installer start nix-daemon.service
+      log "Installing Nix (Determinate, systemd daemon — non-root host)..."
+    else
+      manage_daemon=1                 # no init: we'll start the daemon ourselves
+      log "Installing Nix (Determinate, daemon started manually — non-root, no systemd)..."
     fi
     # flakes: needed for nix#pkgs references used by the modules.
     curl -fsSL https://install.determinate.systems/nix \
@@ -410,11 +411,15 @@ module_java() {
   fi
 
   log "Installing Temurin JDK 17 + 21 via Nix..."
-  nix_ensure temurin-bin-17 nixpkgs#temurin-bin-17 --accept-flake-config
-  nix_ensure temurin-bin-21 nixpkgs#temurin-bin-21 --accept-flake-config
+  # Both JDKs ship colliding files (e.g. lib/modules), so a single profile can't
+  # hold both at the same priority — `nix profile add` aborts. Give them distinct
+  # priorities (lower wins): 17 at 5 owns the `java`/`javac` symlinks (the
+  # toolchain most repos here pin to), 21 at 6 installs alongside and stays
+  # discoverable by Gradle toolchain resolution.
+  nix_ensure temurin-bin-17 nixpkgs#temurin-bin-17 --accept-flake-config --priority 5
+  nix_ensure temurin-bin-21 nixpkgs#temurin-bin-21 --accept-flake-config --priority 6
 
-  # Default JAVA_HOME -> 17 (the toolchain most repos here pin to); 21 stays
-  # on PATH for projects that opt into it.
+  # JAVA_HOME -> the active (priority-winning) JDK, i.e. 17.
   command -v java >/dev/null 2>&1 || die "java not on PATH after install."
   add_env JAVA_HOME "$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")"
 
