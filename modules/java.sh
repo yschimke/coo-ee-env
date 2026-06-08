@@ -7,7 +7,8 @@
 #               gradle/gradle-daemon-jvm.properties), else 21 — or 17 + 21 when
 #               android is also being installed.
 #    hosts    : cache.nixos.org (install)
-#             : Gradle / Maven / toolchain registries (build, advisory)
+#             : Gradle / Maven / toolchain registries (build; used by the
+#               best-effort dependency prefetch, advisory — opt out COOEE_NO_DEPS=1)
 #  Host set mirrors skills/compose-preview/references/agent-cloud.md.
 # ===========================================================================
 register_module java
@@ -45,6 +46,7 @@ module_java() {
     add_env JAVA_HOME "$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")"
     cooee_trust_cas_in_jdk "$JAVA_HOME"
     ok "java: adopted existing $(java -version 2>&1 | head -1) (JAVA_HOME=$JAVA_HOME)."
+    cooee_prefetch_gradle
     return 0
   fi
 
@@ -89,4 +91,79 @@ module_java() {
   cooee_trust_cas_in_jdk "$JAVA_HOME"
 
   ok "java ready: $(java -version 2>&1 | head -1)"
+
+  cooee_prefetch_gradle
+}
+
+# Warm the Gradle build cache: with a JDK ready (and the Gradle/Maven hosts
+# reachable), download the project's dependencies now so a later `./gradlew
+# build` — possibly under tighter egress — can run from cache. Best-effort and
+# never fatal.
+#
+# By default this resolves every resolvable configuration's *files* via a
+# transient init script, so the actual artifact JARs land in the cache — not
+# just the metadata that the `dependencies` report task alone fetches — without
+# compiling anything. Set COOEE_GRADLE_DEPS_TASK to run a specific task instead
+# (e.g. "assemble -x test"); the value is word-split so it can carry flags.
+#
+# Skipped when there is no Gradle build in the project dir, when neither a
+# wrapper nor `gradle` is available, or when COOEE_NO_DEPS=1.
+cooee_prefetch_gradle() {
+  cooee_deps_enabled || { log "java: skipping Gradle dependency prefetch (COOEE_NO_DEPS=1)."; return 0; }
+
+  local dir; dir=$(cooee_project_dir)
+  if ! compgen -G "$dir"/settings.gradle* >/dev/null 2>&1 \
+     && ! compgen -G "$dir"/build.gradle* >/dev/null 2>&1; then
+    log "java: no Gradle build in $dir; skipping dependency prefetch."
+    return 0
+  fi
+
+  # Prefer the project's wrapper (pins the exact Gradle version) over any
+  # system gradle.
+  local gradle
+  if [[ -x "$dir/gradlew" ]]; then gradle="$dir/gradlew"
+  elif command -v gradle >/dev/null 2>&1; then gradle=gradle
+  else log "java: Gradle build present but no wrapper or gradle on PATH; skipping dependency prefetch."; return 0; fi
+
+  local -a inv=(--no-daemon --console=plain)
+  local label init=""
+  if [[ -n "${COOEE_GRADLE_DEPS_TASK:-}" ]]; then
+    # Explicit task override — word-split so it can carry flags.
+    local -a task; read -r -a task <<< "$COOEE_GRADLE_DEPS_TASK"
+    inv+=("${task[@]}")
+    label="task: ${task[*]}"
+  else
+    # Default: an init script resolves every resolvable configuration's files
+    # (leniently, so one unresolvable config can't fail the warm-up), forcing
+    # artifact download across all projects. `help` just drives evaluation.
+    init=$(mktemp "${TMPDIR:-/tmp}/cooee-gradle-prefetch.XXXXXX") || {
+      warn "java: could not create a temp init script; skipping dependency prefetch."; return 0; }
+    cat > "$init" <<'GRADLE'
+gradle.projectsEvaluated {
+  rootProject.allprojects { proj ->
+    proj.configurations.each { conf ->
+      if (conf.canBeResolved) {
+        try { conf.resolvedConfiguration.lenientConfiguration.files }
+        catch (Throwable t) { proj.logger.lifecycle("cooee: skip ${proj.path}:${conf.name} (${t.message})") }
+      }
+    }
+  }
+}
+GRADLE
+    inv+=(--init-script "$init" help)
+    label="all resolvable configurations"
+  fi
+
+  log "java: prefetching Gradle build dependencies ($label)..."
+  # Capture output so the success path stays quiet (resolution is noisy);
+  # surface it only on failure, for diagnosis.
+  local out rc=0
+  out=$( cd "$dir" && "$gradle" "${inv[@]}" </dev/null 2>&1 ) || rc=$?
+  [[ -n "$init" ]] && rm -f "$init"
+  if [[ $rc -eq 0 ]]; then
+    ok "java: Gradle build dependencies prefetched ($label)."
+  else
+    printf '%s\n' "$out" >&2
+    warn "java: Gradle dependency prefetch failed (continuing). Allowlist the Gradle/Maven hosts, or set COOEE_NO_DEPS=1 to skip."
+  fi
 }

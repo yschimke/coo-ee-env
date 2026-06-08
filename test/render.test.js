@@ -178,6 +178,24 @@ test("moduleInfo surfaces the hosts each module needs and wants", () => {
   assert.ok(byName["android"].hosts.want.map((h) => h.host).includes("*.jetbrains.com"));
 });
 
+test("java/node render a COOEE_NO_DEPS-gated build-dependency prefetch", () => {
+  // Shared gate + project-dir helper live in the header (always present).
+  const header = render("").body;
+  assert.ok(header.includes("cooee_deps_enabled"), "header defines the deps gate");
+  assert.ok(header.includes("COOEE_NO_DEPS"), "the gate keys off COOEE_NO_DEPS");
+  assert.ok(header.includes("cooee_project_dir"), "header defines the project-dir helper");
+
+  // java warms Gradle; the task is overridable via COOEE_GRADLE_DEPS_TASK.
+  const java = render("java").body;
+  assert.ok(java.includes("cooee_prefetch_gradle"), "java defines + calls the Gradle prefetch");
+  assert.ok(java.includes("COOEE_GRADLE_DEPS_TASK"), "the Gradle task is overridable");
+
+  // node installs npm dependencies (npm ci with a lockfile, else npm install).
+  const node = render("node").body;
+  assert.ok(node.includes("cooee_prefetch_npm"), "node defines + calls the npm prefetch");
+  assert.ok(node.includes("npm ci") && node.includes("npm install"), "node uses npm ci/install");
+});
+
 test("the version example from the brief renders and is well-formed", () => {
   const o = render("java[17,21],android[30,37,wear-33]");
   assert.equal(o.status, 200);

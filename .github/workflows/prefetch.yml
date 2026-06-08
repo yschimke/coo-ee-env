@@ -1,0 +1,75 @@
+name: prefetch
+
+# Integration check for the build-dependency prefetch (modules/_header.sh +
+# java.sh): render the `java` module and actually run it against the trivial
+# sample Gradle project in examples/gradle-sample, then assert the prefetch
+# downloaded the dependency *artifact* (not just metadata) into the Gradle
+# cache. A second run asserts COOEE_NO_DEPS=1 opts out. This complements
+# render.yml (syntax only) and setup.yml (the Nix install path).
+
+# PRs run on pull_request; push is scoped to main so an open PR's commits
+# don't trigger a second (duplicate) run.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  gradle-prefetch:
+    runs-on: ubuntu-latest
+    env:
+      # Isolated Gradle home so the cache assertions are unambiguous.
+      GRADLE_USER_HOME: ${{ runner.temp }}/ghome
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # A JDK for the sample's ./gradlew. The java module adopts this existing
+      # JDK (no Nix install) and then runs the prefetch — the warm-box path.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Render the java module
+        run: |
+          node -e "process.stdout.write(require('./api/env/render').render('java').body)" > /tmp/java.sh
+          bash -n /tmp/java.sh
+          echo "rendered $(wc -l < /tmp/java.sh) lines"
+
+      - name: Run setup (prefetch) against the sample project
+        working-directory: examples/gradle-sample
+        run: bash /tmp/java.sh
+
+      - name: Assert the dependency JAR was downloaded
+        run: |
+          set -euo pipefail
+          jar=$(find "$GRADLE_USER_HOME/caches" \
+                  -path '*com.google.guava/guava/*' -name 'guava-*.jar' 2>/dev/null | head -1 || true)
+          if [ -z "$jar" ]; then
+            echo "FAIL: guava artifact JAR not found under $GRADLE_USER_HOME/caches"
+            find "$GRADLE_USER_HOME/caches" -name '*.jar' 2>/dev/null | head -50 || true
+            exit 1
+          fi
+          echo "OK: prefetch downloaded the dependency artifact -> $jar"
+
+      - name: Assert COOEE_NO_DEPS=1 opts out (fresh cache, nothing downloaded)
+        working-directory: examples/gradle-sample
+        env:
+          GRADLE_USER_HOME: ${{ runner.temp }}/ghome-nodeps
+          COOEE_NO_DEPS: "1"
+          # Fresh stamp so the run can't short-circuit on the earlier provision.
+          COOEE_STAMP: ${{ runner.temp }}/provisioned-nodeps
+        run: |
+          set -euo pipefail
+          out=$(bash /tmp/java.sh 2>&1); echo "$out"
+          echo "$out" | grep -qi "skipping Gradle dependency prefetch (COOEE_NO_DEPS=1)" \
+            || { echo "FAIL: prefetch did not report the COOEE_NO_DEPS opt-out"; exit 1; }
+          if find "$GRADLE_USER_HOME/caches" -name 'guava-*.jar' 2>/dev/null | grep -q .; then
+            echo "FAIL: a dependency JAR was downloaded despite COOEE_NO_DEPS=1"; exit 1
+          fi
+          echo "OK: COOEE_NO_DEPS=1 skipped the prefetch"

@@ -331,10 +331,41 @@ Knobs:
 | `COOEE_FORCE=1` | Ignore the short-circuit and adoption; force a fresh Nix install / repair. |
 | `COOEE_IGNORE_HOST_CHECK=1` | Continue even if a required install host is blocked. |
 | `COOEE_NO_ACTIVATE=1` | Skip [auto-activation](#auto-activation) — don't touch shell rc files or `.claude/settings.json`. |
+| `COOEE_NO_DEPS=1` | Skip [build-dependency prefetch](#build-dependency-prefetch) — install the toolchain only, don't resolve the project's dependencies. |
+| `COOEE_GRADLE_DEPS_TASK` | Run a specific Gradle task for the prefetch (e.g. `assemble -x test`) instead of the default whole-graph artifact resolution. |
 | `COOEE_BASE_URL` | Service base URL baked into the installed SessionStart hook (default `https://env.coo.ee`). |
 
 The provisioning stamp lives at `~/.config/coo-ee/provisioned` (the canonical
 module set); delete it to force the next run to re-probe.
+
+## Build-dependency prefetch
+
+Installing the toolchain is only half the job — the first real build still has
+to download the project's dependencies, and in a sandbox that's exactly when
+egress may be locked down. So once a language module finishes, it **warms the
+build cache** while the registries are still reachable:
+
+- **`java`** resolves every resolvable configuration's *files* across all
+  projects (via a transient init script), so the dependency **artifacts** — not
+  just the metadata that the `dependencies` report task alone fetches — land in
+  the Gradle cache, along with the Gradle distribution and plugins, without
+  compiling. It prefers the project's `./gradlew` (pinned version) over any
+  system `gradle`. Set `COOEE_GRADLE_DEPS_TASK` to run a specific task instead
+  (e.g. `assemble -x test`).
+- **`node`** runs `npm ci` when there's a clean lockfile (falling back to
+  `npm install`), otherwise `npm install`.
+
+The step targets the consuming project (`$CLAUDE_PROJECT_DIR`, else the current
+directory) and is a no-op when there's no Gradle build / `package.json` there.
+It is **best-effort**: a failure (e.g. a registry host that isn't allowlisted)
+warns but never fails provisioning, since the toolchain itself is already in
+place. Opt out entirely with `COOEE_NO_DEPS=1`.
+
+The trivial Gradle project under [`examples/gradle-sample/`](examples/gradle-sample)
+exercises this end-to-end: the [`prefetch`](.github/workflows/prefetch.yml)
+workflow renders the `java` module, runs it against the sample, and asserts the
+dependency JAR is downloaded into the Gradle cache (and that `COOEE_NO_DEPS=1`
+skips it).
 
 ## Auto-activation
 
