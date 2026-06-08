@@ -5,7 +5,7 @@
 #               module installs the emulator and system images into the SDK
 #               (it reads this module's params); here we make KVM usable and
 #               record/verify the request.
-#    params   : android-emulator[36,wear-33] selects the system-image API levels
+#    params   : android-emulator[36] selects the system-image API levels
 #               (also recorded in COOEE_ANDROID_EMULATOR_IMAGES)
 #    hosts    : cache.nixos.org (install)
 #             : dl.google.com (emulator binaries + system images)
