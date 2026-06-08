@@ -173,8 +173,12 @@ After the domain is live, drop the simulation caveat above and the
   `curl | bash`. Keep the apex `coo.ee` for a human landing page.
 - **Comma path** is fine (the gitignore.io precedent); order is canonicalized
   server-side so it caches well.
-- **Keep the curl path pure** — a bare `curl` prints the script for review; a
-  browser (`Accept: text/html`) can show help. HTTPS only.
+- **Renders inline in a browser** — the handler negotiates on `Accept`: a
+  browser (`Accept: text/html`) gets `text/plain` so the script displays in the
+  tab for review instead of downloading, while `curl` and other tools get the
+  semantically correct `text/x-shellscript`. Both send
+  `Content-Disposition: inline` (no save-as), and `Vary: Accept` keeps the two
+  representations cached separately. HTTPS only.
 - **Later:** version pinning (`/java,android@v1`) for reproducible installs.
 
 ## License
