@@ -1,5 +1,7 @@
 {
   "rewrites": [
+    { "source": "/env/recommend/:modules", "destination": "/api/env/recommend/:modules" },
+    { "source": "/recommend/:modules", "destination": "/api/env/recommend/:modules" },
     { "source": "/env/:modules", "destination": "/api/env/:modules" },
     { "source": "/:modules", "destination": "/api/env/:modules" }
   ],
@@ -8,6 +10,9 @@
       "includeFiles": "modules/**"
     },
     "api/modules.js": {
+      "includeFiles": "modules/**"
+    },
+    "api/env/recommend/[modules].js": {
       "includeFiles": "modules/**"
     }
   }

@@ -273,6 +273,43 @@ deduped and sorted, and a module named twice merges its params, so
 entry. To preview a different combination, pass a different segment to
 `render()`.
 
+## Recommendations
+
+Given what you've already picked, the service can suggest what to add next —
+sibling modules and `tools[...]` bundles that commonly go with your selection:
+
+```bash
+# JSON, for tooling / a UI
+curl -fsSL https://env.coo.ee/recommend/java
+# human-readable, for the terminal
+curl -fsSL -H 'Accept: text/plain' https://env.coo.ee/recommend/java
+```
+
+```jsonc
+{
+  "selected": ["base", "java"],
+  "recommendations": [
+    { "kind": "module", "spec": "android", "score": 5,
+      "reasons": ["Android builds run on the JDK you just added."] },
+    { "kind": "tools", "spec": "tools[gradle,kotlin]", "score": 3,
+      "reasons": ["Gradle + Kotlin are the usual JVM build/CLI companions."] }
+    // ... plus the universal CLI kit and agent skills
+  ],
+  "next": "base,android,java,skills,tools[bat,fd,fzf,gh,gradle,jq,kotlin,ripgrep]"
+}
+```
+
+Each `spec` is an appendable request, and `next` is the whole selection plus
+every suggestion, already canonicalized — so `curl .../$next | bash` just works.
+A CI check asserts every recommendation (and `next`) actually renders, so the
+service can never suggest something uninstallable.
+
+The rules live in [`api/env/recommend.js`](./api/env/recommend.js) as a static
+affinity table (`BASELINE_TOOLS`, per-module `RULES`, `COOCCURRENCE`). The
+engine takes the affinities as an argument — `recommend(segment, { knowledge })`
+— so the hand-written table can later be swapped for one derived from real
+usage (co-occurrence counts from request logs) without touching the scoring.
+
 ## Wiring it into an agent environment
 
 Because it is one idempotent line, it drops into either layer:
@@ -333,13 +370,15 @@ the same allowlist discussed in the `skills` repo's
 ## The dynamic service
 
 ```
-modules/              shell fragments — the single source of truth
-api/env/render.js     pure renderer: canonicalize + concatenate (unit-testable)
-api/env/[modules].js  Vercel handler wrapping render()
-api/modules.js        JSON module catalog (name + software blurb) for the picker
-public/index.html     landing page: autocomplete picker -> the one-liner
-vercel.json           routes /env/:modules and /:modules -> the function
-java,android          M1 pre-rendered sample (kept as a runnable demo)
+modules/                       shell fragments — the single source of truth
+api/env/render.js              pure renderer: canonicalize + concatenate (unit-testable)
+api/env/[modules].js           Vercel handler wrapping render()
+api/env/recommend.js           pure recommender: affinity table + scoring (unit-testable)
+api/env/recommend/[modules].js Vercel handler wrapping recommend()
+api/modules.js                 JSON module catalog (name + software blurb) for the picker
+public/index.html              landing page: autocomplete picker -> the one-liner
+vercel.json                    routes /env/:modules, /recommend/:modules, /:modules
+java,android                   M1 pre-rendered sample (kept as a runnable demo)
 ```
 
 `render()` sorts + dedupes modules and always puts `base` first, so
