@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # ===========================================================================
-#  coo.ee/env — composable dev-environment bootstrapper   (SIMULATION)
+#  coo.ee/env — composable dev-environment bootstrapper
 # ---------------------------------------------------------------------------
 #  This is the HEADER fragment. The hosted service concatenates:
 #       _header.sh  +  <module>.sh ...  +  _footer.sh
-#  to produce the script served at  https://coo.ee/env/<modules>.
+#  to produce the script served at  https://env.coo.ee/<modules>.
 #  The checked-in file  java,android  is one such rendering.
 #  Edit fragments here; do not hand-edit the rendered artifact.
 #  See README.md.
 # ===========================================================================
 set -euo pipefail
 
-COOEE_VERSION="0.1.0-sim"
+COOEE_VERSION="0.1.0"
 
 # ---- GitHub Actions awareness ---------------------------------------------
 # GitHub is just another cloud target, but it has its own log + env protocol.
