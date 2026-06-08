@@ -44,8 +44,11 @@ curl -fsSL https://raw.githubusercontent.com/yschimke/coo-ee-env/main/java,andro
    blocked it prints exactly which hosts to allow and where (Claude Code,
    Codex, Antigravity / Gemini), then **stops** — no half-installed
    environment. Override with `COOEE_IGNORE_HOST_CHECK=1`.
-4. **Installs [Nix](https://determinate.systems/)** (daemonless) as the base —
-   only if at least one module actually needs to install.
+4. **Installs [Nix](https://determinate.systems/)** as the base — only if at
+   least one module actually needs to install. Daemonless when running as root
+   (the usual agent sandbox); when run non-root (e.g. a CI runner) it brings up
+   the `nix-daemon` (via systemd when present, otherwise started directly) so
+   the root-owned store is reachable.
 5. **Installs each remaining module** through Nix (e.g. `java` → Temurin JDK
    17 + 21, `node` → Node.js 22).
 6. **Persists the environment** to `~/.config/coo-ee/env.sh` and, when running
