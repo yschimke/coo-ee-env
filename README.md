@@ -73,10 +73,11 @@ treats an already-present package as success — so a partial/cold box is
 | `go`      | Go toolchain, `GOPATH`                    | `cache.nixos.org`, `proxy.golang.org`, `sum.golang.org` | Codex: `CODEX_ENV_GO_VERSION` |
 | `rust`    | `rustc` + `cargo`                         | `cache.nixos.org`, `static.crates.io`, `index.crates.io` | Codex: `CODEX_ENV_RUST_VERSION` |
 | `skills`  | Claude Code agent skills, linked into `~/.claude/skills/` | `github.com` (`cache.nixos.org` if `git` is absent) | — |
+| `tools`   | Arbitrary CLI tools from nixpkgs, by name (`tools[ripgrep,jq,gh]`) | `cache.nixos.org` | — |
 
 `base` is always included; it is the implicit preamble for every request. The
 language modules above install a Nix toolchain (or adopt the provider's
-built-in); `skills` is a different *kind* of dependency — see below.
+built-in); `skills` and `tools` are different *kinds* of dependency — see below.
 
 ### Parameterized modules
 
@@ -100,6 +101,19 @@ shell), dedupes and sorts it, and injects it into the script as
 source of truth for *logic* while the renderer supplies the *data*. Re-running
 is idempotent: the repo is cached under `~/.cache/coo-ee/skills/` and re-pulled,
 and the symlinks are refreshed in place.
+
+`tools` is the same idea for the long tail of CLIs that don't deserve their own
+module — each parameter is a nixpkgs attribute name, installed through the same
+idempotent `nix_ensure`:
+
+```bash
+curl -fsSL 'https://env.coo.ee/tools[ripgrep,jq,gh]' | bash
+# mix with anything else
+curl -fsSL 'https://env.coo.ee/tools[ripgrep,jq],node,skills' | bash
+```
+
+Nested attributes work too (`tools[nodePackages.prettier]`); an unknown name
+just warns and is skipped, so one typo doesn't fail the whole environment.
 
 ## Cloud built-ins & short-circuit
 
