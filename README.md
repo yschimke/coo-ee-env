@@ -77,7 +77,8 @@ treats an already-present package as success — so a partial/cold box is
 | `go`      | Go toolchain, `GOPATH`                    | `cache.nixos.org`, `proxy.golang.org`, `sum.golang.org` | Codex: `CODEX_ENV_GO_VERSION` |
 | `rust`    | `rustc` + `cargo`                         | `cache.nixos.org`, `static.crates.io`, `index.crates.io` | Codex: `CODEX_ENV_RUST_VERSION` |
 | `ruby`    | Ruby + RubyGems (default 3; `ruby[3.4.9]` to pin) | `cache.nixos.org`, `rubygems.org`, `index.rubygems.org` | Codex: `CODEX_ENV_RUBY_VERSION` |
-| `skills`  | Claude Code agent skills, linked into `~/.claude/skills/` | `github.com` (`cache.nixos.org` if `git` is absent) | — |
+| `compose` | Jetpack Compose `@Preview` rendering: installs the `compose-preview` agent skill (renders previews to PNG, no emulator) and pulls in a JDK + the Android SDK; **implies `java`, `android`** | `github.com`, `cache.nixos.org` (git, if absent) | — |
+| `skills`  | Claude Code agent skills, linked into `~/.claude/skills/`; `skills[owner/repo]` links every skill in a repo, `skills[owner/repo/<skill>]` links just one | `github.com` (`cache.nixos.org` if `git` is absent) | — |
 | `tools`   | Arbitrary CLI tools from nixpkgs, by name (`tools[ripgrep,jq,gh]`) | `cache.nixos.org` | — |
 
 `base` is always included; it is the implicit preamble for every request. The
@@ -97,6 +98,8 @@ curl -fsSL https://env.coo.ee/skills | bash
 # explicit source(s), with an optional @ref (branch/tag/sha)
 curl -fsSL -g 'https://env.coo.ee/skills[yschimke/skills]' | bash
 curl -fsSL -g 'https://env.coo.ee/skills[yschimke/skills@v1,owner/more-skills],java' | bash
+# just one skill from a repo: add a path segment after owner/repo
+curl -fsSL -g 'https://env.coo.ee/skills[yschimke/skills/compose-preview]' | bash
 ```
 
 > **Bracketed requests use `-g '...'`.** The single quotes stop the *shell*
@@ -111,6 +114,12 @@ into the script as `set_params skills '<owner/repo,...>'`. The shell fragment
 stays a static source of truth for *logic* while the renderer supplies the
 *data*. Re-running is idempotent: the repo is cached under
 `~/.cache/coo-ee/skills/` and re-pulled, and the symlinks are refreshed in place.
+
+A repo entry takes an optional **skill selector** — a path segment after
+`owner/repo` that links just one skill instead of the whole repo:
+`skills[owner/repo/<skill>]` links only the directory named `<skill>` (matched
+by name, wherever it lives in the repo), and `@ref` still applies
+(`owner/repo/<skill>@v1`). Bare `owner/repo` links every skill, as before.
 
 The same brackets carry **versions** for the toolchain modules:
 
@@ -145,6 +154,15 @@ canonicalizing. `android-emulator` implies `android`, so requesting just the
 emulator renders as `base,android,android-emulator` (with `android` first, so
 its `adb`/`ANDROID_HOME` are ready before the emulator block). Keeping the
 declaration in the fragment means a module's full definition lives in one file.
+
+`compose` is a **curated target** built on the same mechanism: it implies
+`java` and `android` (the JDK + SDK that Compose `@Preview` rendering needs —
+but *not* `android-emulator`, which the renderer doesn't use) and installs the
+`compose-preview` agent skill, so one word sets up a Compose preview workflow:
+
+```bash
+curl -fsSL https://env.coo.ee/compose | bash
+```
 
 `tools` is the same idea for the long tail of CLIs that don't deserve their own
 module — each parameter is a nixpkgs attribute name, installed through the same
