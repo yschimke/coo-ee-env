@@ -1,30 +1,29 @@
-# `coo.ee/env` — composable environment bootstrapper (simulation)
+# `coo.ee/env` — composable environment bootstrapper
 
 A [gitignore.io](https://www.toptal.com/developers/gitignore)-style service for
 **dev environments** instead of `.gitignore` files. You ask for a set of
 modules in the URL and get back a single `bash` script that installs them:
 
 ```bash
-curl -fsSL https://coo.ee/env/java,android | bash
+curl -fsSL https://env.coo.ee/java,android | bash
 ```
 
-Like gitignore.io's `/api/java,android`, the path after `/env/` is a
-comma-separated list of modules. The service renders a script by concatenating
-a fixed preamble with each requested module and streaming the result.
+Like gitignore.io's `/api/java,android`, the path is a comma-separated list of
+modules. The service renders a script by concatenating a fixed preamble with
+each requested module and streaming the result.
 
 This repo is the standalone home of the service (extracted from
 [`yschimke/skills`](https://github.com/yschimke/skills)). The dynamic renderer
-is **built** (see [`api/`](./api)); it is **not yet wired to a public domain**,
-so `coo.ee/env/...` is still a simulation until the domain is live (see
-[Deploying](#deploying)). The checked-in [`java,android`](./java,android) is the
-**pre-rendered** response for that request, so you can see and run the idea
-today:
+is **live** at [`env.coo.ee`](https://env.coo.ee/java,android) (see
+[`api/`](./api)). The checked-in [`java,android`](./java,android) is the
+**pre-rendered** response for that request, kept as a runnable, offline-friendly
+demo:
 
 ```bash
-# from a checkout (the file lives at the repo root)
+# live service (canonical)
+curl -fsSL https://env.coo.ee/java,android | bash
+# or from a checkout, with no network call to the service
 ./java,android
-# or, the shape the real service would take
-curl -fsSL https://raw.githubusercontent.com/yschimke/coo-ee-env/main/java,android | bash
 ```
 
 ## What the script does
@@ -135,7 +134,7 @@ Because it is one idempotent line, it drops into either layer:
 script) — runs once, result is cached:
 
 ```bash
-curl -fsSL https://coo.ee/env/java,android | bash
+curl -fsSL https://env.coo.ee/java,android | bash
 ```
 
 **Project config / `SessionStart` hook** (`.claude/settings.json`) — runs in
@@ -146,7 +145,7 @@ both local and cloud sessions; idempotency keeps it cheap:
   "hooks": {
     "SessionStart": [
       { "hooks": [ { "type": "command",
-        "command": "curl -fsSL https://coo.ee/env/java,android | bash" } ] }
+        "command": "curl -fsSL https://env.coo.ee/java,android | bash" } ] }
     ]
   }
 }
@@ -219,21 +218,18 @@ CI runs two checks on each push/PR:
 - **M2 — dynamic renderer.** *(built, see [`api/`](./api))* A Vercel Node
   function parses `/env/:modules`, canonicalizes the list, concatenates the
   `modules/` fragments, and streams `text/x-shellscript`.
-- **M3 — domain.** *(pending)* `env.coo.ee/<modules>` (see "Domain" below).
+- **M3 — domain.** *(done)* Live at `env.coo.ee/<modules>` (see "Domain" below).
 
 ## Deploying
 
-The code is push-ready; what remains is wiring it to Vercel and a domain. These
-are one-time account-level steps (no secrets live in the repo):
+Deployed on Vercel behind `env.coo.ee`. These were the one-time account-level
+steps (no secrets live in the repo), kept here for reference:
 
 1. **Vercel Git integration** — import this repo once at
    <https://vercel.com/new>. Push to `main` → production deploy; PRs → preview
    URLs. Vercel auto-detects the `api/` functions and `vercel.json` routes.
 2. **Domain** — Vercel project → Settings → Domains → add `env.coo.ee`, then in
    DNS add `CNAME  env -> cname.vercel-dns.com`.
-
-After the domain is live, drop the simulation caveat above and the
-`0.1.0-sim` version marker in [`modules/_header.sh`](./modules/_header.sh).
 
 ## Domain
 
