@@ -18,7 +18,20 @@ module.exports = (req, res) => {
   }
 
   res.statusCode = out.status;
-  res.setHeader("content-type", out.contentType);
+
+  // Content negotiation: a browser (Accept: text/html) gets text/plain so the
+  // script renders inline for review instead of downloading; curl and other
+  // tools keep the semantically correct text/x-shellscript. Either way
+  // Content-Disposition: inline tells the browser not to save-as. Vary: Accept
+  // so the CDN caches the two representations separately.
+  const accept = (req.headers && req.headers.accept) || "";
+  const isBrowser = accept.includes("text/html");
+  const contentType =
+    out.status === 200 && isBrowser ? "text/plain; charset=utf-8" : out.contentType;
+
+  res.setHeader("content-type", contentType);
+  res.setHeader("content-disposition", "inline");
+  res.setHeader("vary", "Accept");
   // Canonical form is deterministic, so it caches well at the CDN edge.
   if (out.status === 200) {
     res.setHeader("cache-control", "public, max-age=300, s-maxage=86400");

@@ -1,0 +1,10 @@
+{
+  "name": "coo-ee-env",
+  "version": "0.1.0",
+  "private": true,
+  "description": "coo.ee/env — composable dev-environment bootstrapper (Vercel serverless renderer)",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": "22.x"
+  }
+}
