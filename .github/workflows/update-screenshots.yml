@@ -1,0 +1,72 @@
+name: update-screenshots
+
+# Regenerate the committed Playwright baselines (tests/__screenshots__) and the
+# docs PNGs (screenshots/) and commit them back to the branch. The screenshots
+# are font-rendering sensitive, so they MUST be generated inside the matching
+# Playwright container (same image as e2e.yml) — that's the whole reason this
+# can't be done reliably on an arbitrary dev machine. Run it from the Actions
+# tab against the branch whose baselines you want to refresh (e.g. after a UI
+# change that legitimately alters the rendered output).
+#
+# It rebases onto the latest branch tip before pushing so it never clobbers
+# commits pushed while the job was running.
+
+on:
+  workflow_dispatch:
+
+# Needs write access to push the regenerated baselines back to the branch.
+permissions:
+  contents: write
+
+# One refresh per branch at a time; a newer dispatch supersedes an in-flight one.
+concurrency:
+  group: update-screenshots-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regenerate:
+    runs-on: ubuntu-latest
+    # Same image (and version) as e2e.yml so the baselines match what CI verifies.
+    container:
+      image: mcr.microsoft.com/playwright:v1.60.0-noble
+      options: --ipc=host
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so the rebase-before-push below has something to rebase onto.
+          fetch-depth: 0
+
+      - name: install deps
+        run: npm ci
+
+      - name: regenerate baselines + docs screenshots
+        run: npm run test:e2e:update
+
+      - name: commit and push if the screenshots changed
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add tests/__screenshots__ screenshots
+          if git diff --cached --quiet; then
+            echo "Screenshots already up to date — nothing to commit."
+            exit 0
+          fi
+          git commit -m "ci: regenerate Playwright screenshot baselines"
+
+          # Rebase onto the latest branch tip, then push — retry with backoff so a
+          # commit landing mid-run doesn't fail the push.
+          for delay in 0 2 4 8 16; do
+            [ "$delay" -gt 0 ] && sleep "$delay"
+            git fetch origin "$BRANCH" \
+              && git rebase "origin/$BRANCH" \
+              && git push origin "HEAD:$BRANCH" \
+              && { echo "Pushed regenerated baselines to $BRANCH."; exit 0; }
+            echo "push attempt failed; retrying…"
+            git rebase --abort 2>/dev/null || true
+          done
+          echo "FAIL: could not push regenerated baselines after retries"
+          exit 1
