@@ -107,6 +107,32 @@ test.describe("env.coo.ee picker", () => {
     expect(clip).toBe(command);
   });
 
+  test("target selector controls the host copy format", async ({ page, context }) => {
+    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    await gotoApp(page);
+
+    // base alone declares several hosts — enough to tell the formats apart.
+    await expect(page.locator("#host-need li").nth(1)).toBeVisible();
+
+    // Codex's domain allowlist wants one comma-separated line.
+    await page.locator('#target-select button[data-target="codex"]').click();
+    await expect(page.locator('#target-select button[data-target="codex"]'))
+      .toHaveAttribute("aria-pressed", "true");
+    await page.locator("#copy-hosts").click();
+    const codex = await page.evaluate(() => navigator.clipboard.readText());
+    expect(codex).toContain(",");
+    expect(codex).not.toContain("\n");
+
+    // Claude (and GitHub) keep one host per line.
+    await page.locator('#target-select button[data-target="claude"]').click();
+    await page.locator("#copy-hosts").click();
+    const claude = await page.evaluate(() => navigator.clipboard.readText());
+    expect(claude).toContain("\n");
+    expect(claude).not.toContain(",");
+    // Same hosts, just a different separator.
+    expect(claude.split("\n").sort()).toEqual(codex.split(",").sort());
+  });
+
   test("backspace on an empty search removes the last chip", async ({ page }) => {
     await gotoApp(page, "#go,rust");
 

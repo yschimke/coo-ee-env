@@ -110,9 +110,27 @@
 
   .hosts { margin-top: 28px; }
   .hosts.empty { display: none; }
-  .hosts-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .hosts-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .hosts-head .label { margin-bottom: 0; }
+  .hosts-head .target-select { margin-left: auto; }
   .hosts-intro { margin: 8px 0 14px; color: var(--muted); font-size: 13px; }
+  .hosts-intro code {
+    background: #eef0f3; padding: 1px 5px; border-radius: 5px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.9em;
+  }
+  .hosts-intro a { color: var(--accent); text-decoration: none; }
+  .hosts-intro a:hover { text-decoration: underline; }
+
+  /* Target picker — tailors the host instructions and copy format to the
+     environment you're configuring (Claude Code, Codex, GitHub Actions). */
+  .target-select { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .target-select button {
+    border: none; border-left: 1px solid var(--border); background: var(--card);
+    color: var(--muted); padding: 6px 12px; font: inherit; font-size: 13px; cursor: pointer;
+  }
+  .target-select button:first-child { border-left: none; }
+  .target-select button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+  .target-select button:not([aria-pressed="true"]):hover { color: var(--accent); }
   #copy-hosts, #copy-hosts-all {
     background: var(--card); color: var(--ink); border: 1px solid var(--border);
     border-radius: 8px; padding: 6px 12px; font-size: 13px; cursor: pointer;
@@ -186,14 +204,14 @@
   <section class="hosts empty" id="hosts">
     <div class="hosts-head">
       <div class="label">Required hosts</div>
+      <div class="target-select" id="target-select" role="group" aria-label="Target environment">
+        <button type="button" data-target="claude">Claude</button>
+        <button type="button" data-target="codex">Codex</button>
+        <button type="button" data-target="github">GitHub</button>
+      </div>
       <button id="copy-hosts" type="button">Copy hosts</button>
     </div>
-    <p class="hosts-intro">
-      Add these to your cloud environment's allowlist (Claude Code → Network
-      access → Custom → Allowed domains; Codex → Internet access → domain
-      allowlist; or your sandbox / runner network policy). The script probes
-      them on install and tells you precisely which are missing.
-    </p>
+    <p class="hosts-intro" id="hosts-intro"></p>
     <ul class="host-list" id="host-need"></ul>
     <details id="host-want-wrap">
       <summary>
@@ -231,6 +249,45 @@
   var hostWantWrap = document.getElementById("host-want-wrap");
   var copyHostsBtn = document.getElementById("copy-hosts");
   var copyHostsAllBtn = document.getElementById("copy-hosts-all");
+  var targetSelect = document.getElementById("target-select");
+  var hostsIntro = document.getElementById("hosts-intro");
+
+  // ---- target environments --------------------------------------------------
+  // The picked target tailors the host instructions and, crucially, the copy
+  // format: Codex's domain allowlist wants one comma-separated line, while
+  // Claude Code and GitHub take one host per line. `sep` is what *Copy hosts*
+  // joins on; `intro` is the per-target guidance shown above the list.
+  var TARGETS = {
+    claude: {
+      sep: "\n",
+      intro: 'Add these to Claude Code → <strong>Network access → Custom → ' +
+        'Allowed domains</strong> (one per line), or your sandbox network ' +
+        'policy. The script probes them on install and tells you precisely ' +
+        'which are missing.'
+    },
+    codex: {
+      sep: ",",
+      intro: 'Add these to Codex → <strong>environment → Internet access → ' +
+        'domain allowlist</strong> as a single comma-separated list. The script ' +
+        'probes them on install and tells you precisely which are missing.'
+    },
+    github: {
+      sep: "\n",
+      intro: 'Allow these in your GitHub Actions egress policy — e.g. ' +
+        '<a href="https://github.com/step-security/harden-runner" target="_blank" rel="noopener">' +
+        'Harden-Runner</a>’s <code>allowed-endpoints</code>, or your ' +
+        'self-hosted runner / firewall rules. The script probes them on install ' +
+        'and tells you precisely which are missing.'
+    }
+  };
+  var TARGET_KEY = "cooee.target";
+  // localStorage can throw (private mode / sandboxed iframe); never let it break the page.
+  function loadTarget() {
+    try { var t = localStorage.getItem(TARGET_KEY); return TARGETS[t] ? t : "claude"; }
+    catch (_) { return "claude"; }
+  }
+  function saveTarget(t) { try { localStorage.setItem(TARGET_KEY, t); } catch (_) {} }
+  var target = loadTarget();
 
   var catalog = [];      // selectable modules: [{name, software, params, implies, hosts, example}]
   var implicit = [];     // always-included module names (e.g. "base")
@@ -456,8 +513,26 @@
   }
 
   function hostNames(list) {
-    return list.map(function (h) { return h.host; }).join("\n");
+    return list.map(function (h) { return h.host; }).join(TARGETS[target].sep);
   }
+
+  // Reflect the chosen target in the toggle (pressed button) and the intro copy.
+  function renderTarget() {
+    var btns = targetSelect.querySelectorAll("button");
+    for (var i = 0; i < btns.length; i++) {
+      btns[i].setAttribute("aria-pressed", btns[i].getAttribute("data-target") === target ? "true" : "false");
+    }
+    hostsIntro.innerHTML = TARGETS[target].intro;
+  }
+
+  targetSelect.addEventListener("click", function (e) {
+    var btn = e.target.closest("button[data-target]");
+    if (!btn) return;
+    target = btn.getAttribute("data-target");
+    saveTarget(target);
+    renderTarget();
+  });
+  renderTarget();
 
   function renderMenu() {
     var q = search.value.trim().toLowerCase();

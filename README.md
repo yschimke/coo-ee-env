@@ -546,10 +546,13 @@ or `vercel dev` alike, and the selection round-trips through the URL hash
 Below the one-liner the picker shows the **required hosts** for the current
 selection — the union of every active module's `need_host` declarations
 (`base` plus your picks plus anything they imply), deduped and each with the
-reason it's needed. *Copy hosts* drops the bare hostnames (newline-separated)
-straight into a cloud environment's allowlist (Claude Code → Network access →
-Custom → Allowed domains, Codex's domain allowlist, or a sandbox/runner network
-policy). A collapsible *Recommended for builds* list adds the `want_host`
+reason it's needed. A small **target** toggle (Claude / Codex / GitHub) tailors
+the guidance and the copy format to the environment you're configuring: *Copy
+hosts* drops the bare hostnames straight into the chosen target's allowlist —
+newline-separated for Claude Code (Network access → Custom → Allowed domains)
+and GitHub Actions egress policies, or comma-separated for Codex's domain
+allowlist, which wants a single CSV line. The choice is remembered across
+visits. A collapsible *Recommended for builds* list adds the `want_host`
 entries — the registries a build needs but the install doesn't — with a *Copy
 all* for the full set. This is the same host set the rendered script probes and
 prints on a blocked install, surfaced up front so you can configure egress
