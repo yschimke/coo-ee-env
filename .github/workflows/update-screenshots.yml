@@ -43,6 +43,9 @@ jobs:
         run: npm run test:e2e:update
 
       - name: commit and push if the screenshots changed
+        # Container jobs default to `sh` (dash); be explicit about bash so
+        # `set -o pipefail` and friends are available.
+        shell: bash
         env:
           BRANCH: ${{ github.ref_name }}
         run: |
