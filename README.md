@@ -221,6 +221,15 @@ rest (set them in the environment before running):
 | --- | --- | --- |
 | `COOEE_ANDROID_DEFAULT_PLATFORM` | `36` | platform API level for a param-less `android` |
 | `COOEE_ANDROID_BUILD_TOOLS` | `36.0.0` | the `build-tools` revision to install |
+| `COOEE_ANDROID_NCURSES5_STUB` | `1` | on x86_64, stub the legacy 32-bit `ncurses5` androidenv drags in (set `0` only if you need the 32-bit legacy build-tools on a 32-bit-capable host) |
+
+On x86_64 Linux, `androidenv` always pulls in 32-bit (i686) `glibc`/`zlib`/`ncurses5`
+for ancient 32-bit build-tool binaries the modern 64-bit `build-tools` don't use.
+The niche `ncurses5` (`ncurses-abi5-compat`) usually isn't in the binary cache, so
+Nix *builds* it — and any i686 build runs a 32-bit builder, which fails with
+`Exec format error` on kernels without 32-bit x86 support (common in minimal cloud
+containers). By default the module swaps in a native empty stub so the SDK build
+never needs a 32-bit builder; `COOEE_ANDROID_NCURSES5_STUB=0` restores the real lib.
 
 Because the SDK is built through Nix, it is reproducible and survives
 `nix store gc` (the build is anchored by a GC root under `~/.cache/coo-ee/`). On

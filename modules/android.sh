@@ -156,11 +156,34 @@ module_android() {
   cooee_android_wants_wear "${params[@]}" && img_types_nix+=' "android-wear"'
 
   local emu_bool="false"; (( want_emu )) && emu_bool="true"
+
+  # On x86_64 Linux, androidenv unconditionally drags in 32-bit (i686) glibc,
+  # zlib and ncurses5 as legacy runtime libs for ancient 32-bit build-tool
+  # binaries — the modern 64-bit build-tools we install need none of them.
+  # glibc/zlib substitute from the cache, but the niche ncurses5 (an
+  # abiVersion=5 override, "ncurses-abi5-compat") usually isn't cached, so Nix
+  # *builds* it — and building anything i686 runs a 32-bit builder, which dies
+  # with "Exec format error" on kernels without 32-bit x86 support (common in
+  # minimal cloud containers). Swap a native, empty stub in its place so the SDK
+  # build never needs a 32-bit builder. Off only where you genuinely need the
+  # 32-bit legacy build-tools on a 32-bit-capable host: COOEE_ANDROID_NCURSES5_STUB=0.
+  local overlays_nix=""
+  if [[ "${COOEE_ANDROID_NCURSES5_STUB:-1}" != 0 && "$(uname -m)" == x86_64 ]]; then
+    overlays_nix="overlays = [
+        (final: prev: {
+          pkgsi686Linux = prev.pkgsi686Linux.extend (i686final: i686prev: {
+            ncurses5 = prev.runCommand \"ncurses5-stub\" { } \"mkdir -p \$out/lib \$out/include\";
+          });
+        })
+      ];"
+  fi
+
   local expr="let
     pkgs = import (builtins.getFlake \"nixpkgs\").outPath {
       system = builtins.currentSystem;
       config.allowUnfree = true;
       config.android_sdk.accept_license = true;
+      ${overlays_nix}
     };
   in (pkgs.androidenv.composeAndroidPackages {
     platformVersions   = [ ${platforms_nix}];
@@ -180,7 +203,7 @@ module_android() {
   mkdir -p "$(dirname "$link")"
   local out
   if ! out=$(nix build --impure --print-out-paths --out-link "$link" --expr "$expr"); then
-    die "android: SDK build failed. Check that dl.google.com is reachable and the requested platform/build-tools versions exist in nixpkgs (override COOEE_ANDROID_BUILD_TOOLS / COOEE_ANDROID_DEFAULT_PLATFORM)."
+    die "android: SDK build failed. Common causes: dl.google.com unreachable; the requested platform/build-tools versions are absent from nixpkgs (override COOEE_ANDROID_BUILD_TOOLS / COOEE_ANDROID_DEFAULT_PLATFORM); or the build tried to compile 32-bit (i686) ncurses on a kernel without 32-bit x86 support ('Exec format error' — keep the default COOEE_ANDROID_NCURSES5_STUB=1 that stubs it out)."
   fi
 
   sdk="$out/libexec/android-sdk"
