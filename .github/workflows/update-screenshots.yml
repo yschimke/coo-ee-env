@@ -43,10 +43,17 @@ jobs:
         run: npm run test:e2e:update
 
       - name: commit and push if the screenshots changed
+        # Container jobs default to `sh` (dash); be explicit about bash so
+        # `set -o pipefail` and friends are available.
+        shell: bash
         env:
           BRANCH: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          # Container jobs run git as a different UID than owns the checkout, so
+          # git's ownership guard rejects it ("fatal: not in a git directory")
+          # until the workspace is registered as safe for this step's HOME.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
