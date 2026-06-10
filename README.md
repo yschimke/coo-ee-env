@@ -344,8 +344,41 @@ Knobs:
 | `COOEE_GRADLE_DEPS_TASK` | Run a specific Gradle task for the prefetch (e.g. `assemble -x test`) instead of the default whole-graph artifact resolution. |
 | `COOEE_BASE_URL` | Service base URL baked into the installed SessionStart hook (default `https://env.coo.ee`). |
 
+The [devenv.sh backend](#devenvsh-backend) is selected per request with the
+`?devenv` query flag, not an environment variable.
+
 The provisioning stamp lives at `~/.config/coo-ee/provisioned` (the canonical
 module set); delete it to force the next run to re-probe.
+
+## devenv.sh backend
+
+By default each module installs its package straight into the default Nix
+profile (`nix profile install nixpkgs#…`). Add the `?devenv` query flag and the
+server renders the script with the [ad-hoc devenv.sh
+environment](https://devenv.sh/ad-hoc-developer-environments/) backend instead:
+
+```bash
+curl -fsSL 'https://env.coo.ee/java,node?devenv' | bash
+```
+
+The picker exposes this as a **Use devenv.sh** toggle, which appends `?devenv=1`
+to the request URL — the module list (and thus the path) is unchanged; only the
+backend the renderer bakes into the script differs. The renderer injects a
+`set_backend devenv` line at the top of the script; when present:
+
+- `base` installs Nix as usual, then `nix profile install nixpkgs#devenv`.
+- Every module's `nix_ensure nixpkgs#<pkg>` is collected into a single ad-hoc
+  environment realised with `devenv --option packages:pkgs "<pkgs>" shell`, and
+  that environment's `DEVENV_PROFILE/bin` is prepended to `PATH` (now and in the
+  persisted env), so tools resolve exactly as the Nix-profile path expects.
+
+Everything else — adoption of already-present tools, host preflight, env
+persistence, [auto-activation](#auto-activation), and
+[build-dependency prefetch](#build-dependency-prefetch) — is unchanged.
+Modules that build a derivation directly (the Android SDK, Playwright browsers)
+still use `nix build`, since Nix is present either way. devenv builds resolve
+faster when its binary cache (`devenv.cachix.org`) is reachable, but fall back
+to building from `cache.nixos.org`, which is already required.
 
 ## Build-dependency prefetch
 

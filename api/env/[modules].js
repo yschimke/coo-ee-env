@@ -5,11 +5,19 @@
 
 const { render } = require("./render");
 
+// The `?devenv` flag selects the devenv.sh provisioning backend at render time.
+// Truthy on presence (?devenv or ?devenv=1); an explicit 0/false/off opts out.
+function wantsDevenv(query) {
+  if (!query || !("devenv" in query)) return false;
+  const v = String(query.devenv).toLowerCase();
+  return v !== "0" && v !== "false" && v !== "off";
+}
+
 module.exports = (req, res) => {
   const seg = req.query && req.query.modules ? req.query.modules : "";
   let out;
   try {
-    out = render(seg);
+    out = render(seg, { devenv: wantsDevenv(req.query) });
   } catch (err) {
     res.statusCode = 500;
     res.setHeader("content-type", "text/plain; charset=utf-8");
