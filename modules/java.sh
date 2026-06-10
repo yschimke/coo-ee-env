@@ -69,6 +69,11 @@ module_java() {
     fi
   fi
 
+  # Let the backend decide which of the requested majors it can install: the nix
+  # backend keeps them all (each gets its own --priority below), the devenv
+  # backend keeps only the first (one buildEnv can't hold two colliding JDKs).
+  mapfile -t versions < <(cooee_backend_jdks "${versions[@]}")
+
   log "Installing Temurin JDK (${versions[*]}) via Nix..."
   # Multiple JDKs ship colliding files (e.g. lib/modules), so a single profile
   # can't hold them at the same priority — `nix profile add` aborts. Give each a

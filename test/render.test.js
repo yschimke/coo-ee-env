@@ -58,6 +58,26 @@ test("params inject a set_params line; param-less requests stay clean", () => {
   assert.ok(!render("java,android").body.includes("set_params java"));
 });
 
+test("?devenv splices the devenv backend; default splices the nix backend", () => {
+  // The backend is resolved at render time, so the script carries exactly one
+  // driver fragment and never a runtime `if devenv` branch.
+  const on = render("java[17,21]", { devenv: true }).body;
+  const off = render("java[17,21]").body;
+  const NIX = "BACKEND: nix profile";
+  const DEVENV = "BACKEND: devenv.sh";
+
+  assert.ok(on.includes(DEVENV) && !on.includes(NIX));
+  assert.ok(off.includes(NIX) && !off.includes(DEVENV));
+  // No backend-selection conditional leaks into either rendered script.
+  assert.ok(!on.includes("cooee_devenv_enabled") && !off.includes("cooee_devenv_enabled"));
+  assert.ok(!on.includes("set_backend") && !off.includes("set_backend"));
+
+  // The flag is purely a backend switch — params and the module list are
+  // untouched, so the same set_params still renders and the canonical form matches.
+  assert.ok(on.includes("set_params java '17,21'"));
+  assert.deepEqual(render("java", { devenv: true }).canonical, render("java").canonical);
+});
+
 test("android-emulator implies android (transitively pulled in)", () => {
   // android-emulator -> android -> android-cli, all pulled in transitively.
   assert.deepEqual(names("android-emulator"), [

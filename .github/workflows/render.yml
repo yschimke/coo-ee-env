@@ -26,7 +26,11 @@ jobs:
                 "skills[yschimke/skills,obra/superpowers],java,android" \
                 "tools[ripgrep,jq,gh]" \
                 "tools[ripgrep,jq],skills[yschimke/skills],node")
+          # Each set is valid under both render-time backends (nix profile and
+          # the ?devenv driver), so syntax-check the output of each.
           for m in "${sets[@]}"; do
-            echo "== $m =="
-            node -e "process.stdout.write(require('./api/env/render').render(process.argv[1]).body)" "$m" | bash -n -
+            for opt in "" "{ devenv: true }"; do
+              echo "== $m ${opt:+(devenv)} =="
+              node -e "process.stdout.write(require('./api/env/render').render(process.argv[1], $([ -n "$opt" ] && echo "$opt" || echo undefined)).body)" "$m" | bash -n -
+            done
           done

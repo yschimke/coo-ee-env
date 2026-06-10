@@ -215,8 +215,15 @@ function shQuote(s) {
   return `'${String(s).replace(/'/g, `'\\''`)}'`;
 }
 
-// render(segment) -> { status, contentType, body, canonical }
-function render(segment) {
+// render(segment, opts) -> { status, contentType, body, canonical }
+//   opts.devenv — when true (the `?devenv` request flag), the renderer splices
+//   in the devenv.sh backend fragment instead of the default Nix-profile one.
+//   The choice is resolved HERE, at render time: the emitted script carries
+//   only the selected backend's code, with no run-time `if devenv` branches.
+//   The module list (and thus the canonical form / cache key path) is
+//   unaffected; only the query string and the backend fragment differ.
+function render(segment, opts) {
+  const devenv = !!(opts && opts.devenv);
   const allowed = allowedModules();
   const { entries, errors } = canonicalize(segment);
   const canonical = entries.map(entryToString);
@@ -247,7 +254,14 @@ function render(segment) {
     };
   }
 
-  const parts = [readFragment("_header")];
+  // _header (generic helpers) + the chosen backend driver. The backend
+  // fragment defines nix_ensure and the cooee_backend_* hooks the modules call,
+  // so a module fragment is backend-agnostic — only one implementation is ever
+  // spliced in, never both.
+  const parts = [
+    readFragment("_header"),
+    readFragment(devenv ? "_backend-devenv" : "_backend-nix"),
+  ];
 
   // Inject request parameters before the module fragments run. set_params is
   // defined in _header; the fragments and _footer read _MODULE_PARAMS at run

@@ -209,25 +209,13 @@ cooee_sudo() {
   else return 127; fi
 }
 
-# ---- idempotent nix package install ---------------------------------------
-# Safe to run repeatedly: installs only what's missing, treats an already
-# present package as success, so the whole script is a no-op on a warm box
-# and a repair on a cold/partial one.
-nix_ensure() {  # nix_ensure <match> <flakeref> [extra nix flags...]
-  local match=$1; shift
-  if nix profile list 2>/dev/null | grep -qiF -- "$match"; then
-    ok "already present: $match"; return 0
-  fi
-  local out
-  if out=$(nix profile install "$@" 2>&1); then
-    ok "installed: $match"
-  elif grep -qiF "already installed" <<<"$out"; then
-    ok "already present: $match"
-  else
-    printf '%s\n' "$out" >&2
-    return 1
-  fi
-}
+# ---- provisioning backend (resolved at render time) -----------------------
+# The renderer splices in exactly one backend driver fragment right after this
+# header — _backend-nix.sh by default, _backend-devenv.sh for a `?devenv`
+# request. Each defines nix_ensure (install a nixpkgs package) plus the
+# cooee_backend_* hooks the modules and base call, so there is never a runtime
+# `if devenv` branch in the rendered script: only the selected backend's code
+# is present. See modules/_backend-*.sh.
 
 # ---- cloud-specific fixes -------------------------------------------------
 # Sandboxes (Claude Code, etc.) route HTTPS through a TLS-terminating proxy

@@ -357,8 +357,66 @@ Knobs:
 | `COOEE_GRADLE_DEPS_TASK` | Run a specific Gradle task for the prefetch (e.g. `assemble -x test`) instead of the default whole-graph artifact resolution. |
 | `COOEE_BASE_URL` | Service base URL baked into the installed SessionStart hook (default `https://env.coo.ee`). |
 
+The [devenv.sh backend](#devenvsh-backend) is selected per request with the
+`?devenv` query flag, not an environment variable.
+
 The provisioning stamp lives at `~/.config/coo-ee/provisioned` (the canonical
 module set); delete it to force the next run to re-probe.
+
+## devenv.sh backend (experimental)
+
+By default each module installs its package straight into the default Nix
+profile (`nix profile install nixpkgs#…`). Add the `?devenv` query flag and the
+server renders the script with the [devenv.sh](https://devenv.sh/) backend
+instead:
+
+```bash
+curl -fsSL 'https://env.coo.ee/java,node?devenv' | bash
+```
+
+The picker exposes this as a **Use devenv.sh** toggle, which appends `?devenv=1`
+to the request URL — the module list (and thus the path) is unchanged; only the
+backend differs. The choice is resolved **at render time**: the renderer splices
+in one of two backend driver fragments (`modules/_backend-nix.sh` or
+`modules/_backend-devenv.sh`) right after the header, so the rendered script
+carries only the selected backend's code — there is no run-time `if devenv`
+branch. Each fragment implements the same contract — `nix_ensure` plus the
+`cooee_backend_*` hooks the modules call — so a module fragment never needs to
+know which backend it's running under. With the devenv fragment spliced in:
+
+- `base` installs Nix as usual, then its `cooee_backend_setup` hook installs the
+  prebuilt `nix profile install nixpkgs#devenv` and seeds a minimal devenv
+  project under `~/.config/coo-ee/devenv` (a `devenv.yaml` pinning
+  nixpkgs-unstable, plus a git repo).
+- Every module's `nix_ensure nixpkgs#<pkg>` appends the attr to a generated
+  `devenv.nix` (`packages = [ pkgs.<pkg> … ]`); devenv builds the environment
+  and its profile `bin` (the stable `.devenv/profile` symlink) is prepended to
+  `PATH`, now and in the persisted env, so tools resolve exactly as the
+  Nix-profile backend's do.
+
+We write a real `devenv.nix` rather than using devenv's newer ad-hoc
+`--option packages:pkgs` flag, so it works on any devenv version and avoids the
+fresh-directory edge cases ad-hoc invocations hit.
+
+Everything else — adoption of already-present tools, host preflight, env
+persistence, [auto-activation](#auto-activation), and
+[build-dependency prefetch](#build-dependency-prefetch) — is unchanged.
+Modules that build a derivation directly (the Android SDK, Playwright browsers)
+still use `nix build`, since Nix is present either way. devenv builds resolve
+faster when its binary cache (`devenv.cachix.org`) is reachable, but fall back
+to building from `cache.nixos.org`, which is already required.
+
+An end-to-end CI job (`.github/workflows/devenv.yml`) renders a `?devenv`
+script and actually runs it on a clean runner — installing Nix, installing
+devenv, generating `devenv.nix`, building the environment — then asserts the
+tools resolve from the devenv profile, the JDK collapse fired, and a re-run
+short-circuits.
+
+**Limitations.** A single devenv profile is one `buildEnv`, so it can't hold two
+JDKs at once (the per-install `--priority` the nix-profile backend uses isn't
+available): a multi-version request like `java[17,21]` — including the
+`java`+`android` default of `17,21` — falls back to the first major with a
+warning.
 
 ## Build-dependency prefetch
 

@@ -107,6 +107,8 @@
   .actions a { color: var(--accent); text-decoration: none; }
   .actions a:hover { text-decoration: underline; }
   .actions .hint { color: var(--muted); }
+  .actions .flag { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; color: var(--ink); }
+  .actions .flag input { cursor: pointer; margin: 0; }
 
   .hosts { margin-top: 28px; }
   .hosts.empty { display: none; }
@@ -188,6 +190,10 @@
     </div>
     <div class="actions">
       <a id="view" href="#" target="_blank" rel="noopener">View script&nbsp;&#8599;</a>
+      <label class="flag" title="Provision through an ad-hoc devenv.sh environment instead of the default Nix profile">
+        <input type="checkbox" id="devenv" />
+        Use <a href="https://devenv.sh/ad-hoc-developer-environments/" target="_blank" rel="noopener">devenv.sh</a>
+      </label>
       <span class="hint">Some modules take params in <code style="font-family:ui-monospace,monospace">[brackets]</code> — e.g. <code style="font-family:ui-monospace,monospace">java[17,21]</code>.</span>
     </div>
   </section>
@@ -243,6 +249,7 @@
   var cmdText = document.getElementById("cmd-text");
   var copyBtn = document.getElementById("copy");
   var viewLink = document.getElementById("view");
+  var devenvBox = document.getElementById("devenv");
   var hostsEl = document.getElementById("hosts");
   var hostNeedEl = document.getElementById("host-need");
   var hostWantEl = document.getElementById("host-want");
@@ -288,6 +295,18 @@
   }
   function saveTarget(t) { try { localStorage.setItem(TARGET_KEY, t); } catch (_) {} }
   var target = loadTarget();
+
+  // ---- devenv.sh backend toggle ---------------------------------------------
+  // When on, the one-liner requests the script with `?devenv`, which the server
+  // renders with the devenv.sh backend — package provisioning goes through an
+  // ad-hoc devenv environment instead of the default Nix profile. It's a
+  // render-time URL flag, so the pipe target stays a plain `| bash`.
+  var DEVENV_KEY = "cooee.devenv";
+  function loadDevenv() {
+    try { return localStorage.getItem(DEVENV_KEY) === "1"; } catch (_) { return false; }
+  }
+  function saveDevenv(on) { try { localStorage.setItem(DEVENV_KEY, on ? "1" : "0"); } catch (_) {} }
+  var devenv = loadDevenv();
 
   var catalog = [];      // selectable modules: [{name, software, params, implies, hosts, example}]
   var implicit = [];     // always-included module names (e.g. "base")
@@ -444,15 +463,19 @@
 
   function renderCommand() {
     var seg = segment();
-    var url = ORIGIN + "/" + seg;
-    // Bracketed params (java[17,21]) need two kinds of protection: single quotes
-    // so the *shell* doesn't glob '[' / ']', and curl -g (--globoff) so *curl*
-    // doesn't read them as its own URL range syntax (it errors 'bad range in
-    // URL' otherwise). Plain requests (java,android) need neither — a comma is
-    // not special to the shell or to curl — so keep those clean, matching the docs.
-    var cmd = seg.indexOf("[") >= 0
-      ? "curl -fsSL -g '" + url + "'"
-      : "curl -fsSL " + url;
+    // devenv is a render-time flag carried as a query param on the same URL.
+    var url = ORIGIN + "/" + seg + (devenv ? "?devenv=1" : "");
+    // Two kinds of protection may be needed. Single quotes so the *shell*
+    // doesn't glob special chars — bracketed params (java[17,21]) bring '[' /
+    // ']', and the '?' in '?devenv=1' is a shell glob too. curl -g (--globoff)
+    // so *curl* doesn't read '[' / ']' as its own URL range syntax (it errors
+    // 'bad range in URL' otherwise); '?' is not curl-globbed, so it alone needs
+    // no -g. A plain request (java,android) needs neither, matching the docs.
+    var hasBrackets = seg.indexOf("[") >= 0;
+    var flags = hasBrackets ? "-fsSL -g" : "-fsSL";
+    var cmd = (hasBrackets || devenv)
+      ? "curl " + flags + " '" + url + "'"
+      : "curl " + flags + " " + url;
     cmdText.textContent = cmd + " | bash";
     viewLink.href = url;
     syncHash();
@@ -537,6 +560,14 @@
     renderTarget();
   });
   renderTarget();
+
+  // Reflect the persisted devenv choice and keep the one-liner in sync with it.
+  devenvBox.checked = devenv;
+  devenvBox.addEventListener("change", function () {
+    devenv = devenvBox.checked;
+    saveDevenv(devenv);
+    renderCommand();
+  });
 
   function renderMenu() {
     var q = search.value.trim().toLowerCase();
