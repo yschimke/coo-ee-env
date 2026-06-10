@@ -330,6 +330,10 @@
       (data.modules || []).forEach(function (m) {
         byName[m.name] = m;
         if (m.implicit) { implicit.push(m.name); return; }
+        // Hidden modules stay resolvable (implied chips, host allowlist) but are
+        // kept out of the searchable picker list — they ride along with another
+        // module rather than being picked on their own.
+        if (m.hidden) return;
         m.example = exampleFor(m);
         catalog.push(m);
       });

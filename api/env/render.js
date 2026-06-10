@@ -77,6 +77,7 @@ function moduleInfo() {
       params,
       implies: moduleImplies(name),
       implicit: name === "base",
+      hidden: moduleHidden(name),
       hosts: moduleHosts(name),
     };
   });
@@ -119,6 +120,22 @@ function moduleImplies(name) {
     }
   }
   return out;
+}
+
+// A fragment may opt out of the picker's top-level list with a directive:
+//   # coo.ee:hidden
+// The module still renders and installs exactly like any other (the /<name>
+// one-liner works, and it can be pulled in via `# coo.ee:implies`), but the
+// landing page leaves it out of the searchable catalog — for dependencies that
+// ride along with another module rather than being picked on their own (e.g.
+// android-cli, installed with the android SDK). It stays in moduleInfo (flagged)
+// so the UI can still resolve its name, hosts, and implications.
+const HIDDEN_RE = /^#[ \t]*coo\.ee:hidden\b/m;
+
+function moduleHidden(name) {
+  const file = path.join(MODULES_DIR, `${name}.sh`);
+  if (!fs.existsSync(file)) return false;
+  return HIDDEN_RE.test(fs.readFileSync(file, "utf8"));
 }
 
 // canonicalize(segment) -> { entries, errors }

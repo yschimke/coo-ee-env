@@ -95,6 +95,20 @@ test("android pulls in the android-cli tool; android-cli stands alone", () => {
   assert.ok(body.includes("COOEE_ANDROID_CLI_INIT"), "android init is opt-out-able");
 });
 
+test("android-cli is hidden from the picker but still renders and is implied", () => {
+  const byName = Object.fromEntries(moduleInfo().map((m) => [m.name, m]));
+  // Flagged hidden so the landing page leaves it off the searchable catalog...
+  assert.equal(byName["android-cli"].hidden, true);
+  // ...while every visible module (android, java, ...) stays unflagged.
+  assert.equal(byName["android"].hidden, false);
+  assert.equal(byName["java"].hidden, false);
+  // It still renders on its own (the /android-cli one-liner works)...
+  assert.equal(render("android-cli").status, 200);
+  assert.deepEqual(canon("android-cli"), ["base", "android-cli"]);
+  // ...and is still pulled in transitively when android is selected.
+  assert.ok(names("android").includes("android-cli"));
+});
+
 test("an implied module added on its own carries no params", () => {
   assert.deepEqual(canon("android-emulator[34,wear-33]"), [
     "base",

@@ -15,7 +15,10 @@
 #  `android` SDK module implies this, so selecting the SDK installs the CLI too.
 #  Standalone (it does NOT pull in the heavyweight Nix SDK): the CLI manages its
 #  own SDK on demand. Pair it with `android` when you want the Nix-built SDK too.
+#  Not a top-level pick: it rides along with `android` (which implies it) or
+#  installs via its own one-liner, but the picker leaves it off the module list.
 # ===========================================================================
+# coo.ee:hidden
 register_module android-cli
 provides_tool android-cli android   # adopt an Android CLI already on PATH
 need_host dl.google.com "download of the Android CLI binary and its first-run payload"
