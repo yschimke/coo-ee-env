@@ -15,7 +15,13 @@
 #             : Google / JetBrains / fonts registries (build, advisory)
 #  Host set mirrors skills/compose-preview/references/agent-cloud.md.
 #  Assumes `java` is also requested (Android builds need a JDK).
+#
+#  Pulls in `android-cli` automatically — Google's official Android CLI agent
+#  tool (the `android` command) — so any box with the SDK also has the
+#  agent-first CLI on PATH. The CLI is a lightweight standalone binary and does
+#  not pull the SDK back; request `android-cli` on its own for just the tool.
 # ===========================================================================
+# coo.ee:implies android-cli
 register_module android
 provides_tool android adb   # adopt a complete existing SDK (adb on PATH)
 need_host cache.nixos.org        "prebuilt androidenv dependencies from the Nix cache"

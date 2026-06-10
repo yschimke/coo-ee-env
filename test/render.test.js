@@ -13,7 +13,13 @@ test("base is always present and first", () => {
 
 test("module order is canonicalized (cache-friendly)", () => {
   assert.equal(render("java,android").body, render("android,java").body);
-  assert.deepEqual(canon("java,android"), ["base", "android", "java"]);
+  // android pulls in the android-cli skill automatically (see implication test).
+  assert.deepEqual(canon("java,android"), [
+    "base",
+    "android",
+    "android-cli",
+    "java",
+  ]);
 });
 
 test("blanks and duplicate modules collapse", () => {
@@ -38,6 +44,7 @@ test("prefixed param tokens sort after numerics", () => {
   assert.deepEqual(canon("android-emulator[wear-33,9,37,30]"), [
     "base",
     "android",
+    "android-cli",
     "android-emulator[9,30,37,wear-33]",
   ]);
 });
@@ -72,23 +79,61 @@ test("?devenv splices the devenv backend; default splices the nix backend", () =
 });
 
 test("android-emulator implies android (transitively pulled in)", () => {
+  // android-emulator -> android -> android-cli, all pulled in transitively.
   assert.deepEqual(names("android-emulator"), [
     "base",
     "android",
+    "android-cli",
     "android-emulator",
   ]);
   assert.deepEqual(names("android-emulator,java"), [
     "base",
     "android",
+    "android-cli",
     "android-emulator",
     "java",
   ]);
+});
+
+test("android pulls in the android-cli tool; android-cli stands alone", () => {
+  // Selecting the android SDK auto-installs Google's Android CLI agent tool...
+  assert.deepEqual(names("android"), ["base", "android", "android-cli"]);
+  // ...but android-cli on its own is a lightweight, single-binary one-liner that
+  // does NOT drag in the heavyweight Nix SDK.
+  assert.deepEqual(names("android-cli"), ["base", "android-cli"]);
+
+  const byName = Object.fromEntries(moduleInfo().map((m) => [m.name, m]));
+  assert.deepEqual(byName["android"].implies, ["android-cli"]);
+  assert.deepEqual(byName["android-cli"].implies, []);
+  // The CLI binary is downloaded from Google.
+  assert.ok(
+    byName["android-cli"].hosts.need.map((h) => h.host).includes("dl.google.com"),
+  );
+  // Setup registers the agent skill via `android init` (gated by an opt-out).
+  const body = render("android-cli").body;
+  assert.ok(body.includes('"$bin" init'), "runs android init");
+  assert.ok(body.includes("COOEE_ANDROID_CLI_INIT"), "android init is opt-out-able");
+});
+
+test("android-cli is hidden from the picker but still renders and is implied", () => {
+  const byName = Object.fromEntries(moduleInfo().map((m) => [m.name, m]));
+  // Flagged hidden so the landing page leaves it off the searchable catalog...
+  assert.equal(byName["android-cli"].hidden, true);
+  // ...while every visible module (android, java, ...) stays unflagged.
+  assert.equal(byName["android"].hidden, false);
+  assert.equal(byName["java"].hidden, false);
+  // It still renders on its own (the /android-cli one-liner works)...
+  assert.equal(render("android-cli").status, 200);
+  assert.deepEqual(canon("android-cli"), ["base", "android-cli"]);
+  // ...and is still pulled in transitively when android is selected.
+  assert.ok(names("android").includes("android-cli"));
 });
 
 test("an implied module added on its own carries no params", () => {
   assert.deepEqual(canon("android-emulator[34,wear-33]"), [
     "base",
     "android",
+    "android-cli",
     "android-emulator[34,wear-33]",
   ]);
 });
@@ -97,6 +142,7 @@ test("an explicitly-requested implied module keeps its own params", () => {
   assert.deepEqual(canon("android[30],android-emulator"), [
     "base",
     "android[30]",
+    "android-cli",
     "android-emulator",
   ]);
 });
@@ -130,8 +176,15 @@ test("playwright implies node and takes a version param", () => {
 });
 
 test("compose is a curated target that implies java and android", () => {
-  // No emulator — compose-preview renders without one.
-  assert.deepEqual(names("compose"), ["base", "android", "compose", "java"]);
+  // No emulator — compose-preview renders without one. android also brings the
+  // android-cli skill in transitively (compose -> android -> android-cli).
+  assert.deepEqual(names("compose"), [
+    "base",
+    "android",
+    "android-cli",
+    "compose",
+    "java",
+  ]);
   const byName = Object.fromEntries(moduleInfo().map((m) => [m.name, m]));
   assert.deepEqual(byName["compose"].implies.sort(), ["android", "java"]);
   // The target clones the skill repo, so it needs github.com.
@@ -222,6 +275,7 @@ test("the version example from the brief renders and is well-formed", () => {
   assert.deepEqual(o.canonical, [
     "base",
     "android[30,37,wear-33]",
+    "android-cli",
     "java[17,21]",
   ]);
   assert.ok(o.body.includes("set_params android '30,37,wear-33'"));

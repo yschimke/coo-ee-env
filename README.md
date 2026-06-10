@@ -64,7 +64,8 @@ treats an already-present package as success — so a partial/cold box is
 | --------- | ----------------------------------------- | ----------------------- | ----------------------- |
 | `base`    | Nix (Determinate, daemonless)             | `install.determinate.systems`, `cache.nixos.org`, `channels.nixos.org`, `github.com`, `objects.githubusercontent.com` | — |
 | `java`    | Temurin JDK, `JAVA_HOME`; bare `java` uses the JDK the project pins for Gradle (`toolchainVersion` in `gradle/gradle-daemon-jvm.properties`), else 21 (17 + 21 with `android`); `java[17,21]` to choose | `cache.nixos.org` | base-image JDK |
-| `android` | Full SDK via `androidenv`: `platform-tools` (adb), `cmdline-tools`, the requested platform(s) + `build-tools`, `ANDROID_HOME`; `android[30,36,wear-33]` picks the platform API levels | `cache.nixos.org`, `dl.google.com`, `maven.google.com` | — |
+| `android` | Full SDK via `androidenv`: `platform-tools` (adb), `cmdline-tools`, the requested platform(s) + `build-tools`, `ANDROID_HOME`; `android[30,36,wear-33]` picks the platform API levels; **implies `android-cli`** (the Android CLI rides along) | `cache.nixos.org`, `dl.google.com`, `maven.google.com` | — |
+| `android-cli` _(hidden)_ | [Google's Android CLI](https://developer.android.com/tools/agents/android-cli) — the agent-first `android` command (scaffold projects, manage AVDs, run Journeys). Downloads the prebuilt binary to `~/.local/bin`, puts it on PATH, and runs `android init` to register its agent skill (opt out with `COOEE_ANDROID_CLI_INIT=0`). Rides along with `android` (which implies it) or installs via its own `/android-cli` one-liner; **not shown in the picker** (it does not pull the Nix SDK back) | `dl.google.com` | — |
 | `android-emulator` | Adds `emulator` + `system-images` to the SDK (via the implied `android` build) and configures `/dev/kvm` access (GitHub `99-kvm4all.rules`); `android-emulator[36,wear-33]` picks the image levels; **implies `android`** | `cache.nixos.org`, `dl.google.com` | — |
 | `node`    | Node.js 22 LTS, npm                       | `cache.nixos.org`, `registry.npmjs.org` | Codex: `CODEX_ENV_NODE_VERSION` |
 | `playwright` | [Playwright agent CLI](https://playwright.dev/agent-cli/introduction) (`@playwright/cli`, the `playwright-cli` binary) via npm + the Playwright browsers from Nix; `playwright[0.1.13]` pins the CLI version; **implies `node`** | `cache.nixos.org`, `registry.npmjs.org` (`cdn.playwright.dev` only with `COOEE_PLAYWRIGHT_DOWNLOAD_BROWSERS=1`) | — |
@@ -149,6 +150,18 @@ canonicalizing. `android-emulator` implies `android`, so requesting just the
 emulator renders as `base,android,android-emulator` (with `android` first, so
 its `adb`/`ANDROID_HOME` are ready before the emulator block). Keeping the
 declaration in the fragment means a module's full definition lives in one file.
+
+The `android` SDK implies `android-cli` — [Google's Android CLI](https://developer.android.com/tools/agents/android-cli),
+the agent-first `android` command — so any box with the Nix SDK also gets the
+CLI on PATH. The implication is one-directional: `android-cli` is a lightweight,
+standalone binary download, so `curl -fsSL https://env.coo.ee/android-cli | bash`
+installs just the CLI (it manages its own SDK on demand) without building the
+heavyweight Nix SDK. Request `android` too when you want both.
+
+`android-cli` is marked `# coo.ee:hidden`, so the picker leaves it off the
+top-level module list — it rides along with `android` or installs via its own
+one-liner, rather than being chosen on its own. A hidden module still renders
+and installs like any other; it's just kept out of the searchable catalog.
 
 `compose` is a **curated target** built on the same mechanism: it implies
 `java` and `android` (the JDK + SDK that Compose `@Preview` rendering needs —
