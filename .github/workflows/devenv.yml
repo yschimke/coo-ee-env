@@ -10,14 +10,16 @@ name: devenv
 # backend promises — answering the open "is it functional end-to-end?" concern:
 #
 #   * devenv itself is installed and drives provisioning (generated devenv.nix),
-#   * tools resolve from the devenv profile, not a plain nix profile,
+#   * three packages (go + a JDK + node) share one devenv profile and resolve
+#     from it, not from a plain nix profile,
 #   * the single-JDK collapse fires for a multi-version request (17,21 -> 17),
+#   * the build-dependency prefetch runs (npm) against the devenv-provided node,
 #   * a fresh shell picks the env up from the persisted profile, and
 #   * a re-run short-circuits (idempotent).
 #
-# COOEE_FORCE=1 on the first run is deliberate: GitHub runners ship Go/JDKs
-# preinstalled, which the modules would otherwise adopt — skipping the devenv
-# path entirely. Forcing the install is what exercises the backend.
+# COOEE_FORCE=1 on the install run is deliberate: GitHub runners ship
+# Go/JDKs/Node preinstalled, which the modules would otherwise adopt — skipping
+# the devenv path entirely. Forcing the install is what exercises the backend.
 
 # PRs run on pull_request; push is scoped to main so an open PR's commits
 # don't trigger a second (duplicate) run.
@@ -38,10 +40,10 @@ jobs:
         with:
           node-version: 22
 
-      - name: Render go,java[17,21] with the ?devenv backend
+      - name: Render go,java[17,21],node with the ?devenv backend
         run: |
           set -euo pipefail
-          node -e "process.stdout.write(require('./api/env/render').render('go,java[17,21]', { devenv: true }).body)" > /tmp/devenv.sh
+          node -e "process.stdout.write(require('./api/env/render').render('go,java[17,21],node', { devenv: true }).body)" > /tmp/devenv.sh
           bash -n /tmp/devenv.sh
           grep -q 'BACKEND: devenv.sh' /tmp/devenv.sh \
             || { echo "FAIL: devenv backend fragment not spliced in"; exit 1; }
@@ -51,10 +53,25 @@ jobs:
           fi
           echo "rendered $(wc -l < /tmp/devenv.sh) lines"
 
-      - name: Run the installer (force install so the devenv path is exercised)
+      - name: Seed an isolated project (package.json drives the npm prefetch)
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/cooee-proj
+          # left-pad@1.3.0 is tiny and dependency-free — enough to prove the
+          # prefetch installs from the registry using the devenv-provided node.
+          cat > /tmp/cooee-proj/package.json <<'JSON'
+          {
+            "name": "cooee-devenv-ci",
+            "version": "1.0.0",
+            "private": true,
+            "dependencies": { "left-pad": "1.3.0" }
+          }
+          JSON
+
+      - name: Run the installer (force install; prefetch ON to exercise npm under devenv)
+        working-directory: /tmp/cooee-proj
         env:
           COOEE_FORCE: "1"
-          COOEE_NO_DEPS: "1"   # isolate provisioning from dependency prefetch
         run: |
           set -o pipefail
           bash /tmp/devenv.sh 2>&1 | tee /tmp/devenv.log
@@ -77,14 +94,15 @@ jobs:
           dir="$HOME/.config/coo-ee/devenv"
           test -f "$dir/devenv.nix" || { echo "FAIL: generated devenv.nix missing"; exit 1; }
           echo "== generated devenv.nix =="; cat "$dir/devenv.nix"
-          grep -q 'pkgs.go'             "$dir/devenv.nix" || { echo "FAIL: pkgs.go missing";  exit 1; }
-          grep -q 'pkgs.temurin-bin-17' "$dir/devenv.nix" || { echo "FAIL: jdk17 missing";    exit 1; }
+          for pkg in pkgs.go pkgs.temurin-bin-17 pkgs.nodejs_22; do
+            grep -q "$pkg" "$dir/devenv.nix" || { echo "FAIL: $pkg missing from devenv.nix"; exit 1; }
+          done
           if grep -q 'pkgs.temurin-bin-21' "$dir/devenv.nix"; then
             echo "FAIL: temurin-bin-21 present — collapse did not drop the extra JDK"; exit 1
           fi
-          echo "OK: devenv.nix lists go + a single JDK"
+          echo "OK: devenv.nix lists go + node + a single JDK"
 
-      - name: Verify the tools resolve from the devenv profile (fresh shell)
+      - name: Verify go + java resolve from the devenv profile (fresh shell)
         run: |
           set -euo pipefail
           # A brand-new shell must pick the environment up from the persisted
@@ -106,7 +124,33 @@ jobs:
             || { echo "FAIL: JAVA_HOME unset or invalid"; exit 1; }
           echo "OK: go + java usable from a fresh shell, served by devenv"
 
+      - name: Verify node resolves from devenv and the npm prefetch ran
+        run: |
+          set -euo pipefail
+          source ~/.config/coo-ee/env.sh
+          profile_bin="$HOME/.config/coo-ee/devenv/.devenv/profile/bin"
+
+          echo "== node / npm =="
+          node --version; npm --version
+          for tool in node npm; do
+            p="$(command -v "$tool")"
+            case "$p" in
+              "$profile_bin"/*) echo "OK: $tool served from the devenv profile ($p)";;
+              *) echo "FAIL: $tool is $p, not the devenv profile $profile_bin"; exit 1;;
+            esac
+          done
+
+          # The build-dependency prefetch ran npm against the devenv-provided
+          # node, installing the project's dependency into node_modules.
+          test -d /tmp/cooee-proj/node_modules/left-pad \
+            || { echo "FAIL: npm prefetch did not install deps under devenv";
+                 ls -A /tmp/cooee-proj/node_modules 2>/dev/null || true; exit 1; }
+          grep -qi "npm dependencies installed" /tmp/devenv.log \
+            || { echo "FAIL: prefetch did not report installing npm deps"; exit 1; }
+          echo "OK: npm prefetch installed deps using the devenv-provided node"
+
       - name: Verify idempotency — second run short-circuits
+        working-directory: /tmp/cooee-proj
         run: |
           set -euo pipefail
           out=$(bash /tmp/devenv.sh 2>&1) || { echo "$out"; exit 1; }
