@@ -89,6 +89,10 @@ test("android pulls in the android-cli tool; android-cli stands alone", () => {
   assert.ok(
     byName["android-cli"].hosts.need.map((h) => h.host).includes("dl.google.com"),
   );
+  // Setup registers the agent skill via `android init` (gated by an opt-out).
+  const body = render("android-cli").body;
+  assert.ok(body.includes('"$bin" init'), "runs android init");
+  assert.ok(body.includes("COOEE_ANDROID_CLI_INIT"), "android init is opt-out-able");
 });
 
 test("an implied module added on its own carries no params", () => {

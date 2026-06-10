@@ -6,7 +6,7 @@
 #               developer.android.com/tools/agents — it standardizes agent-driven
 #               Android workflows (scaffold projects, manage AVDs, run Journeys)
 #               and is the entry point to the Android skills + Knowledge Base.
-#               `android init` registers its agent skill into a project.
+#               After install we run `android init` to register its agent skill.
 #    software : the `android` binary, downloaded to ~/.local/bin and put on PATH.
 #               It self-bootstraps the rest of its payload on first run.
 #    params   : none.
@@ -24,11 +24,35 @@ need_host dl.google.com "download of the Android CLI binary and its first-run pa
 # (add_env) rather than editing shell rc files the way install.sh does.
 COOEE_ANDROID_CLI_BIN_DIR="${COOEE_ANDROID_CLI_BIN_DIR:-$HOME/.local/bin}"
 
+# Register the android-cli agent skill with `android init`. It installs into the
+# detected agent skills dir (~/.claude, ~/.gemini/antigravity/skills, ...), i.e.
+# the home dir — not this repo. Run non-interactively (stdin from /dev/null so it
+# can never hang) and advisory: a hiccup here doesn't fail the provision, the CLI
+# itself is installed. Opt out with COOEE_ANDROID_CLI_INIT=0.
+cooee_android_cli_init() {  # cooee_android_cli_init <android binary>
+  local bin=$1
+  if [[ "${COOEE_ANDROID_CLI_INIT:-1}" == 0 ]]; then
+    log "android-cli: skipping 'android init' (COOEE_ANDROID_CLI_INIT=0)."
+    return 0
+  fi
+  log "android-cli: registering the agent skill via 'android init'..."
+  if "$bin" init </dev/null >/dev/null 2>&1; then
+    ok "android-cli: 'android init' registered the android-cli agent skill."
+  else
+    warn "android-cli: 'android init' didn't complete (network, or it wants"
+    warn "interactive agent selection). Run 'android init' yourself to register"
+    warn "the skill, or set COOEE_ANDROID_CLI_INIT=0 to silence this."
+  fi
+}
+
 module_android-cli() {
+  local bin
   # Adopt an Android CLI already on PATH (a warm box, or a previous run's install).
   if command -v android >/dev/null 2>&1; then
-    add_env PATH "$(dirname "$(command -v android)"):$PATH"
-    ok "android-cli: adopted existing Android CLI ($(command -v android))."
+    bin="$(command -v android)"
+    add_env PATH "$(dirname "$bin"):$PATH"
+    ok "android-cli: adopted existing Android CLI ($bin)."
+    cooee_android_cli_init "$bin"
     return 0
   fi
 
@@ -44,7 +68,8 @@ module_android-cli() {
     *) die "android-cli: no Android CLI build for '$os $arch' (supported: Linux x86_64, macOS x86_64/arm64)." ;;
   esac
 
-  local dir="$COOEE_ANDROID_CLI_BIN_DIR" bin="$COOEE_ANDROID_CLI_BIN_DIR/android"
+  local dir="$COOEE_ANDROID_CLI_BIN_DIR"
+  bin="$dir/android"
   mkdir -p "$dir"
 
   log "Downloading the Android CLI ($url_os) from dl.google.com..."
@@ -63,5 +88,8 @@ module_android-cli() {
   ANDROID_CLI_FRESH_INSTALL=1 "$bin" >/dev/null 2>&1 \
     || warn "android-cli: first-run bootstrap didn't finish (network?); the 'android' binary is installed and bootstraps on first use."
 
-  ok "android-cli ready: 'android' installed at $bin. Run 'android init' in a project to register its agent skill."
+  ok "android-cli ready: 'android' installed at $bin."
+
+  # Register the agent skill (the whole point of installing the CLI for agents).
+  cooee_android_cli_init "$bin"
 }
