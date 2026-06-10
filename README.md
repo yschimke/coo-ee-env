@@ -407,10 +407,11 @@ faster when its binary cache (`devenv.cachix.org`) is reachable, but fall back
 to building from `cache.nixos.org`, which is already required.
 
 An end-to-end CI job (`.github/workflows/devenv.yml`) keeps this honest: it
-renders a `?devenv` script and runs it on a clean runner — installing Nix,
-installing devenv, generating `devenv.nix`, building the environment — then
-asserts the tools resolve from the devenv profile, the JDK collapse fired, and
-a re-run short-circuits.
+renders a `go,java[17,21],node?devenv` script and runs it on a clean runner —
+installing Nix, installing devenv, generating `devenv.nix`, building the
+environment — then asserts the three tools resolve from the devenv profile, the
+JDK collapse fired, the npm build-dependency prefetch ran against the
+devenv-provided node, and a re-run short-circuits.
 
 **Limitations.** A single devenv profile is one `buildEnv`, so it can't hold two
 JDKs at once (the per-install `--priority` the nix-profile backend uses isn't
