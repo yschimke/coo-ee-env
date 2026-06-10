@@ -199,10 +199,12 @@ function shQuote(s) {
 }
 
 // render(segment, opts) -> { status, contentType, body, canonical }
-//   opts.devenv — when true (the `?devenv` request flag), inject `set_backend
-//   devenv` so the rendered script provisions through an ad-hoc devenv.sh
-//   environment instead of the default Nix profile. The module list (and thus
-//   the canonical form / cache key path) is unaffected; the query string is.
+//   opts.devenv — when true (the `?devenv` request flag), the renderer splices
+//   in the devenv.sh backend fragment instead of the default Nix-profile one.
+//   The choice is resolved HERE, at render time: the emitted script carries
+//   only the selected backend's code, with no run-time `if devenv` branches.
+//   The module list (and thus the canonical form / cache key path) is
+//   unaffected; only the query string and the backend fragment differ.
 function render(segment, opts) {
   const devenv = !!(opts && opts.devenv);
   const allowed = allowedModules();
@@ -235,20 +237,22 @@ function render(segment, opts) {
     };
   }
 
-  const parts = [readFragment("_header")];
+  // _header (generic helpers) + the chosen backend driver. The backend
+  // fragment defines nix_ensure and the cooee_backend_* hooks the modules call,
+  // so a module fragment is backend-agnostic — only one implementation is ever
+  // spliced in, never both.
+  const parts = [
+    readFragment("_header"),
+    readFragment(devenv ? "_backend-devenv" : "_backend-nix"),
+  ];
 
-  // Inject request options before the module fragments run. set_backend /
-  // set_params are defined in _header; the fragments and _footer read the
-  // values at run time, so a plain request (no devenv, no params, e.g.
-  // java,android) emits nothing here and renders byte-identically to before
-  // these options existed.
-  const injections = [];
-  if (devenv) injections.push("set_backend devenv\n");
-  for (const e of entries) {
-    if (e.params.length) {
-      injections.push(`set_params ${e.name} ${shQuote(e.params.join(","))}\n`);
-    }
-  }
+  // Inject request parameters before the module fragments run. set_params is
+  // defined in _header; the fragments and _footer read _MODULE_PARAMS at run
+  // time, so a no-parameter request (e.g. java,android) emits nothing here and
+  // renders byte-identically to before parameters existed.
+  const injections = entries
+    .filter((e) => e.params.length)
+    .map((e) => `set_params ${e.name} ${shQuote(e.params.join(","))}\n`);
   if (injections.length) {
     parts.push(
       "\n# ---- request parameters (injected by the renderer) -----------------------\n",

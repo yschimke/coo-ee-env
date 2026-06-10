@@ -1,9 +1,9 @@
 
 # ===========================================================================
 #  module: base — install Nix (Determinate Systems installer)
-#    For a `?devenv` request, also install devenv.sh on top of Nix and provision
-#    every module's packages through one ad-hoc devenv environment instead of
-#    the default Nix profile. See cooee_devenv_* in _header.sh.
+#    Then run the backend's cooee_backend_setup hook: a no-op for the nix
+#    backend, or installing devenv.sh on top of Nix for a `?devenv` request
+#    (see modules/_backend-*.sh, spliced in by the renderer).
 # ===========================================================================
 register_module base
 need_host install.determinate.systems   "Determinate Nix installer + binaries"
@@ -79,10 +79,9 @@ module_base() {
   printf 'PATH=%s\n' "$PATH" >> "$COOEE_HARNESS_ENV"
   cooee_forward_to_harness "PATH=$PATH"
 
-  # devenv backend (?devenv): install devenv on top of Nix now, so the module
-  # fragments' nix_ensure calls provision through an ad-hoc devenv.sh
-  # environment instead of the default Nix profile. No-op for a plain request.
-  cooee_devenv_enabled && cooee_devenv_install
+  # Backend setup hook: a no-op for the nix backend, or installs devenv.sh on
+  # top of Nix for a ?devenv render (defined in the spliced-in _backend-*.sh).
+  cooee_backend_setup
 
   ok "base ready: $(nix --version)"
 }

@@ -151,7 +151,7 @@ test.describe("env.coo.ee picker", () => {
     const href = await page.locator("#view").getAttribute("href");
     const res = await page.request.get(href, { headers: { accept: "text/x-shellscript" } });
     expect(res.status()).toBe(200);
-    expect(await res.text()).toContain("set_backend devenv");
+    expect(await res.text()).toContain("BACKEND: devenv.sh");
 
     // Toggling back restores the plain one-liner.
     await page.locator("#devenv").uncheck();
