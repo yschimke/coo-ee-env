@@ -64,7 +64,8 @@ treats an already-present package as success — so a partial/cold box is
 | --------- | ----------------------------------------- | ----------------------- | ----------------------- |
 | `base`    | Nix (Determinate, daemonless)             | `install.determinate.systems`, `cache.nixos.org`, `channels.nixos.org`, `github.com`, `objects.githubusercontent.com` | — |
 | `java`    | Temurin JDK, `JAVA_HOME`; bare `java` uses the JDK the project pins for Gradle (`toolchainVersion` in `gradle/gradle-daemon-jvm.properties`), else 21 (17 + 21 with `android`); `java[17,21]` to choose | `cache.nixos.org` | base-image JDK |
-| `android` | Full SDK via `androidenv`: `platform-tools` (adb), `cmdline-tools`, the requested platform(s) + `build-tools`, `ANDROID_HOME`; `android[30,36,wear-33]` picks the platform API levels | `cache.nixos.org`, `dl.google.com`, `maven.google.com` | — |
+| `android` | Full SDK via `androidenv`: `platform-tools` (adb), `cmdline-tools`, the requested platform(s) + `build-tools`, `ANDROID_HOME`; `android[30,36,wear-33]` picks the platform API levels; **implies `android-cli`** (the agent skill rides along) | `cache.nixos.org`, `dl.google.com`, `maven.google.com`, `github.com` | — |
+| `android-cli` | The `android-cli` agent skill (drive `adb`/`sdkmanager`/`avdmanager`/`gradle` from the command line), linked into `~/.claude/skills/`; a one-token install that **implies `android`** (and `android` implies it back, so the skill and the SDK travel together) | `github.com`, `cache.nixos.org` (git, if absent) | — |
 | `android-emulator` | Adds `emulator` + `system-images` to the SDK (via the implied `android` build) and configures `/dev/kvm` access (GitHub `99-kvm4all.rules`); `android-emulator[36,wear-33]` picks the image levels; **implies `android`** | `cache.nixos.org`, `dl.google.com` | — |
 | `node`    | Node.js 22 LTS, npm                       | `cache.nixos.org`, `registry.npmjs.org` | Codex: `CODEX_ENV_NODE_VERSION` |
 | `playwright` | [Playwright agent CLI](https://playwright.dev/agent-cli/introduction) (`@playwright/cli`, the `playwright-cli` binary) via npm + the Playwright browsers from Nix; `playwright[0.1.13]` pins the CLI version; **implies `node`** | `cache.nixos.org`, `registry.npmjs.org` (`cdn.playwright.dev` only with `COOEE_PLAYWRIGHT_DOWNLOAD_BROWSERS=1`) | — |
@@ -149,6 +150,12 @@ canonicalizing. `android-emulator` implies `android`, so requesting just the
 emulator renders as `base,android,android-emulator` (with `android` first, so
 its `adb`/`ANDROID_HOME` are ready before the emulator block). Keeping the
 declaration in the fragment means a module's full definition lives in one file.
+
+Implications can be mutual: `android` implies `android-cli` (the agent skill
+that drives `adb`/`sdkmanager`/`gradle`) and `android-cli` implies `android`
+back, so selecting either installs both — the skill and the SDK it drives
+always travel together, and `curl -fsSL https://env.coo.ee/android-cli | bash`
+is a one-liner that sets up the whole thing.
 
 `compose` is a **curated target** built on the same mechanism: it implies
 `java` and `android` (the JDK + SDK that Compose `@Preview` rendering needs —

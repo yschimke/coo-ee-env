@@ -15,7 +15,13 @@
 #             : Google / JetBrains / fonts registries (build, advisory)
 #  Host set mirrors skills/compose-preview/references/agent-cloud.md.
 #  Assumes `java` is also requested (Android builds need a JDK).
+#
+#  Pulls in the `android-cli` agent skill automatically (and android-cli pulls
+#  android back), so the skill that drives adb/sdkmanager/gradle and the SDK it
+#  drives always travel together. Opt the skill out with `android` on its own
+#  is not possible by design; use `skills`/`tools` for a bespoke setup instead.
 # ===========================================================================
+# coo.ee:implies android-cli
 register_module android
 provides_tool android adb   # adopt a complete existing SDK (adb on PATH)
 need_host cache.nixos.org        "prebuilt androidenv dependencies from the Nix cache"

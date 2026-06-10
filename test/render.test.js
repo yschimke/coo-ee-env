@@ -13,7 +13,13 @@ test("base is always present and first", () => {
 
 test("module order is canonicalized (cache-friendly)", () => {
   assert.equal(render("java,android").body, render("android,java").body);
-  assert.deepEqual(canon("java,android"), ["base", "android", "java"]);
+  // android pulls in the android-cli skill automatically (see implication test).
+  assert.deepEqual(canon("java,android"), [
+    "base",
+    "android",
+    "android-cli",
+    "java",
+  ]);
 });
 
 test("blanks and duplicate modules collapse", () => {
@@ -38,6 +44,7 @@ test("prefixed param tokens sort after numerics", () => {
   assert.deepEqual(canon("android-emulator[wear-33,9,37,30]"), [
     "base",
     "android",
+    "android-cli",
     "android-emulator[9,30,37,wear-33]",
   ]);
 });
@@ -52,23 +59,44 @@ test("params inject a set_params line; param-less requests stay clean", () => {
 });
 
 test("android-emulator implies android (transitively pulled in)", () => {
+  // android-emulator -> android -> android-cli, all pulled in transitively.
   assert.deepEqual(names("android-emulator"), [
     "base",
     "android",
+    "android-cli",
     "android-emulator",
   ]);
   assert.deepEqual(names("android-emulator,java"), [
     "base",
     "android",
+    "android-cli",
     "android-emulator",
     "java",
   ]);
+});
+
+test("android pulls in the android-cli skill (and android-cli pulls android back)", () => {
+  // Selecting android auto-installs the android-cli agent skill...
+  assert.deepEqual(names("android"), ["base", "android", "android-cli"]);
+  // ...and the skill is a one-token install that brings the SDK it drives.
+  assert.deepEqual(names("android-cli"), ["base", "android", "android-cli"]);
+  // The two render byte-identically (same canonical module set).
+  assert.equal(render("android").body, render("android-cli").body);
+
+  const byName = Object.fromEntries(moduleInfo().map((m) => [m.name, m]));
+  assert.deepEqual(byName["android"].implies, ["android-cli"]);
+  assert.deepEqual(byName["android-cli"].implies, ["android"]);
+  // The skill is cloned from GitHub, so the module declares github.com.
+  assert.ok(
+    byName["android-cli"].hosts.need.map((h) => h.host).includes("github.com"),
+  );
 });
 
 test("an implied module added on its own carries no params", () => {
   assert.deepEqual(canon("android-emulator[34,wear-33]"), [
     "base",
     "android",
+    "android-cli",
     "android-emulator[34,wear-33]",
   ]);
 });
@@ -77,6 +105,7 @@ test("an explicitly-requested implied module keeps its own params", () => {
   assert.deepEqual(canon("android[30],android-emulator"), [
     "base",
     "android[30]",
+    "android-cli",
     "android-emulator",
   ]);
 });
@@ -110,8 +139,15 @@ test("playwright implies node and takes a version param", () => {
 });
 
 test("compose is a curated target that implies java and android", () => {
-  // No emulator — compose-preview renders without one.
-  assert.deepEqual(names("compose"), ["base", "android", "compose", "java"]);
+  // No emulator — compose-preview renders without one. android also brings the
+  // android-cli skill in transitively (compose -> android -> android-cli).
+  assert.deepEqual(names("compose"), [
+    "base",
+    "android",
+    "android-cli",
+    "compose",
+    "java",
+  ]);
   const byName = Object.fromEntries(moduleInfo().map((m) => [m.name, m]));
   assert.deepEqual(byName["compose"].implies.sort(), ["android", "java"]);
   // The target clones the skill repo, so it needs github.com.
@@ -202,6 +238,7 @@ test("the version example from the brief renders and is well-formed", () => {
   assert.deepEqual(o.canonical, [
     "base",
     "android[30,37,wear-33]",
+    "android-cli",
     "java[17,21]",
   ]);
   assert.ok(o.body.includes("set_params android '30,37,wear-33'"));
