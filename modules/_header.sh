@@ -209,12 +209,80 @@ cooee_sudo() {
   else return 127; fi
 }
 
+# ---- devenv.sh backend (opt-in at render time: ?devenv) -------------------
+# The provisioning backend is chosen when the script is rendered, not at run
+# time. By default packages go into the Nix profile; a `?devenv` request makes
+# the renderer inject `set_backend devenv` (in the request-options block below),
+# which routes every package through one ad-hoc devenv.sh environment
+# (https://devenv.sh/ad-hoc-developer-environments/) instead. devenv is itself
+# installed on top of Nix (see module_base); each nixpkgs attr a module would
+# `nix profile install` is appended to that environment via devenv's
+# `--option packages:pkgs`, and its profile bin dir is prepended to PATH — so
+# the tool resolves immediately afterwards exactly as the nix-profile path expects.
+COOEE_BACKEND="nix"
+set_backend() { COOEE_BACKEND="$1"; }   # injected by the renderer for ?devenv
+COOEE_DEVENV_DIR="${COOEE_DEVENV_DIR:-$HOME/.config/coo-ee/devenv}"
+_COOEE_DEVENV_PKGS=()   # nixpkgs attrs accumulated across nix_ensure calls
+
+cooee_devenv_enabled() { [[ "$COOEE_BACKEND" == devenv ]]; }
+
+# Install devenv itself (idempotent) into the default Nix profile. Called from
+# module_base once Nix is on PATH, only when the backend is enabled.
+cooee_devenv_install() {
+  if command -v devenv >/dev/null 2>&1; then
+    ok "devenv already installed: $(devenv version 2>/dev/null || echo present)"
+  else
+    log "Installing devenv.sh via Nix (nixpkgs#devenv)..."
+    nix profile install nixpkgs#devenv --accept-flake-config \
+      || die "failed to install devenv (nixpkgs#devenv)."
+    command -v devenv >/dev/null 2>&1 || die "devenv not on PATH after install."
+    ok "devenv ready: $(devenv version 2>/dev/null || echo installed)"
+  fi
+  mkdir -p "$COOEE_DEVENV_DIR"
+}
+
+# Realise the ad-hoc devenv environment from the accumulated package list and
+# prepend its profile bin dir to PATH (now + persisted, mirroring base.sh's
+# handling of the nix profile). Idempotent: the full list is passed on every
+# call, so re-running with the same packages is a no-op. DEVENV_PROFILE is the
+# Nix store path of devenv's final profile; its bin/ holds every package's tools.
+cooee_devenv_sync() {
+  (( ${#_COOEE_DEVENV_PKGS[@]} )) || return 0
+  local pkgs="${_COOEE_DEVENV_PKGS[*]}"
+  log "devenv: realising ad-hoc environment (packages: ${pkgs})..."
+  local profile
+  profile=$( cd "$COOEE_DEVENV_DIR" \
+    && devenv --option packages:pkgs "$pkgs" shell -- \
+         bash -c 'printf %s "$DEVENV_PROFILE"' 2>/dev/null ) \
+    || die "devenv: failed to realise environment for: ${pkgs}"
+  [[ -n "$profile" && -d "$profile/bin" ]] \
+    || die "devenv: profile bin dir not found (DEVENV_PROFILE=${profile:-unset})."
+  export PATH="$profile/bin:$PATH"
+  echo "export PATH=\"$profile/bin:\$PATH\"" >> "$COOEE_PROFILE"
+  printf 'PATH=%s\n' "$PATH" >> "$COOEE_HARNESS_ENV"
+  cooee_forward_to_harness "PATH=$PATH"
+}
+
 # ---- idempotent nix package install ---------------------------------------
 # Safe to run repeatedly: installs only what's missing, treats an already
 # present package as success, so the whole script is a no-op on a warm box
-# and a repair on a cold/partial one.
+# and a repair on a cold/partial one. With the devenv backend selected
+# (?devenv) the same request is satisfied through an ad-hoc devenv environment
+# instead — the nixpkgs attr is the package, any extra nix-profile flags
+# (e.g. --priority) don't apply to devenv and are ignored.
 nix_ensure() {  # nix_ensure <match> <flakeref> [extra nix flags...]
   local match=$1; shift
+  if cooee_devenv_enabled; then
+    local pkg=${1#nixpkgs#}   # nixpkgs#nodejs_22 -> nodejs_22
+    local p
+    for p in "${_COOEE_DEVENV_PKGS[@]}"; do
+      [[ "$p" == "$pkg" ]] && { ok "already present (devenv): $match"; return 0; }
+    done
+    _COOEE_DEVENV_PKGS+=("$pkg")
+    cooee_devenv_sync || return 1
+    ok "installed (devenv): $match"
+    return 0
+  fi
   if nix profile list 2>/dev/null | grep -qiF -- "$match"; then
     ok "already present: $match"; return 0
   fi

@@ -133,6 +133,32 @@ test.describe("env.coo.ee picker", () => {
     expect(claude.split("\n").sort()).toEqual(codex.split(",").sort());
   });
 
+  test("devenv toggle adds the ?devenv render flag to the one-liner", async ({ page }) => {
+    await gotoApp(page);
+
+    // Off by default: plain one-liner, no devenv anywhere.
+    const cmd = page.locator("#cmd-text");
+    await expect(cmd).toHaveText(/\| bash$/);
+    await expect(cmd).not.toContainText("devenv");
+
+    // Toggling on appends ?devenv=1 to the URL (and quotes it, since '?' is a
+    // shell glob); the pipe target stays a plain `| bash`.
+    await page.locator("#devenv").check();
+    await expect(cmd).toHaveText(/curl -fsSL '\S+\?devenv=1' \| bash$/);
+    await expect(page.locator("#view")).toHaveAttribute("href", /\?devenv=1$/);
+
+    // The "View script" URL the UI requests really does carry the flag through.
+    const href = await page.locator("#view").getAttribute("href");
+    const res = await page.request.get(href, { headers: { accept: "text/x-shellscript" } });
+    expect(res.status()).toBe(200);
+    expect(await res.text()).toContain("set_backend devenv");
+
+    // Toggling back restores the plain one-liner.
+    await page.locator("#devenv").uncheck();
+    await expect(cmd).toHaveText(/\| bash$/);
+    await expect(cmd).not.toContainText("devenv");
+  });
+
   test("backspace on an empty search removes the last chip", async ({ page }) => {
     await gotoApp(page, "#go,rust");
 

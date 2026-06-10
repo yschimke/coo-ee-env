@@ -38,24 +38,29 @@ function serveStatic(res, file) {
   res.end(fs.readFileSync(file));
 }
 
-// Hand a dynamic segment to a serverless handler the way Vercel does.
-function dispatch(handler, modules, req, res) {
+// Hand a dynamic segment to a serverless handler the way Vercel does: the path
+// segment lands on req.query.modules, and any real query-string params (e.g.
+// ?devenv) are merged in alongside it, exactly as the platform presents them.
+function dispatch(handler, modules, req, res, searchParams) {
   req.query = { modules };
+  if (searchParams) for (const [k, v] of searchParams) req.query[k] = v;
   return handler(req, res);
 }
 
 const server = http.createServer((req, res) => {
-  const p = decodeURIComponent(new URL(req.url, "http://localhost").pathname);
+  const u = new URL(req.url, "http://localhost");
+  const p = decodeURIComponent(u.pathname);
+  const q = u.searchParams;
   let m;
 
   // --- /api/* : Vercel routes these straight to the function files. ----------
   if (p === "/api/modules") return modulesHandler(req, res);
-  if ((m = p.match(/^\/api\/env\/recommend\/(.+)$/))) return dispatch(recommendHandler, m[1], req, res);
-  if ((m = p.match(/^\/api\/env\/(.+)$/))) return dispatch(renderHandler, m[1], req, res);
+  if ((m = p.match(/^\/api\/env\/recommend\/(.+)$/))) return dispatch(recommendHandler, m[1], req, res, q);
+  if ((m = p.match(/^\/api\/env\/(.+)$/))) return dispatch(renderHandler, m[1], req, res, q);
 
   // --- pretty rewrites from vercel.json (recommend before env before bare) ---
-  if ((m = p.match(/^\/(?:env\/)?recommend\/(.+)$/))) return dispatch(recommendHandler, m[1], req, res);
-  if ((m = p.match(/^\/env\/(.+)$/))) return dispatch(renderHandler, m[1], req, res);
+  if ((m = p.match(/^\/(?:env\/)?recommend\/(.+)$/))) return dispatch(recommendHandler, m[1], req, res, q);
+  if ((m = p.match(/^\/env\/(.+)$/))) return dispatch(renderHandler, m[1], req, res, q);
 
   // --- static files in public/ ("/" -> index.html) --------------------------
   const rel = p === "/" ? "/index.html" : p;
@@ -65,7 +70,7 @@ const server = http.createServer((req, res) => {
   }
 
   // --- catch-all: bare /:modules -> render (the curl one-liner / "view" link) -
-  if ((m = p.match(/^\/([^/]+)$/))) return dispatch(renderHandler, m[1], req, res);
+  if ((m = p.match(/^\/([^/]+)$/))) return dispatch(renderHandler, m[1], req, res, q);
 
   res.statusCode = 404;
   res.setHeader("content-type", "text/plain; charset=utf-8");
