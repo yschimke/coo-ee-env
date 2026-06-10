@@ -363,7 +363,7 @@ The [devenv.sh backend](#devenvsh-backend) is selected per request with the
 The provisioning stamp lives at `~/.config/coo-ee/provisioned` (the canonical
 module set); delete it to force the next run to re-probe.
 
-## devenv.sh backend (experimental)
+## devenv.sh backend
 
 By default each module installs its package straight into the default Nix
 profile (`nix profile install nixpkgs#…`). Add the `?devenv` query flag and the
@@ -406,11 +406,11 @@ still use `nix build`, since Nix is present either way. devenv builds resolve
 faster when its binary cache (`devenv.cachix.org`) is reachable, but fall back
 to building from `cache.nixos.org`, which is already required.
 
-An end-to-end CI job (`.github/workflows/devenv.yml`) renders a `?devenv`
-script and actually runs it on a clean runner — installing Nix, installing
-devenv, generating `devenv.nix`, building the environment — then asserts the
-tools resolve from the devenv profile, the JDK collapse fired, and a re-run
-short-circuits.
+An end-to-end CI job (`.github/workflows/devenv.yml`) keeps this honest: it
+renders a `?devenv` script and runs it on a clean runner — installing Nix,
+installing devenv, generating `devenv.nix`, building the environment — then
+asserts the tools resolve from the devenv profile, the JDK collapse fired, and
+a re-run short-circuits.
 
 **Limitations.** A single devenv profile is one `buildEnv`, so it can't hold two
 JDKs at once (the per-install `--priority` the nix-profile backend uses isn't
