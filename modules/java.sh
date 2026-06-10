@@ -70,6 +70,14 @@ module_java() {
   fi
 
   log "Installing Temurin JDK (${versions[*]}) via Nix..."
+  # The devenv backend builds one profile (a single buildEnv), which can't hold
+  # two JDKs at once — their files (lib/modules, …) collide, and the per-install
+  # --priority the nix-profile path uses to break that tie isn't available. Fall
+  # back to the first (lowest) requested major there, and say so.
+  if cooee_devenv_enabled && (( ${#versions[@]} > 1 )); then
+    warn "java: devenv backend provisions a single JDK; using ${versions[0]} (requested: ${versions[*]})."
+    versions=("${versions[0]}")
+  fi
   # Multiple JDKs ship colliding files (e.g. lib/modules), so a single profile
   # can't hold them at the same priority — `nix profile add` aborts. Give each a
   # distinct priority (lower wins), ascending from 5 in request order. Params are

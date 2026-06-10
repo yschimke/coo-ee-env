@@ -198,8 +198,13 @@ function shQuote(s) {
   return `'${String(s).replace(/'/g, `'\\''`)}'`;
 }
 
-// render(segment) -> { status, contentType, body, canonical }
-function render(segment) {
+// render(segment, opts) -> { status, contentType, body, canonical }
+//   opts.devenv — when true (the `?devenv` request flag), inject `set_backend
+//   devenv` so the rendered script provisions through an ad-hoc devenv.sh
+//   environment instead of the default Nix profile. The module list (and thus
+//   the canonical form / cache key path) is unaffected; the query string is.
+function render(segment, opts) {
+  const devenv = !!(opts && opts.devenv);
   const allowed = allowedModules();
   const { entries, errors } = canonicalize(segment);
   const canonical = entries.map(entryToString);
@@ -232,13 +237,18 @@ function render(segment) {
 
   const parts = [readFragment("_header")];
 
-  // Inject request parameters before the module fragments run. set_params is
-  // defined in _header; the fragments and _footer read _MODULE_PARAMS at run
-  // time, so a no-parameter request (e.g. java,android) emits nothing here and
-  // renders byte-identically to before parameters existed.
-  const injections = entries
-    .filter((e) => e.params.length)
-    .map((e) => `set_params ${e.name} ${shQuote(e.params.join(","))}\n`);
+  // Inject request options before the module fragments run. set_backend /
+  // set_params are defined in _header; the fragments and _footer read the
+  // values at run time, so a plain request (no devenv, no params, e.g.
+  // java,android) emits nothing here and renders byte-identically to before
+  // these options existed.
+  const injections = [];
+  if (devenv) injections.push("set_backend devenv\n");
+  for (const e of entries) {
+    if (e.params.length) {
+      injections.push(`set_params ${e.name} ${shQuote(e.params.join(","))}\n`);
+    }
+  }
   if (injections.length) {
     parts.push(
       "\n# ---- request parameters (injected by the renderer) -----------------------\n",

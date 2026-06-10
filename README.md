@@ -344,8 +344,57 @@ Knobs:
 | `COOEE_GRADLE_DEPS_TASK` | Run a specific Gradle task for the prefetch (e.g. `assemble -x test`) instead of the default whole-graph artifact resolution. |
 | `COOEE_BASE_URL` | Service base URL baked into the installed SessionStart hook (default `https://env.coo.ee`). |
 
+The [devenv.sh backend](#devenvsh-backend) is selected per request with the
+`?devenv` query flag, not an environment variable.
+
 The provisioning stamp lives at `~/.config/coo-ee/provisioned` (the canonical
 module set); delete it to force the next run to re-probe.
+
+## devenv.sh backend (experimental)
+
+By default each module installs its package straight into the default Nix
+profile (`nix profile install nixpkgs#…`). Add the `?devenv` query flag and the
+server renders the script with the [devenv.sh](https://devenv.sh/) backend
+instead:
+
+```bash
+curl -fsSL 'https://env.coo.ee/java,node?devenv' | bash
+```
+
+The picker exposes this as a **Use devenv.sh** toggle, which appends `?devenv=1`
+to the request URL — the module list (and thus the path) is unchanged; only the
+backend the renderer bakes into the script differs. The renderer injects a
+`set_backend devenv` line at the top of the script; when present:
+
+- `base` installs Nix as usual, then the prebuilt `nix profile install
+  nixpkgs#devenv`, and seeds a minimal devenv project under
+  `~/.config/coo-ee/devenv` (a `devenv.yaml` pinning nixpkgs-unstable, plus a
+  git repo).
+- Every module's `nix_ensure nixpkgs#<pkg>` is written into a generated
+  `devenv.nix` (`packages = [ pkgs.<pkg> … ]`); devenv builds the environment
+  and its profile `bin` (the stable `.devenv/profile` symlink) is prepended to
+  `PATH`, now and in the persisted env, so tools resolve exactly as the
+  Nix-profile path expects.
+
+We write a real `devenv.nix` rather than using devenv's newer ad-hoc
+`--option packages:pkgs` flag, so it works on any devenv version and avoids the
+fresh-directory edge cases ad-hoc invocations hit.
+
+Everything else — adoption of already-present tools, host preflight, env
+persistence, [auto-activation](#auto-activation), and
+[build-dependency prefetch](#build-dependency-prefetch) — is unchanged.
+Modules that build a derivation directly (the Android SDK, Playwright browsers)
+still use `nix build`, since Nix is present either way. devenv builds resolve
+faster when its binary cache (`devenv.cachix.org`) is reachable, but fall back
+to building from `cache.nixos.org`, which is already required.
+
+**Limitations.** A single devenv profile is one `buildEnv`, so it can't hold two
+JDKs at once (the per-install `--priority` the nix-profile path uses isn't
+available): a multi-version request like `java[17,21]` — including the
+`java`+`android` default of `17,21` — falls back to the first major with a
+warning. This backend is **not yet verified end-to-end against a live Nix
+install**; the flag, rendering, and script generation are tested, the
+provisioning run is not.
 
 ## Build-dependency prefetch
 

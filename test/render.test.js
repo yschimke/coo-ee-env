@@ -51,6 +51,24 @@ test("params inject a set_params line; param-less requests stay clean", () => {
   assert.ok(!render("java,android").body.includes("set_params java"));
 });
 
+test("?devenv injects set_backend; default and module list are unaffected", () => {
+  const on = render("java[17,21]", { devenv: true }).body;
+  const off = render("java[17,21]").body;
+  // The flag injects exactly one `set_backend devenv` line, alongside set_params.
+  // Match the standalone injected line — the header also *mentions* it in a
+  // comment and always *defines* set_backend(), so a substring check is too loose.
+  const injectsBackend = (body) => /^set_backend devenv$/m.test(body);
+  assert.ok(injectsBackend(on));
+  assert.ok(on.includes("set_params java '17,21'"));
+  assert.ok(!injectsBackend(off));
+  // It's purely a backend switch — the canonical module list is identical.
+  assert.deepEqual(render("java", { devenv: true }).canonical, render("java").canonical);
+  // A param-less devenv request still emits the injection block (for set_backend).
+  const marker = "request parameters (injected by the renderer)";
+  assert.ok(render("java", { devenv: true }).body.includes(marker));
+  assert.ok(!render("java").body.includes(marker));
+});
+
 test("android-emulator implies android (transitively pulled in)", () => {
   assert.deepEqual(names("android-emulator"), [
     "base",
