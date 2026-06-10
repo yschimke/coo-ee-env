@@ -16,10 +16,10 @@
 #  Host set mirrors skills/compose-preview/references/agent-cloud.md.
 #  Assumes `java` is also requested (Android builds need a JDK).
 #
-#  Pulls in the `android-cli` agent skill automatically (and android-cli pulls
-#  android back), so the skill that drives adb/sdkmanager/gradle and the SDK it
-#  drives always travel together. Opt the skill out with `android` on its own
-#  is not possible by design; use `skills`/`tools` for a bespoke setup instead.
+#  Pulls in `android-cli` automatically — Google's official Android CLI agent
+#  tool (the `android` command) — so any box with the SDK also has the
+#  agent-first CLI on PATH. The CLI is a lightweight standalone binary and does
+#  not pull the SDK back; request `android-cli` on its own for just the tool.
 # ===========================================================================
 # coo.ee:implies android-cli
 register_module android

@@ -1,66 +1,67 @@
 
 # ===========================================================================
-#  module: android-cli — install the Android CLI agent skill
-#    type     : agent skill (NOT a Nix package). Clones the skill repo and links
-#               the `android-cli` skill into ~/.claude/skills/ so the agent can
-#               drive the Android command-line tools (adb, sdkmanager, avdmanager,
-#               gradle) without Android Studio. The Android SDK it drives comes
-#               from the `android` module, which this implies — and which implies
-#               this back, so the skill and the SDK always travel together.
-#    software : the android-cli agent skill + git (from Nix only if the box lacks
-#               it). The SDK itself is installed by the implied `android` module.
-#    hosts    : github.com (clone of the skill repo), cache.nixos.org (git, if absent)
-#  `android-cli` takes no params — it's a fixed skill. To pick skills à la carte,
-#  use `skills[yschimke/skills/<skill>]` instead.
+#  module: android-cli — Google's Android CLI (the agent-first `android` tool)
+#    type     : a single prebuilt binary from Google (NOT a Nix package, NOT a
+#               Claude SKILL.md). The official Android CLI from
+#               developer.android.com/tools/agents — it standardizes agent-driven
+#               Android workflows (scaffold projects, manage AVDs, run Journeys)
+#               and is the entry point to the Android skills + Knowledge Base.
+#               `android init` registers its agent skill into a project.
+#    software : the `android` binary, downloaded to ~/.local/bin and put on PATH.
+#               It self-bootstraps the rest of its payload on first run.
+#    params   : none.
+#    hosts    : dl.google.com (the binary + its first-run payload)
+#  A one-token install — `curl -fsSL https://env.coo.ee/android-cli | bash`. The
+#  `android` SDK module implies this, so selecting the SDK installs the CLI too.
+#  Standalone (it does NOT pull in the heavyweight Nix SDK): the CLI manages its
+#  own SDK on demand. Pair it with `android` when you want the Nix-built SDK too.
 # ===========================================================================
-# coo.ee:implies android
 register_module android-cli
-need_host github.com      "git clone of the android-cli skill repo"
-want_host cache.nixos.org "git from the Nix cache, only if git is not already present"
+provides_tool android-cli android   # adopt an Android CLI already on PATH
+need_host dl.google.com "download of the Android CLI binary and its first-run payload"
 
-# The skill source is overridable for forks/pins, but defaults to the canonical
-# repo + skill name.
-COOEE_ANDROID_CLI_SKILL_REPO="${COOEE_ANDROID_CLI_SKILL_REPO:-yschimke/skills}"
-COOEE_ANDROID_CLI_SKILL="${COOEE_ANDROID_CLI_SKILL:-android-cli}"
+# Where the official install.sh puts it. We manage PATH via the env profile
+# (add_env) rather than editing shell rc files the way install.sh does.
+COOEE_ANDROID_CLI_BIN_DIR="${COOEE_ANDROID_CLI_BIN_DIR:-$HOME/.local/bin}"
 
 module_android-cli() {
-  # git is the only direct dependency; grab it from Nix if the box lacks it.
-  if ! command -v git >/dev/null 2>&1; then
-    log "git not found; installing via Nix..."
-    nix_ensure git nixpkgs#git --accept-flake-config
-  fi
-  command -v git >/dev/null 2>&1 || die "git not on PATH; cannot install the android-cli skill."
-
-  local repo="$COOEE_ANDROID_CLI_SKILL_REPO" skill="$COOEE_ANDROID_CLI_SKILL"
-  local skills_dir="$HOME/.claude/skills"
-  local cache_dir="$HOME/.cache/coo-ee/skills"
-  local dest="$cache_dir/${repo//\//-}"
-  mkdir -p "$skills_dir" "$cache_dir"
-
-  if [[ -d "$dest/.git" ]]; then
-    log "updating $repo..."
-    git -C "$dest" fetch --quiet --depth 1 origin HEAD \
-      && git -C "$dest" checkout --quiet --force FETCH_HEAD \
-      || warn "could not update $repo; using the cached checkout."
-  else
-    log "cloning $repo..."
-    git clone --quiet --depth 1 "https://github.com/$repo" "$dest" \
-      || { warn "android-cli: clone failed for $repo (is github.com reachable?)"; return 0; }
+  # Adopt an Android CLI already on PATH (a warm box, or a previous run's install).
+  if command -v android >/dev/null 2>&1; then
+    add_env PATH "$(dirname "$(command -v android)"):$PATH"
+    ok "android-cli: adopted existing Android CLI ($(command -v android))."
+    return 0
   fi
 
-  # Link just the requested skill — the directory named <skill> holding SKILL.md.
-  local skillmd name linked=0
-  while IFS= read -r -d '' skillmd; do
-    name=$(basename "$(dirname "$skillmd")")
-    [[ "$name" == "$skill" ]] || continue
-    ln -sfn "$(dirname "$skillmd")" "$skills_dir/$name"
-    ok "skill: $name  ($repo)"
-    linked=1
-  done < <(find "$dest" -name SKILL.md -not -path '*/.git/*' -print0 2>/dev/null)
+  command -v curl >/dev/null 2>&1 || die "android-cli: curl is required to download the Android CLI."
 
-  if (( linked )); then
-    ok "android-cli ready: '$skill' skill linked; the Android SDK comes from the android module."
-  else
-    warn "android-cli: skill '$skill' not found in $repo — nothing linked."
-  fi
+  # Map this host to Google's published build, mirroring the official install.sh.
+  local os arch url_os
+  os="$(uname -s)"; arch="$(uname -m)"
+  case "$os $arch" in
+    "Linux x86_64")  url_os="linux_x86_64"  ;;
+    "Darwin x86_64") url_os="darwin_x86_64" ;;
+    "Darwin arm64")  url_os="darwin_arm64"  ;;
+    *) die "android-cli: no Android CLI build for '$os $arch' (supported: Linux x86_64, macOS x86_64/arm64)." ;;
+  esac
+
+  local dir="$COOEE_ANDROID_CLI_BIN_DIR" bin="$COOEE_ANDROID_CLI_BIN_DIR/android"
+  mkdir -p "$dir"
+
+  log "Downloading the Android CLI ($url_os) from dl.google.com..."
+  curl -fsSL "https://dl.google.com/android/cli/latest/${url_os}/android" -o "$bin" \
+    || die "android-cli: download failed (is dl.google.com reachable?)."
+  chmod +x "$bin"
+
+  # Persist the bin dir on PATH for this and every later shell — via the env
+  # profile, not ~/.bashrc (that's the installer's job; we own our own profile).
+  add_env PATH "$dir:$PATH"
+  export PATH="$dir:$PATH"
+
+  # Force the binary's first-run self-download, exactly as install.sh does. Don't
+  # fail the provision if this network step hiccups — the binary is in place and
+  # will finish bootstrapping on first real use.
+  ANDROID_CLI_FRESH_INSTALL=1 "$bin" >/dev/null 2>&1 \
+    || warn "android-cli: first-run bootstrap didn't finish (network?); the 'android' binary is installed and bootstraps on first use."
+
+  ok "android-cli ready: 'android' installed at $bin. Run 'android init' in a project to register its agent skill."
 }

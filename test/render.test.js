@@ -75,20 +75,19 @@ test("android-emulator implies android (transitively pulled in)", () => {
   ]);
 });
 
-test("android pulls in the android-cli skill (and android-cli pulls android back)", () => {
-  // Selecting android auto-installs the android-cli agent skill...
+test("android pulls in the android-cli tool; android-cli stands alone", () => {
+  // Selecting the android SDK auto-installs Google's Android CLI agent tool...
   assert.deepEqual(names("android"), ["base", "android", "android-cli"]);
-  // ...and the skill is a one-token install that brings the SDK it drives.
-  assert.deepEqual(names("android-cli"), ["base", "android", "android-cli"]);
-  // The two render byte-identically (same canonical module set).
-  assert.equal(render("android").body, render("android-cli").body);
+  // ...but android-cli on its own is a lightweight, single-binary one-liner that
+  // does NOT drag in the heavyweight Nix SDK.
+  assert.deepEqual(names("android-cli"), ["base", "android-cli"]);
 
   const byName = Object.fromEntries(moduleInfo().map((m) => [m.name, m]));
   assert.deepEqual(byName["android"].implies, ["android-cli"]);
-  assert.deepEqual(byName["android-cli"].implies, ["android"]);
-  // The skill is cloned from GitHub, so the module declares github.com.
+  assert.deepEqual(byName["android-cli"].implies, []);
+  // The CLI binary is downloaded from Google.
   assert.ok(
-    byName["android-cli"].hosts.need.map((h) => h.host).includes("github.com"),
+    byName["android-cli"].hosts.need.map((h) => h.host).includes("dl.google.com"),
   );
 });
 
