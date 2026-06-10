@@ -1,0 +1,124 @@
+name: devenv
+
+# Integration check for the ?devenv provisioning backend
+# (modules/_backend-devenv.sh + base.sh + java.sh). render.yml only
+# syntax-checks the rendered script and the unit tests only cover the
+# renderer/flag selection — neither actually runs devenv. This job renders a
+# ?devenv script and executes it on a clean runner: it installs Nix, installs
+# devenv on top, generates a devenv.nix, builds the environment, and must end
+# up with the tools on PATH. It then asserts the devenv-specific behaviours the
+# backend promises — answering the open "is it functional end-to-end?" concern:
+#
+#   * devenv itself is installed and drives provisioning (generated devenv.nix),
+#   * tools resolve from the devenv profile, not a plain nix profile,
+#   * the single-JDK collapse fires for a multi-version request (17,21 -> 17),
+#   * a fresh shell picks the env up from the persisted profile, and
+#   * a re-run short-circuits (idempotent).
+#
+# COOEE_FORCE=1 on the first run is deliberate: GitHub runners ship Go/JDKs
+# preinstalled, which the modules would otherwise adopt — skipping the devenv
+# path entirely. Forcing the install is what exercises the backend.
+
+# PRs run on pull_request; push is scoped to main so an open PR's commits
+# don't trigger a second (duplicate) run.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  devenv-provision:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Render go,java[17,21] with the ?devenv backend
+        run: |
+          set -euo pipefail
+          node -e "process.stdout.write(require('./api/env/render').render('go,java[17,21]', { devenv: true }).body)" > /tmp/devenv.sh
+          bash -n /tmp/devenv.sh
+          grep -q 'BACKEND: devenv.sh' /tmp/devenv.sh \
+            || { echo "FAIL: devenv backend fragment not spliced in"; exit 1; }
+          # The whole point of the refactor: no runtime backend conditional leaks in.
+          if grep -qE 'set_backend|cooee_devenv_enabled' /tmp/devenv.sh; then
+            echo "FAIL: rendered script carries a runtime backend conditional"; exit 1
+          fi
+          echo "rendered $(wc -l < /tmp/devenv.sh) lines"
+
+      - name: Run the installer (force install so the devenv path is exercised)
+        env:
+          COOEE_FORCE: "1"
+          COOEE_NO_DEPS: "1"   # isolate provisioning from dependency prefetch
+        run: |
+          set -o pipefail
+          bash /tmp/devenv.sh 2>&1 | tee /tmp/devenv.log
+
+      - name: Assert the single-JDK collapse fired (17,21 -> 17)
+        run: |
+          set -euo pipefail
+          grep -qi "devenv backend provisions a single JDK" /tmp/devenv.log \
+            || { echo "FAIL: multi-version JDK collapse warning not emitted"; exit 1; }
+          echo "OK: java[17,21] collapsed to a single JDK under devenv"
+
+      - name: Assert devenv was installed and generated the config
+        run: |
+          set -euo pipefail
+          source ~/.config/coo-ee/env.sh
+
+          command -v devenv >/dev/null || { echo "FAIL: devenv not installed"; exit 1; }
+          echo "devenv: $(devenv version 2>/dev/null || echo present)"
+
+          dir="$HOME/.config/coo-ee/devenv"
+          test -f "$dir/devenv.nix" || { echo "FAIL: generated devenv.nix missing"; exit 1; }
+          echo "== generated devenv.nix =="; cat "$dir/devenv.nix"
+          grep -q 'pkgs.go'             "$dir/devenv.nix" || { echo "FAIL: pkgs.go missing";  exit 1; }
+          grep -q 'pkgs.temurin-bin-17' "$dir/devenv.nix" || { echo "FAIL: jdk17 missing";    exit 1; }
+          if grep -q 'pkgs.temurin-bin-21' "$dir/devenv.nix"; then
+            echo "FAIL: temurin-bin-21 present — collapse did not drop the extra JDK"; exit 1
+          fi
+          echo "OK: devenv.nix lists go + a single JDK"
+
+      - name: Verify the tools resolve from the devenv profile (fresh shell)
+        run: |
+          set -euo pipefail
+          # A brand-new shell must pick the environment up from the persisted
+          # profile alone — the whole contract of the bootstrapper.
+          source ~/.config/coo-ee/env.sh
+          profile_bin="$HOME/.config/coo-ee/devenv/.devenv/profile/bin"
+
+          echo "== go =="
+          go version
+          go_path="$(command -v go)"
+          case "$go_path" in
+            "$profile_bin"/*) echo "OK: go served from the devenv profile ($go_path)";;
+            *) echo "FAIL: go is $go_path, not the devenv profile $profile_bin"; exit 1;;
+          esac
+
+          echo "== java =="
+          java -version
+          [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/java" ] \
+            || { echo "FAIL: JAVA_HOME unset or invalid"; exit 1; }
+          echo "OK: go + java usable from a fresh shell, served by devenv"
+
+      - name: Verify idempotency — second run short-circuits
+        run: |
+          set -euo pipefail
+          out=$(bash /tmp/devenv.sh 2>&1) || { echo "$out"; exit 1; }
+          echo "$out"
+          echo "$out" | grep -qi "already provisioned" \
+            || { echo "FAIL: second run did not short-circuit"; exit 1; }
+          echo "OK: re-run short-circuited as already provisioned"
+
+      - name: Upload the install log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: devenv-install-log
+          path: /tmp/devenv.log
+          retention-days: 7
