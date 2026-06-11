@@ -1,7 +1,7 @@
 name: devenv
 
 # Integration check for the ?devenv provisioning backend
-# (modules/_backend-devenv.sh + base.sh + java.sh). render.yml only
+# (modules/_backend-devenv.sh + base.sh + java.sh + android.sh). render.yml only
 # syntax-checks the rendered script and the unit tests only cover the
 # renderer/flag selection — neither actually runs devenv. This job renders a
 # ?devenv script and executes it on a clean runner: it installs Nix, installs
@@ -17,9 +17,16 @@ name: devenv
 #   * a fresh shell picks the env up from the persisted profile, and
 #   * a re-run short-circuits (idempotent).
 #
+# A second job (devenv-android) exercises the native Android integration: the
+# android module routes through devenv's first-class `android` config (not a
+# direct `nix build`), so the generated devenv.nix must carry an `android` block,
+# devenv.yaml must allow unfree, and adb must resolve from the built SDK.
+#
 # COOEE_FORCE=1 on the install run is deliberate: GitHub runners ship
 # Go/JDKs/Node preinstalled, which the modules would otherwise adopt — skipping
 # the devenv path entirely. Forcing the install is what exercises the backend.
+# (Android adoption is independent of COOEE_FORCE, so its job empties ANDROID_HOME
+# to force the devenv build instead of adopting the runner's preinstalled SDK.)
 
 # PRs run on pull_request; push is scoped to main so an open PR's commits
 # don't trigger a second (duplicate) run.
@@ -165,4 +172,87 @@ jobs:
         with:
           name: devenv-install-log
           path: /tmp/devenv.log
+          retention-days: 7
+
+  # Native Android integration: prove the android module provisions through
+  # devenv's first-class `android` config rather than a direct `nix build`.
+  # No emulator/system images (the heavy part) — just platform-tools + one
+  # platform + build-tools, enough to assert the path works end-to-end.
+  devenv-android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Render android[34],java[17] with the ?devenv backend
+        run: |
+          set -euo pipefail
+          node -e "process.stdout.write(require('./api/env/render').render('android[34],java[17]', { devenv: true }).body)" > /tmp/devenv-android.sh
+          bash -n /tmp/devenv-android.sh
+          grep -q 'BACKEND: devenv.sh' /tmp/devenv-android.sh \
+            || { echo "FAIL: devenv backend not spliced in"; exit 1; }
+          # The android module must call the backend hook, and the devenv backend
+          # must define it — never the raw androidenv expr.
+          grep -q 'cooee_backend_android_sdk()' /tmp/devenv-android.sh \
+            || { echo "FAIL: devenv android hook not defined"; exit 1; }
+          if grep -q 'androidenv.composeAndroidPackages' /tmp/devenv-android.sh; then
+            echo "FAIL: devenv render carries a raw androidenv expr (should use the native integration)"; exit 1
+          fi
+          echo "rendered $(wc -l < /tmp/devenv-android.sh) lines"
+
+      - name: Run the installer (force install; empty ANDROID_HOME to defeat adoption)
+        env:
+          COOEE_FORCE: "1"
+          # Point ANDROID_HOME at an empty dir so the module can't adopt the
+          # runner's preinstalled SDK — forcing the devenv build path.
+          ANDROID_HOME: /tmp/empty-android-sdk
+          ANDROID_SDK_ROOT: /tmp/empty-android-sdk
+          # Pin a widely-available build-tools revision for the pinned nixpkgs.
+          COOEE_ANDROID_BUILD_TOOLS: "34.0.0"
+          # No project here, so skip the (advisory) Gradle dependency prefetch.
+          COOEE_NO_DEPS: "1"
+        run: |
+          set -o pipefail
+          mkdir -p /tmp/empty-android-sdk
+          bash /tmp/devenv-android.sh 2>&1 | tee /tmp/devenv-android.log
+
+      - name: Assert devenv generated a native android config (not a nix build)
+        run: |
+          set -euo pipefail
+          dir="$HOME/.config/coo-ee/devenv"
+          test -f "$dir/devenv.nix" || { echo "FAIL: devenv.nix missing"; exit 1; }
+          echo "== devenv.nix =="; cat "$dir/devenv.nix"
+          echo "== devenv.yaml =="; cat "$dir/devenv.yaml"
+          grep -q 'android = {' "$dir/devenv.nix" \
+            || { echo "FAIL: no android block in devenv.nix"; exit 1; }
+          grep -q 'platforms.version = \[ "34"' "$dir/devenv.nix" \
+            || { echo "FAIL: platform 34 not configured"; exit 1; }
+          grep -q 'allow_unfree:[[:space:]]*true' "$dir/devenv.yaml" \
+            || { echo "FAIL: devenv.yaml does not allow unfree"; exit 1; }
+          echo "OK: android provisioned via devenv's native integration"
+
+      - name: Verify adb resolves from the devenv-built SDK (fresh shell)
+        run: |
+          set -euo pipefail
+          source ~/.config/coo-ee/env.sh
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          case "$ANDROID_HOME" in
+            /nix/store/*) echo "OK: ANDROID_HOME points into the Nix store";;
+            *) echo "FAIL: ANDROID_HOME is $ANDROID_HOME, not a Nix store path"; exit 1;;
+          esac
+          test -x "$ANDROID_HOME/platform-tools/adb" \
+            || { echo "FAIL: adb missing under the built SDK"; exit 1; }
+          adb --version
+          echo "OK: adb resolves from the devenv-built Android SDK"
+
+      - name: Upload the install log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: devenv-android-install-log
+          path: /tmp/devenv-android.log
           retention-days: 7
