@@ -401,17 +401,30 @@ fresh-directory edge cases ad-hoc invocations hit.
 Everything else — adoption of already-present tools, host preflight, env
 persistence, [auto-activation](#auto-activation), and
 [build-dependency prefetch](#build-dependency-prefetch) — is unchanged.
-Modules that build a derivation directly (the Android SDK, Playwright browsers)
-still use `nix build`, since Nix is present either way. devenv builds resolve
-faster when its binary cache (`devenv.cachix.org`) is reachable, but fall back
-to building from `cache.nixos.org`, which is already required.
 
-An end-to-end CI job (`.github/workflows/devenv.yml`) keeps this honest: it
-renders a `go,java[17,21],node?devenv` script and runs it on a clean runner —
+The **Android SDK** is provisioned through a backend hook
+(`cooee_backend_android_sdk`) rather than `nix_ensure`: the nix backend builds an
+`androidenv` expression directly, while the devenv backend writes a native
+[`android` integration](https://devenv.sh/integrations/android/) into
+`devenv.nix` (plus `nixpkgs.allow_unfree` in `devenv.yaml`) and lets devenv build
+it, then reads back the `ANDROID_HOME` the integration exports. Both honour the
+i686/`ncurses5` stub overlay. The remaining direct `nix build` is **Playwright's
+browsers**, which needs the store out-path to set `PLAYWRIGHT_BROWSERS_PATH` —
+something a `buildEnv`/profile doesn't surface — so it stays a direct build under
+either backend. devenv builds resolve faster when its binary cache
+(`devenv.cachix.org`) is reachable, but fall back to building from
+`cache.nixos.org`, which is already required.
+
+An end-to-end CI job (`.github/workflows/devenv.yml`) keeps this honest. A first
+job renders a `go,java[17,21],node?devenv` script and runs it on a clean runner —
 installing Nix, installing devenv, generating `devenv.nix`, building the
 environment — then asserts the three tools resolve from the devenv profile, the
 JDK collapse fired, the npm build-dependency prefetch ran against the
-devenv-provided node, and a re-run short-circuits.
+devenv-provided node, and a re-run short-circuits. A second job
+(`devenv-android`) renders `android[34],java[17]?devenv`, empties `ANDROID_HOME`
+to force the build path, and asserts the generated `devenv.nix` carries an
+`android` block, `devenv.yaml` allows unfree, and `adb` resolves from the
+devenv-built SDK in the Nix store.
 
 **Limitations.** A single devenv profile is one `buildEnv`, so it can't hold two
 JDKs at once (the per-install `--priority` the nix-profile backend uses isn't

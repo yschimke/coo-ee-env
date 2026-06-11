@@ -1,9 +1,10 @@
 
 # ===========================================================================
 #  module: android
-#    software : full Android SDK via Nix androidenv — platform-tools (adb),
-#               cmdline-tools, the requested platforms + build-tools (and, when
-#               android-emulator is also requested, the emulator + system
+#    software : full Android SDK (Nix androidenv; under ?devenv, devenv's native
+#               android integration over the same androidenv) — platform-tools
+#               (adb), cmdline-tools, the requested platforms + build-tools (and,
+#               when android-emulator is also requested, the emulator + system
 #               images). ANDROID_HOME / ANDROID_SDK_ROOT point at it, and
 #               (for a Gradle project rooted here) sdk.dir is pinned in
 #               local.properties so AGP finds the SDK even when the env vars
@@ -142,77 +143,42 @@ module_android() {
     warn "android: existing SDK at $sdk lacks platform(s): ${missing[*]} — installing a complete SDK via Nix."
   fi
 
-  # Build a complete SDK with Nix (androidenv). cache.nixos.org provides the Nix
-  # closure; the SDK components themselves are fetched from dl.google.com as
-  # fixed-output derivations, so that host must be reachable for this step.
+  # Build a complete SDK. The backend decides HOW: the nix backend builds an
+  # androidenv expression directly; the ?devenv backend writes a native `android`
+  # integration into its devenv project and lets devenv build it. Both fetch the
+  # SDK components from dl.google.com (fixed-output derivations) over the Nix
+  # closure from cache.nixos.org, both honor the i686/ncurses5 stub, and both
+  # return the SDK dir (…/libexec/android-sdk) — so everything below is shared.
   command -v nix >/dev/null 2>&1 || die "android: nix is required to install the SDK but isn't on PATH — re-run with COOEE_FORCE=1 so the base module installs it first."
 
   # Default to one platform when none was requested. The build needs every level
   # that either a platform or a system image targets.
   (( ${#levels[@]} )) || levels=("$COOEE_ANDROID_DEFAULT_PLATFORM")
   (( want_emu && ${#img_levels[@]} == 0 )) && img_levels=("${levels[@]}")
-  local -a all_levels=() seen=()
+  local -a all_levels=()
   local l; for l in "${levels[@]}" "${img_levels[@]}"; do
     [[ " ${all_levels[*]:-} " == *" $l "* ]] || all_levels+=("$l")
   done
 
-  # Compose the Nix expression. Quote each level as a string list element.
-  local platforms_nix="" img_types_nix='"google_apis"'
-  for l in "${all_levels[@]}"; do platforms_nix+="\"$l\" "; done
-  cooee_android_wants_wear "${params[@]}" && img_types_nix+=' "android-wear"'
+  # System image types: Google APIs always, plus Wear OS when a wear-NN platform
+  # was requested. Only consulted when the emulator (hence system images) is
+  # installed, but computed unconditionally so the backend always has them.
+  local -a img_types=(google_apis)
+  cooee_android_wants_wear "${params[@]}" && img_types+=(android-wear)
 
-  local emu_bool="false"; (( want_emu )) && emu_bool="true"
+  # Hand the structured, backend-neutral request to the backend hook via the
+  # agreed _COOEE_ANDROID_* globals, then let it provision. The hook sets
+  # COOEE_ANDROID_SDK_DIR (and die()s on failure — called directly, NOT in a
+  # command substitution, so the die exits the whole script rather than a subshell).
+  _COOEE_ANDROID_LEVELS=("${all_levels[@]}")
+  _COOEE_ANDROID_IMG_TYPES=("${img_types[@]}")
+  _COOEE_ANDROID_WANT_EMU=$want_emu
 
-  # On x86_64 Linux, androidenv unconditionally drags in 32-bit (i686) glibc,
-  # zlib and ncurses5 as legacy runtime libs for ancient 32-bit build-tool
-  # binaries — the modern 64-bit build-tools we install need none of them.
-  # glibc/zlib substitute from the cache, but the niche ncurses5 (an
-  # abiVersion=5 override, "ncurses-abi5-compat") usually isn't cached, so Nix
-  # *builds* it — and building anything i686 runs a 32-bit builder, which dies
-  # with "Exec format error" on kernels without 32-bit x86 support (common in
-  # minimal cloud containers). Swap a native, empty stub in its place so the SDK
-  # build never needs a 32-bit builder. Off only where you genuinely need the
-  # 32-bit legacy build-tools on a 32-bit-capable host: COOEE_ANDROID_NCURSES5_STUB=0.
-  local overlays_nix=""
-  if [[ "${COOEE_ANDROID_NCURSES5_STUB:-1}" != 0 && "$(uname -m)" == x86_64 ]]; then
-    overlays_nix="overlays = [
-        (final: prev: {
-          pkgsi686Linux = prev.pkgsi686Linux.extend (i686final: i686prev: {
-            ncurses5 = prev.runCommand \"ncurses5-stub\" { } \"mkdir -p \$out/lib \$out/include\";
-          });
-        })
-      ];"
-  fi
+  log "Installing Android SDK (platforms: ${all_levels[*]}; build-tools ${COOEE_ANDROID_BUILD_TOOLS}$( (( want_emu )) && printf '; emulator + system images' )) ..."
+  cooee_backend_android_sdk
+  sdk="${COOEE_ANDROID_SDK_DIR:-}"
+  [[ -n "$sdk" && -d "$sdk" ]] || die "android: backend did not return a valid SDK dir (got: '${sdk}')."
 
-  local expr="let
-    pkgs = import (builtins.getFlake \"nixpkgs\").outPath {
-      system = builtins.currentSystem;
-      config.allowUnfree = true;
-      config.android_sdk.accept_license = true;
-      ${overlays_nix}
-    };
-  in (pkgs.androidenv.composeAndroidPackages {
-    platformVersions   = [ ${platforms_nix}];
-    buildToolsVersions = [ \"${COOEE_ANDROID_BUILD_TOOLS}\" ];
-    includeEmulator     = ${emu_bool};
-    includeSystemImages = ${emu_bool};
-    systemImageTypes    = [ ${img_types_nix} ];
-    abiVersions         = [ \"x86_64\" ];
-  }).androidsdk"
-
-  log "Installing Android SDK via Nix androidenv (platforms: ${all_levels[*]}; build-tools ${COOEE_ANDROID_BUILD_TOOLS}$( (( want_emu )) && printf '; emulator + system images' )) ..."
-  export NIXPKGS_ALLOW_UNFREE=1
-
-  # --out-link doubles as a GC root so the SDK survives `nix store gc`; the store
-  # path is printed to stdout for us to anchor ANDROID_HOME at.
-  local link="$HOME/.cache/coo-ee/android-sdk"
-  mkdir -p "$(dirname "$link")"
-  local out
-  if ! out=$(nix build --impure --print-out-paths --out-link "$link" --expr "$expr"); then
-    die "android: SDK build failed. Common causes: dl.google.com unreachable; the requested platform/build-tools versions are absent from nixpkgs (override COOEE_ANDROID_BUILD_TOOLS / COOEE_ANDROID_DEFAULT_PLATFORM); or the build tried to compile 32-bit (i686) ncurses on a kernel without 32-bit x86 support ('Exec format error' — keep the default COOEE_ANDROID_NCURSES5_STUB=1 that stubs it out)."
-  fi
-
-  sdk="$out/libexec/android-sdk"
   add_env ANDROID_HOME "$sdk"
   add_env ANDROID_SDK_ROOT "$sdk"
   cooee_android_pin_sdk_dir "$sdk"
