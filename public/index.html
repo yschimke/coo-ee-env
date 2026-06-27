@@ -190,6 +190,10 @@
     </div>
     <div class="actions">
       <a id="view" href="#" target="_blank" rel="noopener">View script&nbsp;&#8599;</a>
+      <label class="flag" title="Emit a .devcontainer/ for this repo (apply script: curl … | bash writes the file) instead of provisioning the current box">
+        <input type="checkbox" id="devcontainer" />
+        As <a href="https://containers.dev/" target="_blank" rel="noopener">devcontainer</a>
+      </label>
       <label class="flag" title="Provision through an ad-hoc devenv.sh environment instead of the default Nix profile">
         <input type="checkbox" id="devenv" />
         Use <a href="https://devenv.sh/ad-hoc-developer-environments/" target="_blank" rel="noopener">devenv.sh</a>
@@ -250,6 +254,7 @@
   var copyBtn = document.getElementById("copy");
   var viewLink = document.getElementById("view");
   var devenvBox = document.getElementById("devenv");
+  var devcontainerBox = document.getElementById("devcontainer");
   var hostsEl = document.getElementById("hosts");
   var hostNeedEl = document.getElementById("host-need");
   var hostWantEl = document.getElementById("host-want");
@@ -307,6 +312,19 @@
   }
   function saveDevenv(on) { try { localStorage.setItem(DEVENV_KEY, on ? "1" : "0"); } catch (_) {} }
   var devenv = loadDevenv();
+
+  // ---- devcontainer output toggle -------------------------------------------
+  // When on, the one-liner targets ?devcontainer: the server returns an apply
+  // script that, piped to bash, writes .devcontainer/devcontainer.json into the
+  // repo (rather than provisioning the current box). The base image follows the
+  // selected target — Codex gets codex-universal via &base=codex — and ?devenv
+  // rides along. "View" then previews the raw file (?devcontainer=json).
+  var DEVCONTAINER_KEY = "cooee.devcontainer";
+  function loadDevcontainer() {
+    try { return localStorage.getItem(DEVCONTAINER_KEY) === "1"; } catch (_) { return false; }
+  }
+  function saveDevcontainer(on) { try { localStorage.setItem(DEVCONTAINER_KEY, on ? "1" : "0"); } catch (_) {} }
+  var devcontainer = loadDevcontainer();
 
   var catalog = [];      // selectable modules: [{name, software, params, implies, hosts, example}]
   var implicit = [];     // always-included module names (e.g. "base")
@@ -461,23 +479,39 @@
     return s;
   }
 
+  // Build the query string for a request. devcontainer + devenv are render-time
+  // flags on the same URL; the devcontainer base follows the selected target
+  // (Codex -> codex-universal). `view` swaps the apply script for the raw file.
+  function queryFor(view) {
+    if (devcontainer) {
+      var q = "?devcontainer" + (view ? "=json" : "");
+      if (target === "codex") q += "&base=codex";
+      if (devenv) q += "&devenv=1";
+      return q;
+    }
+    return devenv ? "?devenv=1" : "";
+  }
+
   function renderCommand() {
     var seg = segment();
-    // devenv is a render-time flag carried as a query param on the same URL.
-    var url = ORIGIN + "/" + seg + (devenv ? "?devenv=1" : "");
+    var query = queryFor(false);
+    var url = ORIGIN + "/" + seg + query;
     // Two kinds of protection may be needed. Single quotes so the *shell*
     // doesn't glob special chars — bracketed params (java[17,21]) bring '[' /
-    // ']', and the '?' in '?devenv=1' is a shell glob too. curl -g (--globoff)
-    // so *curl* doesn't read '[' / ']' as its own URL range syntax (it errors
-    // 'bad range in URL' otherwise); '?' is not curl-globbed, so it alone needs
-    // no -g. A plain request (java,android) needs neither, matching the docs.
+    // ']', and a query string brings '?' / '&', all shell-special. curl -g
+    // (--globoff) so *curl* doesn't read '[' / ']' as its own URL range syntax
+    // (it errors 'bad range in URL' otherwise). A plain request (java,android)
+    // needs neither, matching the docs.
     var hasBrackets = seg.indexOf("[") >= 0;
     var flags = hasBrackets ? "-fsSL -g" : "-fsSL";
-    var cmd = (hasBrackets || devenv)
+    var cmd = (hasBrackets || query)
       ? "curl " + flags + " '" + url + "'"
       : "curl " + flags + " " + url;
     cmdText.textContent = cmd + " | bash";
-    viewLink.href = url;
+    // In devcontainer mode "View" previews the generated file, not the script.
+    viewLink.href = ORIGIN + "/" + seg + queryFor(true);
+    viewLink.firstChild.textContent =
+      (devcontainer ? "View devcontainer.json" : "View script") + " ↗";
     syncHash();
   }
 
@@ -558,6 +592,9 @@
     target = btn.getAttribute("data-target");
     saveTarget(target);
     renderTarget();
+    // In devcontainer mode the base image follows the target, so refresh the
+    // one-liner too (no-op for the shell render).
+    renderCommand();
   });
   renderTarget();
 
@@ -566,6 +603,14 @@
   devenvBox.addEventListener("change", function () {
     devenv = devenvBox.checked;
     saveDevenv(devenv);
+    renderCommand();
+  });
+
+  // Same for the devcontainer output toggle.
+  devcontainerBox.checked = devcontainer;
+  devcontainerBox.addEventListener("change", function () {
+    devcontainer = devcontainerBox.checked;
+    saveDevcontainer(devcontainer);
     renderCommand();
   });
 

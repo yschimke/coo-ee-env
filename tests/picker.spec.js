@@ -159,6 +159,48 @@ test.describe("env.coo.ee picker", () => {
     await expect(cmd).not.toContainText("devenv");
   });
 
+  test("devcontainer toggle emits an apply-script one-liner and previews the file", async ({ page, request }) => {
+    await gotoApp(page, "#java,node");
+    const cmd = page.locator("#cmd-text");
+
+    // Off by default: the shell render, no devcontainer anywhere.
+    await expect(cmd).not.toContainText("devcontainer");
+    await expect(page.locator("#view")).toHaveText(/View script/);
+
+    // Toggling on switches the one-liner to ?devcontainer (quoted, since '?' is
+    // a shell glob) — still piped to bash, because it's an apply script. No -g
+    // here: that's only for bracketed params, and java,node has none.
+    await page.locator("#devcontainer").check();
+    await expect(cmd).toHaveText(/curl -fsSL '\S+\?devcontainer' \| bash$/);
+    // "View" now previews the raw file.
+    await expect(page.locator("#view")).toHaveText(/View devcontainer\.json/);
+    await expect(page.locator("#view")).toHaveAttribute("href", /\?devcontainer=json$/);
+
+    // The apply URL really serves a shell script that writes the file…
+    const applyUrl = (await cmd.textContent()).match(/'([^']+)'/)[1];
+    const apply = await request.get(applyUrl, { headers: { accept: "text/x-shellscript" } });
+    expect(apply.status()).toBe(200);
+    expect(apply.headers()["content-type"]).toMatch(/shellscript/);
+    const applyBody = await apply.text();
+    expect(applyBody).toContain("#!/usr/bin/env bash");
+    expect(applyBody).toContain(".devcontainer/devcontainer.json");
+
+    // …and the preview URL serves the JSON itself.
+    const view = await request.get(await page.locator("#view").getAttribute("href"));
+    expect(view.status()).toBe(200);
+    expect(view.headers()["content-type"]).toMatch(/json/);
+    expect(JSON.parse(await view.text()).postCreateCommand).toContain("| bash");
+
+    // The base image follows the target: Codex -> codex-universal.
+    await page.locator('#target-select button[data-target="codex"]').click();
+    await expect(cmd).toContainText("base=codex");
+
+    // Toggling back restores the shell one-liner.
+    await page.locator("#devcontainer").uncheck();
+    await expect(cmd).not.toContainText("devcontainer");
+    await expect(page.locator("#view")).toHaveText(/View script/);
+  });
+
   test("backspace on an empty search removes the last chip", async ({ page }) => {
     await gotoApp(page, "#go,rust");
 
