@@ -79,12 +79,47 @@ test("the apply script writes .devcontainer/devcontainer.json safely", () => {
   assert.ok(out.body.includes("git rev-parse --show-toplevel"), "finds the repo root");
   assert.ok(out.body.includes("COOEE_DEVCONTAINER_DIR"), "destination is overridable");
   assert.ok(out.body.includes('COOEE_FORCE:-0'), "refuses to clobber without force");
-  assert.ok(out.body.includes('cat > "$file"'), "writes devcontainer.json");
+  assert.ok(out.body.includes('cat > "$dst"'), "writes the file");
+  assert.ok(out.body.includes("write_file 'devcontainer.json'"), "writes devcontainer.json");
   // The embedded JSON is exactly the json-mode body, dropped in via a quoted
   // heredoc so its contents are never shell-expanded.
   const json = renderDevcontainer("node", { mode: "json" }).body;
-  assert.ok(out.body.includes("<<'COOEE_DEVCONTAINER_JSON'"), "quoted heredoc");
+  assert.ok(out.body.includes("<<'COOEE_FILE_0'"), "quoted heredoc");
   assert.ok(out.body.includes(json), "embeds the json-mode body verbatim");
+});
+
+// ---- image mode (option B: Dockerfile + enforcing firewall bundle) ---------
+
+test("image mode writes a four-file .devcontainer/ bundle", () => {
+  const out = renderDevcontainer("java,android", { mode: "image" });
+  assert.equal(out.status, 200);
+  assert.match(out.contentType, /text\/x-shellscript/);
+  for (const f of ["devcontainer.json", "Dockerfile", "init-firewall.sh", "allowed-domains.txt"]) {
+    assert.ok(out.body.includes(`write_file '${f}'`), `writes ${f}`);
+  }
+});
+
+test("the image devcontainer.json wires the firewall (caps + postStart)", () => {
+  const out = renderDevcontainer("node", { mode: "image" });
+  // Pull the embedded devcontainer.json back out of the apply script.
+  const dc = out.devcontainer;
+  assert.deepEqual(dc.build, { dockerfile: "Dockerfile", args: { BASE: BASE_IMAGES.ubuntu } });
+  assert.ok(dc.runArgs.includes("--cap-add=NET_ADMIN"), "grants NET_ADMIN");
+  assert.equal(dc.postStartCommand, "sudo /usr/local/bin/init-firewall.sh");
+  assert.ok(dc.postCreateCommand.includes("| bash"), "still provisions at postCreate");
+  // ?base=codex flows into the build arg.
+  const codex = renderDevcontainer("node", { mode: "image", base: "codex" });
+  assert.equal(codex.devcontainer.build.args.BASE, BASE_IMAGES.codex);
+});
+
+test("allowed-domains.txt enforces concrete hosts and comments wildcards", () => {
+  const out = renderDevcontainer("android", { mode: "image" });
+  // android wants *.jetbrains.com (wildcard) and needs concrete hosts.
+  assert.ok(out.body.includes("\ndl.google.com\n"), "concrete host is active");
+  assert.ok(out.body.includes("# *.jetbrains.com"), "wildcard host is advisory (commented)");
+  // The firewall reads /etc/cooee/allowed-domains.txt and default-denies.
+  assert.ok(out.body.includes("init-firewall.sh"));
+  assert.ok(out.body.includes("iptables -P OUTPUT DROP"), "embeds the default-deny firewall");
 });
 
 test("user input can't inject shell into the apply script", () => {

@@ -28,12 +28,15 @@ function wantsDevcontainer(query) {
   return String((query && query.format) || "").toLowerCase() === "devcontainer";
 }
 
-// Within devcontainer mode, `?devcontainer=json` (alias `=file`) returns the
-// raw devcontainer.json; anything else (bare `?devcontainer`,
-// `?format=devcontainer`) returns the apply script you pipe to bash.
+// Within devcontainer mode, the `?devcontainer` value picks the variant:
+//   json | file   -> the raw devcontainer.json (thin strategy)
+//   image | build -> the apply script for the Dockerfile + firewall bundle (B)
+//   anything else -> the thin apply script you pipe to bash (A, the default)
 function devcontainerMode(query) {
   const v = String((query && query.devcontainer) || "").toLowerCase();
-  return v === "json" || v === "file" ? "json" : "apply";
+  if (v === "json" || v === "file") return "json";
+  if (v === "image" || v === "build") return "image";
+  return "apply";
 }
 
 // Base image for the generated devcontainer, by host affinity. `?base=codex`

@@ -183,7 +183,8 @@ test.describe("env.coo.ee picker", () => {
     expect(apply.headers()["content-type"]).toMatch(/shellscript/);
     const applyBody = await apply.text();
     expect(applyBody).toContain("#!/usr/bin/env bash");
-    expect(applyBody).toContain(".devcontainer/devcontainer.json");
+    expect(applyBody).toContain("write_file 'devcontainer.json'");
+    expect(applyBody).toContain("/.devcontainer");
 
     // …and the preview URL serves the JSON itself.
     const view = await request.get(await page.locator("#view").getAttribute("href"));

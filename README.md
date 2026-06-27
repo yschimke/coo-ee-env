@@ -479,11 +479,34 @@ same separation as `?devenv`). Implementation lives in
 - `?devenv` rides along into the one-liner, so the devcontainer uses the same
   backend the shell render would.
 
-**Not yet** (option B, planned next): translating modules into Dockerfile
-layers / dev container Features for build-time caching, and baking an
-*enforcing* `init-firewall.sh` (`--cap-add=NET_ADMIN` + `iptables`/`ipset`)
-rather than only surfacing the allowlist. Option A surfaces the host list; it
-does not lock egress down on its own.
+### Image strategy with an enforcing firewall (option B)
+
+`?devcontainer=image` renders a richer **apply script** that writes a four-file
+`.devcontainer/` bundle instead of a lone `devcontainer.json`:
+
+```bash
+curl -fsSL 'https://env.coo.ee/java,android?devcontainer=image' | bash
+```
+
+| File | Purpose |
+| --- | --- |
+| `devcontainer.json` | Builds the `Dockerfile`, grants `--cap-add=NET_ADMIN`/`NET_RAW`, provisions at `postCreate`, and runs the firewall at `postStart`. |
+| `Dockerfile` | Adds the firewall tooling (`iptables`, `ipset`, `dnsutils`, `sudo`) to the host-affinity base (`BASE` build arg). |
+| `init-firewall.sh` | **Default-deny egress firewall.** Resolves the allowlist to IPs while egress is still open, builds an `ipset`, then drops all output except loopback, established traffic, DNS, the docker network, and the allowed IPs. Modeled on the Claude Code / Codex reference firewalls. |
+| `allowed-domains.txt` | The egress allowlist — concrete hosts active (one per line, resolved + enforced), wildcard hosts listed as advisory comments (the IP firewall can't match by name). |
+
+Unlike option A, this **enforces** egress in-container rather than only
+surfacing the host list. The firewall is generated from the same
+`need_host`/`want_host` metadata; opt out by removing the `runArgs` caps and the
+`postStartCommand`. The static templates live in `modules/_devcontainer-*`
+(kept out of the catalog by the `_` prefix, so they're lint/`bash -n`-checkable).
+
+**Still thin underneath:** provisioning still runs at `postCreate` (so it
+executes as the remote user with a correct `PATH`). Baking provisioning into a
+build-cached `RUN` layer — the true per-module-layer translation — is the next
+step; it needs the Nix-store / build-user story validated in a live container
+(no Docker in CI yet, so the bundle is currently verified by generation +
+`bash -n`, not a real build).
 
 ## Build-dependency prefetch
 
