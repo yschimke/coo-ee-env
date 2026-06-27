@@ -432,6 +432,50 @@ available): a multi-version request like `java[17,21]` — including the
 `java`+`android` default of `17,21` — falls back to the first major with a
 warning.
 
+## Devcontainer output (experimental)
+
+The same module selection can render a
+[Dev Container](https://containers.dev/) config instead of a shell script. Add
+the `?devcontainer` query flag (alias `?format=devcontainer`) and the server
+returns a `devcontainer.json` for VS Code, GitHub Codespaces, JetBrains, or the
+`devcontainer` CLI:
+
+```bash
+curl -fsSL 'https://env.coo.ee/java,android?devcontainer'
+```
+
+This is the **thin** strategy (option A): rather than re-expressing each module
+as Docker layers, the generated config picks a mainstream base image and runs
+the existing `curl … | bash` one-liner as its `postCreateCommand`, so all the
+provisioning logic — the Nix/devenv backends, cloud built-in adoption,
+idempotent repair — is reused verbatim. The module list, canonical form, and
+CDN cache key are identical to the shell render; only the artifact differs (the
+same separation as `?devenv`). Implementation lives in
+[`api/env/devcontainer.js`](./api/env/devcontainer.js).
+
+- **Base image, by host affinity.** Default is
+  `mcr.microsoft.com/devcontainers/base:ubuntu`; `?base=codex` (alias
+  `?image=codex`) targets `ghcr.io/openai/codex-universal:latest`, the image
+  Codex cloud mirrors and that this service already aligns with via the
+  `CODEX_ENV_*` selectors. The maintained Claude Code dev container
+  [Feature](https://github.com/anthropics/devcontainer-features)
+  (`ghcr.io/anthropics/devcontainer-features/claude-code`) is layered on so the
+  CLI is present in-container.
+- **Firewall allowlist for free.** Every module already declares the hosts it
+  `need_host`/`want_host`s; the renderer unions them (the same list the shell
+  script probes and the picker shows) into `containerEnv.COOEE_ALLOWED_DOMAINS`
+  — a minimal, correct egress allowlist to paste into the host's network policy
+  (Claude Code `init-firewall.sh`, Codex `/etc/codex/allowed_domains.txt`, or
+  the Codex cloud / Claude web allowlist UI).
+- `?devenv` rides along into the one-liner, so the devcontainer uses the same
+  backend the shell render would.
+
+**Not yet** (option B, planned next): translating modules into Dockerfile
+layers / dev container Features for build-time caching, and baking an
+*enforcing* `init-firewall.sh` (`--cap-add=NET_ADMIN` + `iptables`/`ipset`)
+rather than only surfacing the allowlist. Option A surfaces the host list; it
+does not lock egress down on its own.
+
 ## Build-dependency prefetch
 
 Installing the toolchain is only half the job — the first real build still has

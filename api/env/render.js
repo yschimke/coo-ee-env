@@ -287,4 +287,11 @@ function render(segment, opts) {
   };
 }
 
-module.exports = { render, canonicalize, allowedModules, moduleInfo, MODULES_DIR };
+module.exports = {
+  render,
+  canonicalize,
+  entryToString,
+  allowedModules,
+  moduleInfo,
+  MODULES_DIR,
+};
