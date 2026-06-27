@@ -8,14 +8,13 @@ const {
   CLAUDE_CODE_FEATURE,
 } = require("../api/env/devcontainer");
 
-// Parse the rendered body the way a consumer (VS Code, the devcontainer CLI)
-// would: it must be valid JSON.
+// json mode: parse the rendered devcontainer.json the way a consumer would.
 const dc = (seg, opts) => {
-  const out = renderDevcontainer(seg, opts);
+  const out = renderDevcontainer(seg, Object.assign({ mode: "json" }, opts));
   return { out, json: JSON.parse(out.body) };
 };
 
-test("emits valid devcontainer.json with a mainstream base image", () => {
+test("json mode emits valid devcontainer.json with a mainstream base image", () => {
   const { out, json } = dc("java,android");
   assert.equal(out.status, 200);
   assert.match(out.contentType, /application\/json/);
@@ -65,10 +64,42 @@ test("canonical form matches the shell renderer (shared cache key)", () => {
   );
 });
 
+// ---- apply mode (the default: a script you pipe to bash) -------------------
+
+test("apply mode is the default and emits a shell script", () => {
+  const out = renderDevcontainer("java,android");
+  assert.equal(out.status, 200);
+  assert.match(out.contentType, /text\/x-shellscript/);
+  assert.ok(out.body.startsWith("#!/usr/bin/env bash"), "has a shebang");
+});
+
+test("the apply script writes .devcontainer/devcontainer.json safely", () => {
+  const out = renderDevcontainer("node");
+  // Targets the repo root (or $PWD), guarded by COOEE_FORCE, and writes the file.
+  assert.ok(out.body.includes("git rev-parse --show-toplevel"), "finds the repo root");
+  assert.ok(out.body.includes("COOEE_DEVCONTAINER_DIR"), "destination is overridable");
+  assert.ok(out.body.includes('COOEE_FORCE:-0'), "refuses to clobber without force");
+  assert.ok(out.body.includes('cat > "$file"'), "writes devcontainer.json");
+  // The embedded JSON is exactly the json-mode body, dropped in via a quoted
+  // heredoc so its contents are never shell-expanded.
+  const json = renderDevcontainer("node", { mode: "json" }).body;
+  assert.ok(out.body.includes("<<'COOEE_DEVCONTAINER_JSON'"), "quoted heredoc");
+  assert.ok(out.body.includes(json), "embeds the json-mode body verbatim");
+});
+
+test("user input can't inject shell into the apply script", () => {
+  // Bad params are rejected (400) before any script is produced, so the
+  // injection attempt never reaches the heredoc.
+  const out = renderDevcontainer("java[$(touch pwned)]");
+  assert.equal(out.status, 400);
+  assert.ok(!out.body.includes("touch pwned") || out.contentType.includes("json"));
+});
+
 test("unknown modules return 400 JSON with the available list", () => {
-  const { out, json } = dc("nope");
+  const out = renderDevcontainer("nope");
   assert.equal(out.status, 400);
   assert.match(out.contentType, /application\/json/);
+  const json = JSON.parse(out.body);
   assert.match(json.error, /unknown module/);
   assert.ok(Array.isArray(json.available) && json.available.includes("java"));
 });

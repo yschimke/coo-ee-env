@@ -8,6 +8,13 @@
 // layers. The module list, canonical form, and cache key are unchanged; only
 // the output format differs (cf. the `?devenv` backend swap in render.js).
 //
+// Two output modes:
+//   - "apply" (default): a shell script that writes the file into the repo, so
+//     `curl … | bash` drops a .devcontainer/ in place — consistent with the
+//     rest of the service. Idempotent: refuses to clobber unless COOEE_FORCE=1.
+//   - "json": the raw devcontainer.json, for inspection or downstream tooling
+//     (and the substrate option B will extend into multi-file output).
+//
 // The firewall allowlist is computed from each module's need_host/want_host
 // declarations — the same metadata the shell script probes in
 // check_preconditions and the picker surfaces — so the generated container
@@ -79,15 +86,56 @@ function jsonError(status, message, allowed, canonical) {
   };
 }
 
+// applyScript(jsonText, label) -> a bash script that writes the rendered
+// devcontainer.json into the repo. The JSON is embedded via a *quoted* heredoc
+// so nothing inside it is shell-expanded (matters once option B adds fields
+// like ${localWorkspaceFolder}). Targets the git repo root when run inside one,
+// else $PWD; override with COOEE_DEVCONTAINER_DIR. Refuses to overwrite an
+// existing file unless COOEE_FORCE=1 — the same force convention the installer
+// uses.
+function applyScript(jsonText, label) {
+  return `#!/usr/bin/env bash
+# coo.ee/env — devcontainer apply script for: ${label}
+# Writes .devcontainer/devcontainer.json into your repo. After it runs, "Reopen
+# in Container" (VS Code), launch with the devcontainer CLI, or commit the file.
+#   curl -fsSL 'https://env.coo.ee/${label}?devcontainer' | bash
+# Inspect the raw file without writing:  curl -fsSL '…?devcontainer=json'
+set -euo pipefail
+
+# Write at the git repo root when we're in one, else the current directory.
+# Override the destination .devcontainer dir with COOEE_DEVCONTAINER_DIR.
+root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+dir="\${COOEE_DEVCONTAINER_DIR:-\${root:-$PWD}/.devcontainer}"
+file="$dir/devcontainer.json"
+
+mkdir -p "$dir"
+
+if [[ -e "$file" && "\${COOEE_FORCE:-0}" != "1" ]]; then
+  echo "coo.ee/env: $file already exists — set COOEE_FORCE=1 to overwrite." >&2
+  exit 1
+fi
+
+cat > "$file" <<'COOEE_DEVCONTAINER_JSON'
+${jsonText}COOEE_DEVCONTAINER_JSON
+
+echo "coo.ee/env: wrote $file" >&2
+`;
+}
+
 // renderDevcontainer(segment, opts) -> { status, contentType, body, canonical,
 //   devcontainer, allowedDomains }
 //   opts.base   — "ubuntu" (default) | "codex": base image by host affinity.
 //   opts.devenv — when true, the one-liner carries ?devenv (devenv.sh backend),
 //                 mirroring render()'s flag so both formats agree.
+//   opts.mode   — "apply" (default): a shell script that writes the file;
+//                 "json": the raw devcontainer.json.
 // Validation mirrors render(): malformed/invalid tokens and unknown modules
-// return 400 with the available list, just as JSON instead of a shell comment.
+// return 400 with the available list. Because the apply UX is `curl -f … |
+// bash`, a 400 makes curl fail without piping anything to the shell, so a JSON
+// error body is safe for both modes.
 function renderDevcontainer(segment, opts) {
   const o = opts || {};
+  const mode = o.mode === "json" ? "json" : "apply";
   const allowed = allowedModules();
   const { entries, errors } = canonicalize(segment);
   const canonical = entries.map(entryToString);
@@ -134,13 +182,19 @@ function renderDevcontainer(segment, opts) {
     },
   };
 
+  const jsonText = JSON.stringify(devcontainer, null, 2) + "\n";
+  const label = requested.join(",") || "base";
+
   return {
     status: 200,
-    contentType: "application/json; charset=utf-8",
+    contentType:
+      mode === "json"
+        ? "application/json; charset=utf-8"
+        : "text/x-shellscript; charset=utf-8",
     canonical,
     devcontainer,
     allowedDomains: domains,
-    body: JSON.stringify(devcontainer, null, 2) + "\n",
+    body: mode === "json" ? jsonText : applyScript(jsonText, label),
   };
 }
 

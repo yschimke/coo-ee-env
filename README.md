@@ -434,15 +434,24 @@ warning.
 
 ## Devcontainer output (experimental)
 
-The same module selection can render a
-[Dev Container](https://containers.dev/) config instead of a shell script. Add
-the `?devcontainer` query flag (alias `?format=devcontainer`) and the server
-returns a `devcontainer.json` for VS Code, GitHub Codespaces, JetBrains, or the
-`devcontainer` CLI:
+The same module selection can drop a [Dev Container](https://containers.dev/)
+into your repo instead of provisioning the current box. Add the `?devcontainer`
+query flag (alias `?format=devcontainer`) and the server returns an **apply
+script** — pipe it to `bash` and it writes `.devcontainer/devcontainer.json`
+for VS Code, GitHub Codespaces, JetBrains, or the `devcontainer` CLI:
 
 ```bash
-curl -fsSL 'https://env.coo.ee/java,android?devcontainer'
+# from your repo: writes .devcontainer/devcontainer.json
+curl -fsSL 'https://env.coo.ee/java,android?devcontainer' | bash
+# inspect the raw file without writing anything
+curl -fsSL 'https://env.coo.ee/java,android?devcontainer=json'
 ```
+
+The apply script targets the **git repo root** when run inside one (else the
+current directory; override with `COOEE_DEVCONTAINER_DIR`) and refuses to
+overwrite an existing `devcontainer.json` unless `COOEE_FORCE=1` — the same
+force convention the installer uses. The file is embedded via a quoted heredoc,
+so nothing in it is shell-expanded.
 
 This is the **thin** strategy (option A): rather than re-expressing each module
 as Docker layers, the generated config picks a mainstream base image and runs

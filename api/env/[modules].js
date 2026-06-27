@@ -19,13 +19,21 @@ function wantsDevenv(query) {
   return flagOn(query, "devenv");
 }
 
-// `?devcontainer` (or `?format=devcontainer`) switches the output format from a
-// shell script to a .devcontainer/devcontainer.json. The module list — and so
-// the canonical form / cache key — is unaffected; only the rendered artifact
-// differs, exactly like the backend swap above.
+// `?devcontainer` (or `?format=devcontainer`) switches the output to the
+// devcontainer renderer. The module list — and so the canonical form / cache
+// key — is unaffected; only the rendered artifact differs, like the backend
+// swap above.
 function wantsDevcontainer(query) {
   if (flagOn(query, "devcontainer")) return true;
   return String((query && query.format) || "").toLowerCase() === "devcontainer";
+}
+
+// Within devcontainer mode, `?devcontainer=json` (alias `=file`) returns the
+// raw devcontainer.json; anything else (bare `?devcontainer`,
+// `?format=devcontainer`) returns the apply script you pipe to bash.
+function devcontainerMode(query) {
+  const v = String((query && query.devcontainer) || "").toLowerCase();
+  return v === "json" || v === "file" ? "json" : "apply";
 }
 
 // Base image for the generated devcontainer, by host affinity. `?base=codex`
@@ -41,7 +49,11 @@ module.exports = (req, res) => {
   let out;
   try {
     out = wantsDevcontainer(req.query)
-      ? renderDevcontainer(seg, { devenv, base: pickBase(req.query) })
+      ? renderDevcontainer(seg, {
+          devenv,
+          base: pickBase(req.query),
+          mode: devcontainerMode(req.query),
+        })
       : render(seg, { devenv });
   } catch (err) {
     res.statusCode = 500;
