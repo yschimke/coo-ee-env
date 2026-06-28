@@ -136,7 +136,12 @@ cooee_install_session_hook() {
 
   local seg cmd settings="$dir/.claude/settings.json"
   seg="$(cooee_request_segment)"
-  cmd="curl -fsSL ${COOEE_BASE_URL}/${seg} | bash"
+  # Degrade gracefully: if a future session can't reach the service (offline, or
+  # env.coo.ee not on that environment's allowlist), the hook logs and continues
+  # rather than failing session startup. The trailing `|| echo` guarantees a 0
+  # exit even under `set -o pipefail`, where `curl -f` failing would otherwise
+  # propagate through the pipe and abort the session.
+  cmd="curl -fsSL ${COOEE_BASE_URL}/${seg} | bash || echo 'coo.ee/env: setup skipped (offline or host not allowlisted)' >&2"
 
   if [[ -f "$settings" ]] && grep -qF "$cmd" "$settings" 2>/dev/null; then
     ok "activation: SessionStart hook already present in ${settings/#$HOME/\~}."
@@ -271,6 +276,45 @@ cooee_trust_cas_in_jdk() {  # cooee_trust_cas_in_jdk <java_home>
   local opts="-Djavax.net.ssl.trustStore=$store"
   add_env JAVA_TOOL_OPTIONS "${JAVA_TOOL_OPTIONS:+$JAVA_TOOL_OPTIONS }$opts"
   ok "JDK now trusts ${#extra[@]} extra CA(s) via JAVA_TOOL_OPTIONS."
+}
+
+# Cloud fix: the JVM ignores the http(s)_proxy env vars that curl honors, so in
+# a sandbox where ALL egress is forced through a proxy (Claude Code on the web),
+# the Gradle wrapper + daemon die with "UnknownHostException: services.gradle.org"
+# even when the host is allowlisted. Translate the proxy env into JVM system
+# properties (via JAVA_TOOL_OPTIONS, which every JVM — wrapper, daemon, plain
+# java — reads) so Gradle routes through the proxy. No-op when no proxy is set
+# (the laptop case), so it's always safe to call.
+cooee_jvm_proxy_opts() {
+  local proxy="${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-}}}}"
+  [[ -n "$proxy" ]] || { log "No http(s) proxy in the environment; JVM proxy flags not needed."; return 0; }
+
+  # Parse host:port out of a proxy URL: strip scheme, any user:pass@, any path.
+  local hp="${proxy#*://}"; hp="${hp##*@}"; hp="${hp%%/*}"
+  local host="${hp%%:*}" port=""
+  [[ "$hp" == *:* ]] && port="${hp##*:}"
+  [[ -n "$host" ]] || { warn "could not parse proxy host from '$proxy'; skipping JVM proxy flags."; return 0; }
+
+  # Never proxy loopback; carry NO_PROXY through (comma list -> Java's pipe list,
+  # leading-dot suffixes -> *. wildcards).
+  local nph="localhost|127.0.0.1|[::1]" entry
+  local raw="${NO_PROXY:-${no_proxy:-}}"
+  if [[ -n "$raw" ]]; then
+    local -a parts; IFS=',' read -ra parts <<< "$raw"
+    for entry in "${parts[@]}"; do
+      entry="${entry//[[:space:]]/}"; [[ -z "$entry" ]] && continue
+      [[ "$entry" == .* ]] && entry="*$entry"
+      nph="$nph|$entry"
+    done
+  fi
+
+  local opts="-Dhttp.proxyHost=$host -Dhttps.proxyHost=$host"
+  [[ -n "$port" ]] && opts="$opts -Dhttp.proxyPort=$port -Dhttps.proxyPort=$port"
+  opts="$opts -Dhttp.nonProxyHosts=$nph"
+
+  # Append to (not clobber) any JAVA_TOOL_OPTIONS already set (e.g. the JDK CA fix).
+  add_env JAVA_TOOL_OPTIONS "${JAVA_TOOL_OPTIONS:+$JAVA_TOOL_OPTIONS }$opts"
+  ok "JVM routed through proxy $host${port:+:$port} (Gradle wrapper/daemon will reach the network)."
 }
 
 # ---- build dependency prefetch --------------------------------------------
