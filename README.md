@@ -432,6 +432,82 @@ available): a multi-version request like `java[17,21]` — including the
 `java`+`android` default of `17,21` — falls back to the first major with a
 warning.
 
+## Devcontainer output (experimental)
+
+The same module selection can drop a [Dev Container](https://containers.dev/)
+into your repo instead of provisioning the current box. Add the `?devcontainer`
+query flag (alias `?format=devcontainer`) and the server returns an **apply
+script** — pipe it to `bash` and it writes `.devcontainer/devcontainer.json`
+for VS Code, GitHub Codespaces, JetBrains, or the `devcontainer` CLI:
+
+```bash
+# from your repo: writes .devcontainer/devcontainer.json
+curl -fsSL 'https://env.coo.ee/java,android?devcontainer' | bash
+# inspect the raw file without writing anything
+curl -fsSL 'https://env.coo.ee/java,android?devcontainer=json'
+```
+
+The apply script targets the **git repo root** when run inside one (else the
+current directory; override with `COOEE_DEVCONTAINER_DIR`) and refuses to
+overwrite an existing `devcontainer.json` unless `COOEE_FORCE=1` — the same
+force convention the installer uses. The file is embedded via a quoted heredoc,
+so nothing in it is shell-expanded.
+
+This is the **thin** strategy (option A): rather than re-expressing each module
+as Docker layers, the generated config picks a mainstream base image and runs
+the existing `curl … | bash` one-liner as its `postCreateCommand`, so all the
+provisioning logic — the Nix/devenv backends, cloud built-in adoption,
+idempotent repair — is reused verbatim. The module list, canonical form, and
+CDN cache key are identical to the shell render; only the artifact differs (the
+same separation as `?devenv`). Implementation lives in
+[`api/env/devcontainer.js`](./api/env/devcontainer.js).
+
+- **Base image, by host affinity.** Default is
+  `mcr.microsoft.com/devcontainers/base:ubuntu`; `?base=codex` (alias
+  `?image=codex`) targets `ghcr.io/openai/codex-universal:latest`, the image
+  Codex cloud mirrors and that this service already aligns with via the
+  `CODEX_ENV_*` selectors. The maintained Claude Code dev container
+  [Feature](https://github.com/anthropics/devcontainer-features)
+  (`ghcr.io/anthropics/devcontainer-features/claude-code`) is layered on so the
+  CLI is present in-container.
+- **Firewall allowlist for free.** Every module already declares the hosts it
+  `need_host`/`want_host`s; the renderer unions them (the same list the shell
+  script probes and the picker shows) into `containerEnv.COOEE_ALLOWED_DOMAINS`
+  — a minimal, correct egress allowlist to paste into the host's network policy
+  (Claude Code `init-firewall.sh`, Codex `/etc/codex/allowed_domains.txt`, or
+  the Codex cloud / Claude web allowlist UI).
+- `?devenv` rides along into the one-liner, so the devcontainer uses the same
+  backend the shell render would.
+
+### Image strategy with an enforcing firewall (option B)
+
+`?devcontainer=image` renders a richer **apply script** that writes a four-file
+`.devcontainer/` bundle instead of a lone `devcontainer.json`:
+
+```bash
+curl -fsSL 'https://env.coo.ee/java,android?devcontainer=image' | bash
+```
+
+| File | Purpose |
+| --- | --- |
+| `devcontainer.json` | Builds the `Dockerfile`, grants `--cap-add=NET_ADMIN`/`NET_RAW`, provisions at `postCreate`, and runs the firewall at `postStart`. |
+| `Dockerfile` | Adds the firewall tooling (`iptables`, `ipset`, `dnsutils`, `sudo`) to the host-affinity base (`BASE` build arg). |
+| `init-firewall.sh` | **Default-deny egress firewall.** Resolves the allowlist to IPs while egress is still open, builds an `ipset`, then drops all output except loopback, established traffic, DNS, the docker network, and the allowed IPs. Modeled on the Claude Code / Codex reference firewalls. |
+| `allowed-domains.txt` | The egress allowlist — concrete hosts active (one per line, resolved + enforced), wildcard hosts listed as advisory comments (the IP firewall can't match by name). |
+
+Unlike option A, this **enforces** egress in-container rather than only
+surfacing the host list. The firewall is generated from the same
+`need_host`/`want_host` metadata; opt out by removing the `runArgs` caps and the
+`postStartCommand`. The static templates live in `modules/_devcontainer-*`
+(kept out of the catalog by the `_` prefix, so they're lint/`bash -n`-checkable).
+
+**Still thin underneath:** provisioning still runs at `postCreate` (so it
+executes as the remote user with a correct `PATH`). Baking provisioning into a
+build-cached `RUN` layer — the true per-module-layer translation — is the next
+step; it needs the Nix-store / build-user story validated in a live container
+(no Docker in CI yet, so the bundle is currently verified by generation +
+`bash -n`, not a real build).
+
 ## Build-dependency prefetch
 
 Installing the toolchain is only half the job — the first real build still has

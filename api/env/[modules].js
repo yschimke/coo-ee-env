@@ -4,20 +4,60 @@
 // req.query.modules (e.g. "java,android"). See ../../README.md.
 
 const { render } = require("./render");
+const { renderDevcontainer } = require("./devcontainer");
+
+// A flag is truthy on presence (?flag or ?flag=1); an explicit 0/false/off
+// opts out. Shared by ?devenv and ?devcontainer.
+function flagOn(query, name) {
+  if (!query || !(name in query)) return false;
+  const v = String(query[name]).toLowerCase();
+  return v !== "0" && v !== "false" && v !== "off";
+}
 
 // The `?devenv` flag selects the devenv.sh provisioning backend at render time.
-// Truthy on presence (?devenv or ?devenv=1); an explicit 0/false/off opts out.
 function wantsDevenv(query) {
-  if (!query || !("devenv" in query)) return false;
-  const v = String(query.devenv).toLowerCase();
-  return v !== "0" && v !== "false" && v !== "off";
+  return flagOn(query, "devenv");
+}
+
+// `?devcontainer` (or `?format=devcontainer`) switches the output to the
+// devcontainer renderer. The module list — and so the canonical form / cache
+// key — is unaffected; only the rendered artifact differs, like the backend
+// swap above.
+function wantsDevcontainer(query) {
+  if (flagOn(query, "devcontainer")) return true;
+  return String((query && query.format) || "").toLowerCase() === "devcontainer";
+}
+
+// Within devcontainer mode, the `?devcontainer` value picks the variant:
+//   json | file   -> the raw devcontainer.json (thin strategy)
+//   image | build -> the apply script for the Dockerfile + firewall bundle (B)
+//   anything else -> the thin apply script you pipe to bash (A, the default)
+function devcontainerMode(query) {
+  const v = String((query && query.devcontainer) || "").toLowerCase();
+  if (v === "json" || v === "file") return "json";
+  if (v === "image" || v === "build") return "image";
+  return "apply";
+}
+
+// Base image for the generated devcontainer, by host affinity. `?base=codex`
+// (alias `?image=codex`) targets codex-universal; anything else is the default.
+function pickBase(query) {
+  const b = String((query && (query.base || query.image)) || "").toLowerCase();
+  return b === "codex" ? "codex" : "ubuntu";
 }
 
 module.exports = (req, res) => {
   const seg = req.query && req.query.modules ? req.query.modules : "";
+  const devenv = wantsDevenv(req.query);
   let out;
   try {
-    out = render(seg, { devenv: wantsDevenv(req.query) });
+    out = wantsDevcontainer(req.query)
+      ? renderDevcontainer(seg, {
+          devenv,
+          base: pickBase(req.query),
+          mode: devcontainerMode(req.query),
+        })
+      : render(seg, { devenv });
   } catch (err) {
     res.statusCode = 500;
     res.setHeader("content-type", "text/plain; charset=utf-8");
