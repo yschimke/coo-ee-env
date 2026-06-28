@@ -29,7 +29,8 @@ need_host cache.nixos.org        "prebuilt androidenv dependencies from the Nix 
 want_host dl.google.com          "Android SDK components (platforms, build-tools, system images)"
 want_host maven.google.com       "AndroidX / AGP artifacts"
 want_host packages.jetbrains.team "JetBrains-hosted Compose/tooling artifacts"
-want_host "*.jetbrains.com"       "JetBrains downloads, plugins, Compose artifacts"
+want_host cache-redirector.jetbrains.com "Kotlin Gradle plugin CDN redirector (Kotlin/Native, compiler artifacts)"
+want_host download.jetbrains.com "Kotlin/Native dependencies (LLVM, sysroots, toolchains)"
 want_host fonts.googleapis.com   "downloadable font metadata (Compose)"
 want_host fonts.gstatic.com      "downloadable font binaries (Compose)"
 
