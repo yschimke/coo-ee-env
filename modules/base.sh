@@ -11,6 +11,12 @@ need_host cache.nixos.org                "Nix binary cache (substituter)"
 need_host channels.nixos.org            "nixpkgs channel / flake source"
 need_host github.com                     "nixpkgs + flake inputs"
 need_host objects.githubusercontent.com  "GitHub release assets for flake inputs"
+# The coo.ee/env service itself (or your COOEE_BASE_URL mirror). Not needed to
+# install Nix, but the curl|bash bootstrap and the auto-activation / SessionStart
+# hook re-fetch it on later runs — so it must be allowed once egress is locked
+# down (the devcontainer firewall, Codex/Claude allowlist). Advisory, never
+# probed, so a COOEE_BASE_URL override or a vendored script can't trip it.
+want_host env.coo.ee                     "the coo.ee/env service — fetch + re-provision the script (auto-activation hook)"
 
 # Determinate's installer always lays down a root-owned (multi-user) store.
 # - As root (typical agent sandbox) we read/write that store directly, so a

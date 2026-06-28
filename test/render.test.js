@@ -235,6 +235,11 @@ test("moduleInfo surfaces the hosts each module needs and wants", () => {
   const baseNeed = byName["base"].hosts.need.map((h) => h.host);
   assert.ok(baseNeed.includes("cache.nixos.org"));
   assert.ok(baseNeed.includes("github.com"));
+  // The bootstrap host (curl|bash source + re-provision hook) is advisory, not
+  // a hard requirement, so a COOEE_BASE_URL override can't trip the probe — but
+  // it still rides into every allowlist (picker, firewall, containerEnv).
+  assert.ok(byName["base"].hosts.want.map((h) => h.host).includes("env.coo.ee"));
+  assert.ok(!baseNeed.includes("env.coo.ee"), "bootstrap host is not hard-probed");
   // java needs the Nix cache and recommends the build registries (advisory).
   assert.deepEqual(
     byName["java"].hosts.need.map((h) => h.host),
