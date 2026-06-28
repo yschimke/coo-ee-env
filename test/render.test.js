@@ -247,6 +247,8 @@ test("moduleInfo surfaces the hosts each module needs and wants", () => {
   );
   const javaWant = byName["java"].hosts.want.map((h) => h.host);
   assert.ok(javaWant.includes("services.gradle.org"));
+  // Azul Zulu is a Gradle toolchain JDK provider, allowlisted when java is picked.
+  assert.ok(javaWant.includes("cdn.azul.com"));
   // Reasons are carried through for the allowlist UI.
   assert.equal(
     byName["java"].hosts.need[0].reason,

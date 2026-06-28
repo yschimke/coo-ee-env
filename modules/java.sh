@@ -19,6 +19,7 @@ want_host repo.gradle.org      "Gradle libraries / tooling artifacts"
 want_host central.sonatype.com "Maven Central artifacts"
 want_host api.foojay.io        "Java distro metadata for Gradle toolchains"
 want_host api.adoptium.net     "JDK/toolchain provisioning API"
+want_host cdn.azul.com         "Azul Zulu JDK builds for Gradle toolchain provisioning"
 want_host jitpack.io           "dependencies published via JitPack"
 
 # The JDK a Gradle project pins for its build — the toolchainVersion in the
@@ -45,6 +46,7 @@ module_java() {
   if [[ "${COOEE_FORCE:-0}" != 1 ]] && command -v java >/dev/null 2>&1; then
     add_env JAVA_HOME "$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")"
     cooee_trust_cas_in_jdk "$JAVA_HOME"
+    cooee_jvm_proxy_opts
     ok "java: adopted existing $(java -version 2>&1 | head -1) (JAVA_HOME=$JAVA_HOME)."
     cooee_prefetch_gradle
     return 0
@@ -94,6 +96,9 @@ module_java() {
   # Cloud fix: a Nix JDK ignores the system trust store, so teach it about the
   # sandbox proxy CA now (otherwise Gradle HTTPS fails with PKIX errors).
   cooee_trust_cas_in_jdk "$JAVA_HOME"
+  # Cloud fix: route the JVM through the sandbox proxy (it ignores http(s)_proxy),
+  # so the Gradle wrapper/daemon can actually reach services.gradle.org et al.
+  cooee_jvm_proxy_opts
 
   ok "java ready: $(java -version 2>&1 | head -1)"
 
