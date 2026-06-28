@@ -435,10 +435,17 @@ warning.
 ## Devcontainer output (experimental)
 
 The same module selection can drop a [Dev Container](https://containers.dev/)
-into your repo instead of provisioning the current box. Add the `?devcontainer`
-query flag (alias `?format=devcontainer`) and the server returns an **apply
-script** — pipe it to `bash` and it writes `.devcontainer/devcontainer.json`
-for VS Code, GitHub Codespaces, JetBrains, or the `devcontainer` CLI:
+into your repo instead of provisioning the current box. This is for **real Dev
+Container consumers** — VS Code Dev Containers, GitHub Codespaces, the
+`devcontainer` CLI, JetBrains, and GitHub Copilot. It is **not** for Claude Code
+web sessions, which ignore `.devcontainer/` entirely (they run behind a
+managed agent proxy whose allowlist is set at environment creation, not from
+repo files). In the picker it is therefore a **target** of its own — an
+alternative to Claude / Codex / GitHub — not a toggle layered onto them.
+
+Add the `?devcontainer` query flag (alias `?format=devcontainer`) and the server
+returns an **apply script** — pipe it to `bash` and it writes
+`.devcontainer/devcontainer.json`:
 
 ```bash
 # from your repo: writes .devcontainer/devcontainer.json
@@ -716,12 +723,16 @@ or `vercel dev` alike, and the selection round-trips through the URL hash
 Below the one-liner the picker shows the **required hosts** for the current
 selection — the union of every active module's `need_host` declarations
 (`base` plus your picks plus anything they imply), deduped and each with the
-reason it's needed. A small **target** toggle (Claude / Codex / GitHub) tailors
-the guidance and the copy format to the environment you're configuring: *Copy
-hosts* drops the bare hostnames straight into the chosen target's allowlist —
-newline-separated for Claude Code (Network access → Custom → Allowed domains)
-and GitHub Actions egress policies, or comma-separated for Codex's domain
-allowlist, which wants a single CSV line. The choice is remembered across
+reason it's needed. A small **target** toggle (Claude / Codex / GitHub /
+Devcontainer) is the environment you're setting up. For the cloud agents it
+tailors the guidance and copy format: *Copy hosts* drops the bare hostnames
+straight into the chosen target's allowlist — newline-separated for Claude Code
+(Network access → Custom → Allowed domains) and GitHub Actions egress policies,
+or comma-separated for Codex's domain allowlist, which wants a single CSV line.
+The **Devcontainer** target is different in kind: it switches the one-liner to
+the [devcontainer apply script](#devcontainer-output-experimental) (for real Dev
+Containers — VS Code / Codespaces / Copilot — not Claude Code web) and lists the
+hosts that get baked into the generated bundle. The choice is remembered across
 visits. A collapsible *Recommended for builds* list adds the `want_host`
 entries — the registries a build needs but the install doesn't — with a *Copy
 all* for the full set. This is the same host set the rendered script probes and

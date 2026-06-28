@@ -190,10 +190,6 @@
     </div>
     <div class="actions">
       <a id="view" href="#" target="_blank" rel="noopener">View script&nbsp;&#8599;</a>
-      <label class="flag" title="Emit a .devcontainer/ for this repo (apply script: curl … | bash writes the file) instead of provisioning the current box">
-        <input type="checkbox" id="devcontainer" />
-        As <a href="https://containers.dev/" target="_blank" rel="noopener">devcontainer</a>
-      </label>
       <label class="flag" title="Provision through an ad-hoc devenv.sh environment instead of the default Nix profile">
         <input type="checkbox" id="devenv" />
         Use <a href="https://devenv.sh/ad-hoc-developer-environments/" target="_blank" rel="noopener">devenv.sh</a>
@@ -218,6 +214,7 @@
         <button type="button" data-target="claude">Claude</button>
         <button type="button" data-target="codex">Codex</button>
         <button type="button" data-target="github">GitHub</button>
+        <button type="button" data-target="devcontainer">Devcontainer</button>
       </div>
       <button id="copy-hosts" type="button">Copy hosts</button>
     </div>
@@ -254,7 +251,6 @@
   var copyBtn = document.getElementById("copy");
   var viewLink = document.getElementById("view");
   var devenvBox = document.getElementById("devenv");
-  var devcontainerBox = document.getElementById("devcontainer");
   var hostsEl = document.getElementById("hosts");
   var hostNeedEl = document.getElementById("host-need");
   var hostWantEl = document.getElementById("host-want");
@@ -265,10 +261,14 @@
   var hostsIntro = document.getElementById("hosts-intro");
 
   // ---- target environments --------------------------------------------------
-  // The picked target tailors the host instructions and, crucially, the copy
-  // format: Codex's domain allowlist wants one comma-separated line, while
-  // Claude Code and GitHub take one host per line. `sep` is what *Copy hosts*
-  // joins on; `intro` is the per-target guidance shown above the list.
+  // The picked target is *what you're setting up*. For the cloud agents it
+  // tailors the host instructions and the copy format (Codex's allowlist wants
+  // one comma-separated line; Claude Code and GitHub take one host per line).
+  // The `devcontainer` target is different in kind: it changes the OUTPUT to an
+  // apply script that writes a .devcontainer/ — for real Dev Containers (VS Code,
+  // Codespaces, Copilot), NOT Claude Code web, which ignores .devcontainer/.
+  // `sep` is what *Copy hosts* joins on; `intro` is the per-target guidance;
+  // `dc: true` flags the devcontainer output target.
   var TARGETS = {
     claude: {
       sep: "\n",
@@ -290,6 +290,16 @@
         'Harden-Runner</a>’s <code>allowed-endpoints</code>, or your ' +
         'self-hosted runner / firewall rules. The script probes them on install ' +
         'and tells you precisely which are missing.'
+    },
+    devcontainer: {
+      sep: "\n",
+      dc: true,
+      intro: 'For a real <a href="https://containers.dev/" target="_blank" rel="noopener">' +
+        'Dev Container</a> — VS Code Dev Containers, Codespaces, GitHub Copilot. ' +
+        '<strong>Not Claude Code web</strong>, which ignores <code>.devcontainer/</code>. ' +
+        'The command writes <code>.devcontainer/devcontainer.json</code> into your ' +
+        'repo; these hosts are baked into it (<code>containerEnv</code>, and the ' +
+        'firewall allowlist in image mode), shown here for review.'
     }
   };
   var TARGET_KEY = "cooee.target";
@@ -313,18 +323,9 @@
   function saveDevenv(on) { try { localStorage.setItem(DEVENV_KEY, on ? "1" : "0"); } catch (_) {} }
   var devenv = loadDevenv();
 
-  // ---- devcontainer output toggle -------------------------------------------
-  // When on, the one-liner targets ?devcontainer: the server returns an apply
-  // script that, piped to bash, writes .devcontainer/devcontainer.json into the
-  // repo (rather than provisioning the current box). The base image follows the
-  // selected target — Codex gets codex-universal via &base=codex — and ?devenv
-  // rides along. "View" then previews the raw file (?devcontainer=json).
-  var DEVCONTAINER_KEY = "cooee.devcontainer";
-  function loadDevcontainer() {
-    try { return localStorage.getItem(DEVCONTAINER_KEY) === "1"; } catch (_) { return false; }
-  }
-  function saveDevcontainer(on) { try { localStorage.setItem(DEVCONTAINER_KEY, on ? "1" : "0"); } catch (_) {} }
-  var devcontainer = loadDevcontainer();
+  // The devcontainer output target is selected via the target picker (TARGETS
+  // above), not a separate toggle — it's an environment you choose, not an
+  // option layered onto Claude Code. `TARGETS[target].dc` is the flag.
 
   var catalog = [];      // selectable modules: [{name, software, params, implies, hosts, example}]
   var implicit = [];     // always-included module names (e.g. "base")
@@ -479,15 +480,12 @@
     return s;
   }
 
-  // Build the query string for a request. devcontainer + devenv are render-time
-  // flags on the same URL; the devcontainer base follows the selected target
-  // (Codex -> codex-universal). `view` swaps the apply script for the raw file.
+  // Build the query string for a request. The devcontainer target switches the
+  // output to the apply script (?devcontainer); ?devenv rides along on either.
+  // `view` swaps the apply script for the raw file (?devcontainer=json).
   function queryFor(view) {
-    if (devcontainer) {
-      var q = "?devcontainer" + (view ? "=json" : "");
-      if (target === "codex") q += "&base=codex";
-      if (devenv) q += "&devenv=1";
-      return q;
+    if (TARGETS[target].dc) {
+      return "?devcontainer" + (view ? "=json" : "") + (devenv ? "&devenv=1" : "");
     }
     return devenv ? "?devenv=1" : "";
   }
@@ -508,10 +506,10 @@
       ? "curl " + flags + " '" + url + "'"
       : "curl " + flags + " " + url;
     cmdText.textContent = cmd + " | bash";
-    // In devcontainer mode "View" previews the generated file, not the script.
+    // For the devcontainer target "View" previews the generated file, not a script.
     viewLink.href = ORIGIN + "/" + seg + queryFor(true);
     viewLink.firstChild.textContent =
-      (devcontainer ? "View devcontainer.json" : "View script") + " ↗";
+      (TARGETS[target].dc ? "View devcontainer.json" : "View script") + " ↗";
     syncHash();
   }
 
@@ -592,8 +590,8 @@
     target = btn.getAttribute("data-target");
     saveTarget(target);
     renderTarget();
-    // In devcontainer mode the base image follows the target, so refresh the
-    // one-liner too (no-op for the shell render).
+    // The devcontainer target changes the output, so refresh the one-liner too
+    // (a no-op for the cloud-agent targets, which share one shell render).
     renderCommand();
   });
   renderTarget();
@@ -603,14 +601,6 @@
   devenvBox.addEventListener("change", function () {
     devenv = devenvBox.checked;
     saveDevenv(devenv);
-    renderCommand();
-  });
-
-  // Same for the devcontainer output toggle.
-  devcontainerBox.checked = devcontainer;
-  devcontainerBox.addEventListener("change", function () {
-    devcontainer = devcontainerBox.checked;
-    saveDevcontainer(devcontainer);
     renderCommand();
   });
 

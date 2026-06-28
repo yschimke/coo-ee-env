@@ -159,22 +159,25 @@ test.describe("env.coo.ee picker", () => {
     await expect(cmd).not.toContainText("devenv");
   });
 
-  test("devcontainer toggle emits an apply-script one-liner and previews the file", async ({ page, request }) => {
+  test("the Devcontainer target emits an apply-script one-liner and previews the file", async ({ page, request }) => {
     await gotoApp(page, "#java,node");
     const cmd = page.locator("#cmd-text");
 
-    // Off by default: the shell render, no devcontainer anywhere.
+    // The cloud-agent targets share one shell render — no devcontainer anywhere.
     await expect(cmd).not.toContainText("devcontainer");
     await expect(page.locator("#view")).toHaveText(/View script/);
 
-    // Toggling on switches the one-liner to ?devcontainer (quoted, since '?' is
-    // a shell glob) — still piped to bash, because it's an apply script. No -g
-    // here: that's only for bracketed params, and java,node has none.
-    await page.locator("#devcontainer").check();
+    // Picking the Devcontainer target switches the one-liner to ?devcontainer
+    // (quoted, since '?' is a shell glob) — still piped to bash, because it's an
+    // apply script. No -g here: that's only for bracketed params, and there are none.
+    await page.locator('#target-select button[data-target="devcontainer"]').click();
+    await expect(page.locator('#target-select button[data-target="devcontainer"]'))
+      .toHaveAttribute("aria-pressed", "true");
     await expect(cmd).toHaveText(/curl -fsSL '\S+\?devcontainer' \| bash$/);
-    // "View" now previews the raw file.
+    // "View" now previews the raw file, and the intro warns it's not Claude web.
     await expect(page.locator("#view")).toHaveText(/View devcontainer\.json/);
     await expect(page.locator("#view")).toHaveAttribute("href", /\?devcontainer=json$/);
+    await expect(page.locator("#hosts-intro")).toContainText("Not Claude Code web");
 
     // The apply URL really serves a shell script that writes the file…
     const applyUrl = (await cmd.textContent()).match(/'([^']+)'/)[1];
@@ -192,12 +195,8 @@ test.describe("env.coo.ee picker", () => {
     expect(view.headers()["content-type"]).toMatch(/json/);
     expect(JSON.parse(await view.text()).postCreateCommand).toContain("| bash");
 
-    // The base image follows the target: Codex -> codex-universal.
-    await page.locator('#target-select button[data-target="codex"]').click();
-    await expect(cmd).toContainText("base=codex");
-
-    // Toggling back restores the shell one-liner.
-    await page.locator("#devcontainer").uncheck();
+    // Switching to a cloud-agent target restores the shell one-liner.
+    await page.locator('#target-select button[data-target="claude"]').click();
     await expect(cmd).not.toContainText("devcontainer");
     await expect(page.locator("#view")).toHaveText(/View script/);
   });
