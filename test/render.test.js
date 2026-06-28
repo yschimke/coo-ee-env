@@ -247,8 +247,12 @@ test("moduleInfo surfaces the hosts each module needs and wants", () => {
     byName["java"].hosts.need[0].reason,
     "prebuilt Temurin JDK from the Nix cache",
   );
-  // Quoted wildcard hosts parse without their quotes.
-  assert.ok(byName["android"].hosts.want.map((h) => h.host).includes("*.jetbrains.com"));
+  // JetBrains hosts are concrete (not a *.jetbrains.com wildcard) so the IP
+  // firewall can resolve and enforce them — see devcontainer image mode.
+  const androidWant = byName["android"].hosts.want.map((h) => h.host);
+  assert.ok(androidWant.includes("cache-redirector.jetbrains.com"));
+  assert.ok(androidWant.includes("download.jetbrains.com"));
+  assert.ok(!androidWant.some((h) => h.startsWith("*.")), "no wildcard hosts remain");
 });
 
 test("java/node render a COOEE_NO_DEPS-gated build-dependency prefetch", () => {

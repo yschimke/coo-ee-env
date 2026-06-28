@@ -281,6 +281,7 @@ function renderDevcontainer(segment, opts) {
 module.exports = {
   renderDevcontainer,
   gatherDomains,
+  allowedDomainsFile,
   BASE_IMAGES,
   CLAUDE_CODE_FEATURE,
 };

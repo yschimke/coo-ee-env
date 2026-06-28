@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const { render } = require("../api/env/render");
 const {
   renderDevcontainer,
+  allowedDomainsFile,
   BASE_IMAGES,
   CLAUDE_CODE_FEATURE,
 } = require("../api/env/devcontainer");
@@ -112,14 +113,26 @@ test("the image devcontainer.json wires the firewall (caps + postStart)", () => 
   assert.equal(codex.devcontainer.build.args.BASE, BASE_IMAGES.codex);
 });
 
-test("allowed-domains.txt enforces concrete hosts and comments wildcards", () => {
+test("allowed-domains.txt lists concrete hosts the firewall enforces", () => {
   const out = renderDevcontainer("android", { mode: "image" });
-  // android wants *.jetbrains.com (wildcard) and needs concrete hosts.
+  // android's hosts are all concrete now (the *.jetbrains.com wildcard was
+  // expanded), so they're active lines the firewall resolves + enforces.
   assert.ok(out.body.includes("\ndl.google.com\n"), "concrete host is active");
-  assert.ok(out.body.includes("# *.jetbrains.com"), "wildcard host is advisory (commented)");
+  assert.ok(out.body.includes("\ncache-redirector.jetbrains.com\n"), "expanded JetBrains host is active");
   // The firewall reads /etc/cooee/allowed-domains.txt and default-denies.
   assert.ok(out.body.includes("init-firewall.sh"));
   assert.ok(out.body.includes("iptables -P OUTPUT DROP"), "embeds the default-deny firewall");
+});
+
+test("allowed-domains.txt comments wildcard hosts (advisory, not IP-enforceable)", () => {
+  // No module ships a wildcard today, but the firewall can't match by name, so
+  // any future *.host stays an advisory comment rather than an active rule.
+  const file = allowedDomainsFile("demo", {
+    concrete: ["a.example.com"],
+    wildcard: ["*.b.example.com"],
+  });
+  assert.ok(file.includes("\na.example.com\n"), "concrete host active");
+  assert.ok(file.includes("# *.b.example.com"), "wildcard host commented");
 });
 
 test("user input can't inject shell into the apply script", () => {
