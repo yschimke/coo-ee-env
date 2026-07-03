@@ -14,7 +14,10 @@
 register_module java
 provides_tool java java   # adopt an existing JDK (warm box or cloud base image)
 need_host cache.nixos.org      "prebuilt Temurin JDK from the Nix cache"
-want_host services.gradle.org  "Gradle distributions (wrapper download)"
+want_host services.gradle.org  "Gradle distributions (wrapper download; 307-redirects to GitHub releases)"
+want_host github.com           "Gradle distribution redirect target (gradle/gradle-distributions releases)"
+want_host objects.githubusercontent.com "GitHub release-asset CDN serving the Gradle distribution zip"
+want_host downloads.gradle.org "Gradle direct-download host (legacy/non-wrapper distribution URLs)"
 want_host repo.gradle.org      "Gradle libraries / tooling artifacts"
 want_host central.sonatype.com "Maven Central artifacts"
 want_host api.foojay.io        "Java distro metadata for Gradle toolchains"

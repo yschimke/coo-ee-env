@@ -258,7 +258,10 @@ platform / build-tools / system-image sources). *Building* the project
 additionally wants the registries the module lists under **"Recommended for
 builds"** (`maven.google.com`, `packages.jetbrains.team`, `*.jetbrains.com`,
 `fonts.googleapis.com`, `fonts.gstatic.com`), plus whatever your Gradle build
-resolves from — commonly `services.gradle.org` (the Gradle distribution),
+resolves from — commonly `services.gradle.org` (the Gradle distribution, which
+now 307-redirects to GitHub releases, so `github.com` and
+`objects.githubusercontent.com` must be reachable too, and
+`downloads.gradle.org` for direct/legacy distribution URLs),
 `repo.maven.apache.org` / `repo1.maven.org` (Maven Central), and `jitpack.io`.
 The build-time registries are advisory: the script never probes them and never
 fails on them, it just reminds you to allow them before `./gradlew build`.
