@@ -28,6 +28,7 @@ provides_tool android adb   # adopt a complete existing SDK (adb on PATH)
 need_host cache.nixos.org        "prebuilt androidenv dependencies from the Nix cache"
 want_host dl.google.com          "Android SDK components (platforms, build-tools, system images)"
 want_host maven.google.com       "AndroidX / AGP artifacts"
+want_host androidx.dev            "AndroidX snapshot builds (androidx.dev/snapshots)"
 want_host packages.jetbrains.team "JetBrains-hosted Compose/tooling artifacts"
 want_host cache-redirector.jetbrains.com "Kotlin Gradle plugin CDN redirector (Kotlin/Native, compiler artifacts)"
 want_host download.jetbrains.com "Kotlin/Native dependencies (LLVM, sysroots, toolchains)"

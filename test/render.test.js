@@ -249,10 +249,17 @@ test("moduleInfo surfaces the hosts each module needs and wants", () => {
   assert.ok(javaWant.includes("services.gradle.org"));
   // The Gradle distribution download now 307-redirects from services.gradle.org
   // to a gradle/gradle-distributions GitHub release, whose asset is served from
-  // the release CDN; downloads.gradle.org covers direct/legacy URLs.
+  // the release CDN (now release-assets.githubusercontent.com; objects.* is the
+  // legacy host, kept for older assets); downloads.gradle.org covers direct URLs.
   assert.ok(javaWant.includes("github.com"));
+  assert.ok(javaWant.includes("release-assets.githubusercontent.com"));
   assert.ok(javaWant.includes("objects.githubusercontent.com"));
   assert.ok(javaWant.includes("downloads.gradle.org"));
+  // Gradle JDK toolchain auto-provisioning resolves vendor download URLs via the
+  // GitHub release API (api.github.com) and pulls OpenJDK reference builds from
+  // download.java.net, alongside the Adoptium/foojay/Azul vendor hosts.
+  assert.ok(javaWant.includes("api.github.com"));
+  assert.ok(javaWant.includes("download.java.net"));
   // Azul Zulu is a Gradle toolchain JDK provider, allowlisted when java is picked.
   assert.ok(javaWant.includes("cdn.azul.com"));
   // Reasons are carried through for the allowlist UI.
@@ -265,6 +272,8 @@ test("moduleInfo surfaces the hosts each module needs and wants", () => {
   const androidWant = byName["android"].hosts.want.map((h) => h.host);
   assert.ok(androidWant.includes("cache-redirector.jetbrains.com"));
   assert.ok(androidWant.includes("download.jetbrains.com"));
+  // AndroidX snapshot builds are pulled from androidx.dev.
+  assert.ok(androidWant.includes("androidx.dev"));
   assert.ok(!androidWant.some((h) => h.startsWith("*.")), "no wildcard hosts remain");
 });
 
