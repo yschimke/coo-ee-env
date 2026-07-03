@@ -247,6 +247,12 @@ test("moduleInfo surfaces the hosts each module needs and wants", () => {
   );
   const javaWant = byName["java"].hosts.want.map((h) => h.host);
   assert.ok(javaWant.includes("services.gradle.org"));
+  // The Gradle distribution download now 307-redirects from services.gradle.org
+  // to a gradle/gradle-distributions GitHub release, whose asset is served from
+  // the release CDN; downloads.gradle.org covers direct/legacy URLs.
+  assert.ok(javaWant.includes("github.com"));
+  assert.ok(javaWant.includes("objects.githubusercontent.com"));
+  assert.ok(javaWant.includes("downloads.gradle.org"));
   // Azul Zulu is a Gradle toolchain JDK provider, allowlisted when java is picked.
   assert.ok(javaWant.includes("cdn.azul.com"));
   // Reasons are carried through for the allowlist UI.
