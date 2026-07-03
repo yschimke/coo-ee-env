@@ -16,14 +16,20 @@ provides_tool java java   # adopt an existing JDK (warm box or cloud base image)
 need_host cache.nixos.org      "prebuilt Temurin JDK from the Nix cache"
 want_host services.gradle.org  "Gradle distributions (wrapper download; 307-redirects to GitHub releases)"
 want_host github.com           "Gradle distribution redirect target (gradle/gradle-distributions releases)"
-want_host objects.githubusercontent.com "GitHub release-asset CDN serving the Gradle distribution zip"
+want_host api.github.com       "GitHub release API for JDK/tool provisioning (Adoptium et al. resolve download URLs here)"
+want_host release-assets.githubusercontent.com "GitHub release-asset CDN serving the Gradle distribution zip (current host)"
+want_host objects.githubusercontent.com "GitHub release-asset CDN (legacy host; still used for some assets)"
 want_host downloads.gradle.org "Gradle direct-download host (legacy/non-wrapper distribution URLs)"
 want_host repo.gradle.org      "Gradle libraries / tooling artifacts"
 want_host central.sonatype.com "Maven Central artifacts"
 want_host api.foojay.io        "Java distro metadata for Gradle toolchains"
 want_host api.adoptium.net     "JDK/toolchain provisioning API"
 want_host cdn.azul.com         "Azul Zulu JDK builds for Gradle toolchain provisioning"
+want_host download.java.net    "OpenJDK reference builds (a Gradle toolchain provisioning source)"
 want_host jitpack.io           "dependencies published via JitPack"
+# Amazon Corretto (another Gradle toolchain vendor) serves its JDK builds from
+# a CloudFront distribution (*.cloudfront.net), which we can't pin to a concrete
+# host for the IP firewall — allow *.cloudfront.net manually if you provision it.
 
 # The JDK a Gradle project pins for its build — the toolchainVersion in the
 # version file in the gradle directory (gradle/gradle-daemon-jvm.properties),
