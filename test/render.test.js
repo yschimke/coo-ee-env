@@ -295,6 +295,24 @@ test("java/node render a COOEE_NO_DEPS-gated build-dependency prefetch", () => {
   assert.ok(node.includes("npm ci") && node.includes("npm install"), "node uses npm ci/install");
 });
 
+test("java forces a UTF-8 locale + JVM file encoding (sun.jnu.encoding fix)", () => {
+  // The helper lives in the header (always present) and sets the two levers:
+  // a UTF-8 locale (fixes sun.jnu.encoding, hence non-ASCII report paths) and
+  // -Dfile.encoding=UTF-8 (pins the JVM/Gradle default charset).
+  const header = render("").body;
+  assert.ok(header.includes("cooee_jvm_utf8_opts()"), "header defines the UTF-8 helper");
+  assert.ok(header.includes("C.UTF-8"), "the helper sets a UTF-8 locale");
+  assert.ok(header.includes("-Dfile.encoding=UTF-8"), "the helper pins file.encoding");
+
+  // java calls it on both the install and the adopt-existing-JDK paths.
+  const java = render("java").body;
+  assert.equal(
+    (java.match(/cooee_jvm_utf8_opts/g) || []).length,
+    3,
+    "one definition + a call on each of the install and adopt paths",
+  );
+});
+
 test("android discovers and adopts an SDK shipped on disk but never exported", () => {
   const body = render("android").body;
   // Discovery + the presence hook the framework consults to avoid a redundant

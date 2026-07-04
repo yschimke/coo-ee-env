@@ -317,6 +317,39 @@ cooee_jvm_proxy_opts() {
   ok "JVM routed through proxy $host${port:+:$port} (Gradle wrapper/daemon will reach the network)."
 }
 
+# Cloud fix: force a UTF-8 locale + JVM file encoding so the JVM and Gradle can
+# read/write non-ASCII text. Many sandbox base images boot with a C/POSIX
+# (ASCII) locale, which makes the JVM derive sun.jnu.encoding=ANSI_X3.4-1968.
+# That's the encoding the JVM uses for *file names*, so the moment Gradle writes
+# a report path containing a non-ASCII char (the —/·/× in test/report names) the
+# build dies with "Malformed input or input contains unmappable characters" —
+# a pure locale artifact, unrelated to the build itself. The two levers:
+#   * LANG/LC_ALL -> a UTF-8 locale. This is what actually fixes sun.jnu.encoding
+#     (it's read from the native locale at JVM startup; a -Dsun.jnu.encoding flag
+#     is NOT honored by HotSpot, so the env var is the only lever that works).
+#     C.UTF-8 is chosen because it's always available on glibc without generating
+#     a locale, so it's safe in a bare sandbox.
+#   * -Dfile.encoding=UTF-8 -> pins the JVM's default charset for stream/reader
+#     content too. JDK 18+ already defaults this to UTF-8 (JEP 400), but JDK 17
+#     (the Android/AGP toolchain) still follows the locale, so set it explicitly.
+# Both are inherited by every JVM that reads JAVA_TOOL_OPTIONS / the process
+# locale — the Gradle client, its daemon, and any forked test/worker JVM. A
+# deliberate UTF-8 locale already in the environment is left untouched.
+cooee_jvm_utf8_opts() {
+  case "${LC_ALL:-${LANG:-}}" in
+    *[Uu][Tt][Ff]-8 | *[Uu][Tt][Ff]8)
+      log "UTF-8 locale already set (${LC_ALL:-$LANG}); leaving LANG/LC_ALL as-is." ;;
+    *)
+      add_env LANG   C.UTF-8
+      add_env LC_ALL C.UTF-8
+      ok "Locale set to C.UTF-8 (JVM sun.jnu.encoding + tool I/O now UTF-8)." ;;
+  esac
+
+  # Append to (not clobber) any JAVA_TOOL_OPTIONS already set (proxy/CA fixes).
+  add_env JAVA_TOOL_OPTIONS "${JAVA_TOOL_OPTIONS:+$JAVA_TOOL_OPTIONS }-Dfile.encoding=UTF-8"
+  ok "JVM file.encoding pinned to UTF-8 (Gradle client/daemon/workers)."
+}
+
 # ---- build dependency prefetch --------------------------------------------
 # Once a language toolchain is ready, optionally warm its build cache by
 # resolving the project's dependencies now — while the build/registry hosts are
