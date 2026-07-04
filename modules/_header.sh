@@ -370,6 +370,12 @@ provides_tool() {               # provides_tool <module> <command> [provider_env
   return 0
 }
 module_present() {              # module_present <module> -> 0 if its tool is on PATH
+  # A module may define cooee_present_<module> for a richer check than "is the
+  # command on PATH" — e.g. android adopts an SDK an image shipped on disk but
+  # never exported, where `command -v adb` fails yet the SDK is right there.
+  if declare -F "cooee_present_$1" >/dev/null 2>&1; then
+    "cooee_present_$1"; return
+  fi
   local cmd=${_PROVIDES_CMD["$1"]:-}
   [[ -n "$cmd" ]] && command -v "$cmd" >/dev/null 2>&1
 }

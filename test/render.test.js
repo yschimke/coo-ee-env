@@ -295,6 +295,28 @@ test("java/node render a COOEE_NO_DEPS-gated build-dependency prefetch", () => {
   assert.ok(node.includes("npm ci") && node.includes("npm install"), "node uses npm ci/install");
 });
 
+test("android discovers and adopts an SDK shipped on disk but never exported", () => {
+  const body = render("android").body;
+  // Discovery + the presence hook the framework consults to avoid a redundant
+  // Nix install when a complete SDK is already on the box.
+  assert.ok(body.includes("cooee_android_discover_sdk"), "defines SDK discovery");
+  assert.ok(body.includes("cooee_present_android"), "defines the android presence hook");
+  // Probes the conventional install locations an image ships the SDK at.
+  assert.ok(body.includes("/opt/android-sdk"), "probes /opt/android-sdk");
+  assert.ok(body.includes("/usr/local/lib/android/sdk"), "probes the GitHub-runner SDK path");
+  // An explicit pointer is honoured and suppresses probing (so an emptied
+  // ANDROID_HOME still forces the Nix build path the devenv job relies on).
+  assert.ok(
+    body.includes('-n "${ANDROID_HOME:-}" || -n "${ANDROID_SDK_ROOT:-}"'),
+    "an explicit ANDROID_HOME/ANDROID_SDK_ROOT suppresses discovery",
+  );
+  // The header lets a module override the generic on-PATH presence check.
+  assert.ok(
+    render("").body.includes('declare -F "cooee_present_$1"'),
+    "header dispatches to a per-module presence hook when defined",
+  );
+});
+
 test("the version example from the brief renders and is well-formed", () => {
   const o = render("java[17,21],android[30,37,wear-33]");
   assert.equal(o.status, 200);
