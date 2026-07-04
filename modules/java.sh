@@ -56,6 +56,7 @@ module_java() {
     add_env JAVA_HOME "$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")"
     cooee_trust_cas_in_jdk "$JAVA_HOME"
     cooee_jvm_proxy_opts
+    cooee_jvm_utf8_opts
     ok "java: adopted existing $(java -version 2>&1 | head -1) (JAVA_HOME=$JAVA_HOME)."
     cooee_seed_gradle_wrapper
     cooee_prefetch_gradle
@@ -109,6 +110,9 @@ module_java() {
   # Cloud fix: route the JVM through the sandbox proxy (it ignores http(s)_proxy),
   # so the Gradle wrapper/daemon can actually reach services.gradle.org et al.
   cooee_jvm_proxy_opts
+  # Cloud fix: force a UTF-8 locale + JVM file encoding so Gradle report paths
+  # with non-ASCII chars don't die with "unmappable character" under a C locale.
+  cooee_jvm_utf8_opts
 
   ok "java ready: $(java -version 2>&1 | head -1)"
 
