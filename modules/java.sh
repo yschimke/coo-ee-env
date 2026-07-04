@@ -20,7 +20,7 @@ want_host api.github.com       "GitHub release API for JDK/tool provisioning (Ad
 want_host release-assets.githubusercontent.com "GitHub release-asset CDN serving the Gradle distribution zip (current host)"
 want_host objects.githubusercontent.com "GitHub release-asset CDN (legacy host; still used for some assets)"
 want_host downloads.gradle.org "Gradle direct-download host (legacy/non-wrapper distribution URLs)"
-want_host repo.gradle.org      "Gradle libraries / tooling artifacts"
+want_host repo.gradle.org      "Gradle tooling artifacts + the github-downloads-proxy that seeds the wrapper distribution (mirrors the GitHub release the wrapper's services.gradle.org URL 307-redirects to, which is often blocked)"
 want_host central.sonatype.com "Maven Central artifacts"
 want_host api.foojay.io        "Java distro metadata for Gradle toolchains"
 want_host api.adoptium.net     "JDK/toolchain provisioning API"
@@ -57,6 +57,7 @@ module_java() {
     cooee_trust_cas_in_jdk "$JAVA_HOME"
     cooee_jvm_proxy_opts
     ok "java: adopted existing $(java -version 2>&1 | head -1) (JAVA_HOME=$JAVA_HOME)."
+    cooee_seed_gradle_wrapper
     cooee_prefetch_gradle
     return 0
   fi
@@ -111,7 +112,141 @@ module_java() {
 
   ok "java ready: $(java -version 2>&1 | head -1)"
 
+  cooee_seed_gradle_wrapper
   cooee_prefetch_gradle
+}
+
+# Seed the Gradle wrapper's distribution into the wrapper cache from an
+# allowlisted mirror, so the first `./gradlew` never has to fetch it over a path
+# the sandbox blocks.
+#
+# The problem: a wrapper's distributionUrl points at services.gradle.org, which
+# 307-redirects to a GitHub release
+# (github.com/gradle/gradle-distributions/releases/…). Cloud sandboxes routinely
+# block github.com's release assets, so the very first `./gradlew` dies fetching
+# the distribution — before the build even starts, and before any host we
+# allowlist for the *build* matters.
+#
+# The fix: repo.gradle.org's github-downloads-proxy serves the identical bytes
+# (it proxies the same GitHub release server-side) and is a normal Gradle host
+# we already allow. So we fetch the distribution from there, checksum-verify it,
+# and drop the zip into $GRADLE_USER_HOME/wrapper/dists exactly where the wrapper
+# looks for it — Gradle then unpacks + re-verifies + marks it ready itself on the
+# first invocation, with no network. No repo changes: the wrapper properties are
+# read, never written.
+#
+# No-op when there is no wrapper, when the distribution is already cached (warm
+# box / prior run), or when distributionUrl isn't the services.gradle.org default
+# (a custom/self-hosted URL is the project's own call). Best-effort: any failure
+# warns and leaves the download to Gradle — it never fails provisioning. Runs
+# regardless of COOEE_NO_DEPS, since it's about `./gradlew` working at all, not
+# about warming dependencies.
+cooee_seed_gradle_wrapper() {
+  local dir; dir=$(cooee_project_dir)
+  local props="$dir/gradle/wrapper/gradle-wrapper.properties"
+  [[ -f "$props" ]] || return 0   # no wrapper -> nothing to seed
+
+  # distributionUrl, unescaping the properties-file '\:' -> ':' and any CRLF.
+  local url
+  url=$(sed -n 's/^[[:space:]]*distributionUrl[[:space:]]*=[[:space:]]*//p' "$props" | head -1)
+  url="${url%$'\r'}"; url="${url//\\:/:}"
+  [[ -n "$url" ]] || return 0
+
+  # Only handle the stock services.gradle.org distribution — the one whose GitHub
+  # redirect is what gets blocked. A custom distributionUrl is left untouched.
+  case "$url" in
+    https://services.gradle.org/distributions/*.zip) : ;;
+    *) log "java: wrapper distributionUrl isn't the services.gradle.org default ($url); leaving the wrapper download to Gradle."; return 0 ;;
+  esac
+
+  local zipname="${url##*/}"                 # gradle-9.6.1-bin.zip
+  local distname="${zipname%.zip}"           # gradle-9.6.1-bin
+  local ver="${distname#gradle-}"            # 9.6.1-bin
+  ver="${ver%-bin}"; ver="${ver%-all}"       # 9.6.1
+
+  # Where the wrapper looks: <dists>/<distname>/<hash>/, hash = base36(md5(url)).
+  # GRADLE_USER_HOME defaults to ~/.gradle; distributionPath to wrapper/dists.
+  local hash; hash=$(cooee_gradle_wrapper_hash "$url") \
+    || { warn "java: couldn't compute the wrapper cache hash; leaving the wrapper download to Gradle."; return 0; }
+  local dest="${GRADLE_USER_HOME:-$HOME/.gradle}/wrapper/dists/$distname/$hash"
+
+  # Already there? Either Gradle installed it (.ok marker) or a prior seed placed
+  # the zip pending unpack. Nothing to do.
+  if [[ -f "$dest/$zipname.ok" || -f "$dest/$zipname" ]]; then
+    log "java: Gradle $ver already present in the wrapper cache; nothing to seed."
+    return 0
+  fi
+
+  # Rewrite services.gradle.org -> the github-downloads-proxy, which mirrors the
+  # exact GitHub release asset (v<ver>/<zipname>) the redirect points at.
+  local mirror="https://repo.gradle.org/gradle/github-downloads-proxy/gradle/gradle-distributions/releases/download/v$ver/$zipname"
+
+  log "java: seeding Gradle $ver into the wrapper cache from repo.gradle.org (services.gradle.org's GitHub redirect is blocked here)..."
+
+  local tmp; tmp=$(mktemp -d "${TMPDIR:-/tmp}/cooee-gradle-dist.XXXXXX") \
+    || { warn "java: couldn't create a temp dir for the wrapper seed; skipping."; return 0; }
+  local zip="$tmp/$zipname"
+  if ! curl -fsSL --retry 3 -o "$zip" "$mirror"; then
+    warn "java: couldn't download Gradle $ver from $mirror; leaving the wrapper download to Gradle."
+    rm -rf "$tmp"; return 0
+  fi
+
+  # Verify: prefer the wrapper's pinned distributionSha256Sum, else the mirror's
+  # published .sha256. A mismatch means don't trust the bytes — bail, don't seed.
+  local want
+  want=$(sed -n 's/^[[:space:]]*distributionSha256Sum[[:space:]]*=[[:space:]]*//p' "$props" | head -1)
+  want="${want%$'\r'}"
+  [[ -n "$want" ]] || want=$(curl -fsSL "$mirror.sha256" 2>/dev/null | tr -d '[:space:]')
+  if [[ -n "$want" ]]; then
+    local got; got=$(sha256sum "$zip" | cut -d' ' -f1)
+    if [[ "$got" != "$want" ]]; then
+      warn "java: Gradle $ver checksum mismatch (got $got, want $want); refusing to seed. Leaving the wrapper download to Gradle."
+      rm -rf "$tmp"; return 0
+    fi
+    log "java: Gradle $ver checksum verified ($want)."
+  else
+    warn "java: no checksum available for Gradle $ver; seeding the download unverified."
+  fi
+
+  # Place the verified zip where the wrapper expects it. Gradle finds it there,
+  # (re-)checksums it against any pinned sum, unpacks it, and writes the .ok
+  # marker on the first `./gradlew` — all offline.
+  mkdir -p "$dest" && mv -f "$zip" "$dest/$zipname" || {
+    warn "java: couldn't place the Gradle $ver zip in the wrapper cache ($dest); skipping."
+    rm -rf "$tmp"; return 0; }
+  rm -rf "$tmp"
+  ok "java: Gradle $ver seeded into the wrapper cache; ./gradlew will unpack it without fetching the distribution."
+}
+
+# base36(md5(s)) — reproduces org.gradle.wrapper.PathAssembler#getHash, the
+# scheme Gradle uses to name a distribution's wrapper cache directory from its
+# distributionUrl (MD5 of the URL, rendered as an unsigned BigInteger in base
+# 36). Pure bash so it needs no python/bc: md5 -> hex, then repeated
+# long-division of that base-16 bignum by 36, collecting remainders.
+cooee_gradle_wrapper_hash() {
+  local url="$1" hex
+  if command -v md5sum >/dev/null 2>&1; then hex=$(printf '%s' "$url" | md5sum | cut -d' ' -f1)
+  elif command -v md5 >/dev/null 2>&1; then hex=$(printf '%s' "$url" | md5 -q)
+  else return 1; fi
+  [[ ${#hex} -eq 32 ]] || return 1
+
+  local -a nib=() out=(); local i
+  for (( i=0; i<32; i++ )); do nib+=($((16#${hex:i:1}))); done
+
+  local digits="0123456789abcdefghijklmnopqrstuvwxyz"
+  while ((${#nib[@]})); do
+    local -a q=(); local carry=0 started=0 d val qi
+    for d in "${nib[@]}"; do
+      val=$(( carry*16 + d )); qi=$(( val/36 )); carry=$(( val%36 ))
+      if (( started || qi )); then q+=("$qi"); started=1; fi
+    done
+    out=("$carry" "${out[@]}")      # prepend this base36 digit (the remainder)
+    nib=("${q[@]}")
+  done
+
+  local s=""; ((${#out[@]})) || s=0
+  for d in "${out[@]}"; do s+="${digits:d:1}"; done
+  printf '%s' "$s"
 }
 
 # Warm the Gradle build cache: with a JDK ready (and the Gradle/Maven hosts
