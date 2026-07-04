@@ -24,7 +24,7 @@
 # ===========================================================================
 # coo.ee:implies android-cli
 register_module android
-provides_tool android adb   # adopt a complete existing SDK (adb on PATH)
+provides_tool android adb   # adopt a complete existing SDK (adb on PATH, or discovered on disk)
 need_host cache.nixos.org        "prebuilt androidenv dependencies from the Nix cache"
 want_host dl.google.com          "Android SDK components (platforms, build-tools, system images)"
 want_host maven.google.com       "AndroidX / AGP artifacts"
@@ -66,6 +66,41 @@ cooee_sdk_is_complete() {  # cooee_sdk_is_complete <sdk dir>
   local s=$1
   [[ -d "$s/platforms"   ]] && compgen -G "$s/platforms/android-*" >/dev/null 2>&1 \
   && [[ -d "$s/build-tools" ]] && compgen -G "$s/build-tools/*"    >/dev/null 2>&1
+}
+
+# Locate a complete SDK already on the box, echoing its path (nothing on miss).
+# An explicit pointer wins and *suppresses* probing: when ANDROID_HOME /
+# ANDROID_SDK_ROOT is set we consider only that location — adopt it if complete,
+# otherwise install — and never second-guess an explicit choice by hunting
+# elsewhere (this is what lets an emptied ANDROID_HOME force the Nix build path).
+# When neither is set we recover an SDK the image shipped but never exported:
+# adb's own tree first, then the conventional install locations. Discovery does
+# NOT require adb on PATH — an image shipping the SDK without exporting anything
+# is precisely the case this rescues.
+cooee_android_discover_sdk() {
+  local c adb_path
+  if [[ -n "${ANDROID_HOME:-}" || -n "${ANDROID_SDK_ROOT:-}" ]]; then
+    c="${ANDROID_HOME:-${ANDROID_SDK_ROOT}}"
+    cooee_sdk_is_complete "$c" && { printf '%s\n' "$c"; return 0; }
+    return 1
+  fi
+  if adb_path=$(command -v adb 2>/dev/null); then
+    c=${adb_path%/platform-tools/adb}
+    [[ "$c" != "$adb_path" ]] && cooee_sdk_is_complete "$c" && { printf '%s\n' "$c"; return 0; }
+  fi
+  for c in /opt/android-sdk "$HOME/.android-sdk" "$HOME/Android/Sdk" \
+           /usr/lib/android-sdk /usr/local/lib/android/sdk "$HOME/.android/sdk"; do
+    cooee_sdk_is_complete "$c" && { printf '%s\n' "$c"; return 0; }
+  done
+  return 1
+}
+
+# Presence hook for the framework (module_present): android counts as already
+# provided not only when adb is on PATH, but whenever a complete SDK can be
+# discovered on disk — so a box that ships the SDK isn't forced through a
+# redundant Nix install / host preflight just because nothing exported it yet.
+cooee_present_android() {
+  command -v adb >/dev/null 2>&1 || cooee_android_discover_sdk >/dev/null 2>&1
 }
 
 # Pin the SDK location in the project's local.properties. AGP resolves the SDK
@@ -123,13 +158,15 @@ module_android() {
     mapfile -t img_levels < <(cooee_android_levels ${emu_params//,/ })
   fi
 
-  # Adopt a complete SDK already on the box (a warm box or a CI runner that ships
-  # the full SDK). Bare `android` (no requested levels) adopts as-is; an explicit
-  # level request only adopts when every requested platform is already present —
-  # otherwise we install a known-good SDK below. Independent of COOEE_FORCE: a
-  # ready SDK is the right answer whether or not we're re-provisioning.
-  local sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/.android/sdk}}"
-  if command -v adb >/dev/null 2>&1 && cooee_sdk_is_complete "$sdk"; then
+  # Adopt a complete SDK already on the box — one an image both installed and
+  # exported (ANDROID_HOME/adb), OR one it shipped at a conventional location but
+  # never exported (discovery recovers it). Bare `android` (no requested levels)
+  # adopts as-is; an explicit level request only adopts when every requested
+  # platform is already present — otherwise we install a known-good SDK below.
+  # Independent of COOEE_FORCE: a ready SDK is the right answer whether or not
+  # we're re-provisioning.
+  local sdk
+  if sdk=$(cooee_android_discover_sdk); then
     local missing=() l
     for l in "${levels[@]}"; do
       [[ -d "$sdk/platforms/android-$l" ]] || missing+=("$l")
@@ -137,6 +174,12 @@ module_android() {
     if (( ${#missing[@]} == 0 )); then
       add_env ANDROID_HOME "$sdk"
       add_env ANDROID_SDK_ROOT "$sdk"
+      # The SDK may have been on disk with nothing on PATH (the image exported
+      # neither the vars nor the tools). Wire platform-tools + cmdline-tools in so
+      # adb/sdkmanager resolve here and in every later shell — the missing piece
+      # that had the agent complaining about ANDROID_HOME.
+      command -v adb >/dev/null 2>&1 \
+        || add_env PATH "$sdk/platform-tools:$sdk/cmdline-tools/latest/bin:$PATH"
       cooee_android_pin_sdk_dir "$sdk"
       (( ${#params[@]} )) && warn "requested Android platforms: ${params[*]} (already present in $sdk)."
       ok "android: adopted complete SDK at $sdk ($(adb --version 2>/dev/null | head -1 || echo adb))."

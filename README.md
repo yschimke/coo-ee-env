@@ -248,7 +248,14 @@ Because the SDK is built through Nix, it is reproducible and survives
 `nix store gc` (the build is anchored by a GC root under `~/.cache/coo-ee/`). On
 a box that already has a **complete** SDK (a CI runner, or a warm box with
 platforms + build-tools), the module adopts it instead of rebuilding — and only
-falls back to a Nix build if an explicitly requested platform is missing. The
+falls back to a Nix build if an explicitly requested platform is missing.
+Adoption also covers an SDK an image *shipped but never exported*: when neither
+`ANDROID_HOME` nor `ANDROID_SDK_ROOT` is set, the module probes the conventional
+locations (`/opt/android-sdk`, `/usr/local/lib/android/sdk`, `~/Android/Sdk`, …),
+and on a hit exports the vars and puts `platform-tools` on `PATH` so `adb` and
+Gradle resolve the SDK — no more "ANDROID_HOME not set" on a box that already
+has one. An *explicit* `ANDROID_HOME`/`ANDROID_SDK_ROOT` is honoured as-is and
+suppresses probing (so pointing it at an empty dir still forces a fresh build). The
 recorded `COOEE_ANDROID_PLATFORMS` / `COOEE_ANDROID_EMULATOR_IMAGES` values are
 kept as a description of the request.
 
