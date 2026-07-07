@@ -120,9 +120,10 @@ module_java() {
   cooee_prefetch_gradle
 }
 
-# Seed the Gradle wrapper's distribution into the wrapper cache from an
-# allowlisted mirror, so the first `./gradlew` never has to fetch it over a path
-# the sandbox blocks.
+# Seed the Gradle wrapper distributions into the wrapper cache from an
+# allowlisted mirror, so the first `./gradlew` never has to fetch one over a path
+# the sandbox blocks — for EVERY checkout in the workspace, not just the one
+# project dir.
 #
 # The problem: a wrapper's distributionUrl points at services.gradle.org, which
 # 307-redirects to a GitHub release
@@ -130,6 +131,14 @@ module_java() {
 # block github.com's release assets, so the very first `./gradlew` dies fetching
 # the distribution — before the build even starts, and before any host we
 # allowlist for the *build* matters.
+#
+# The multi-checkout wrinkle: a session often has several repos checked out side
+# by side (the workspace root, i.e. the parent of the project dir), and they can
+# pin *different* Gradle versions in their own gradle/wrapper/gradle-wrapper.properties.
+# Seeding only cooee_project_dir's wrapper covers one version; the other
+# checkouts' first `./gradlew` still dies on the blocked redirect. So we discover
+# every wrapper across the local checkouts, dedup by distributionUrl, and seed
+# each distinct version.
 #
 # The fix: repo.gradle.org's github-downloads-proxy serves the identical bytes
 # (it proxies the same GitHub release server-side) and is a normal Gradle host
@@ -139,28 +148,68 @@ module_java() {
 # first invocation, with no network. No repo changes: the wrapper properties are
 # read, never written.
 #
-# No-op when there is no wrapper, when the distribution is already cached (warm
-# box / prior run), or when distributionUrl isn't the services.gradle.org default
-# (a custom/self-hosted URL is the project's own call). Best-effort: any failure
-# warns and leaves the download to Gradle — it never fails provisioning. Runs
-# regardless of COOEE_NO_DEPS, since it's about `./gradlew` working at all, not
-# about warming dependencies.
+# No-op when there is no wrapper anywhere, when a distribution is already cached
+# (warm box / prior run), or when a distributionUrl isn't the services.gradle.org
+# default (a custom/self-hosted URL is the project's own call). Best-effort: any
+# failure warns and leaves that download to Gradle — it never fails provisioning.
+# Runs regardless of COOEE_NO_DEPS, since it's about `./gradlew` working at all,
+# not about warming dependencies.
 cooee_seed_gradle_wrapper() {
-  local dir; dir=$(cooee_project_dir)
-  local props="$dir/gradle/wrapper/gradle-wrapper.properties"
-  [[ -f "$props" ]] || return 0   # no wrapper -> nothing to seed
+  local -A seen=()
+  local props url seeded=0
+  while IFS= read -r props; do
+    [[ -n "$props" ]] || continue
+    url=$(cooee_gradle_distribution_url "$props")
+    [[ -n "$url" ]] || continue
+    # Same distribution pinned by more than one checkout — seed it once.
+    [[ -n "${seen[$url]:-}" ]] && continue
+    seen[$url]=1
+    cooee_seed_one_gradle_wrapper "$props" "$url"
+    seeded=$((seeded + 1))
+  done < <(cooee_gradle_wrapper_props)
+  (( seeded )) || log "java: no Gradle wrapper found in the local checkouts; nothing to seed."
+}
 
-  # distributionUrl, unescaping the properties-file '\:' -> ':' and any CRLF.
-  local url
+# Every gradle-wrapper.properties across the local checkouts. Repos are typically
+# checked out side by side under the workspace root (the parent of the project
+# dir); each can pin its own Gradle version. Override the search root with
+# COOEE_CHECKOUTS_DIR. Bounded depth keeps the scan cheap and still catches both a
+# repo-root wrapper and a nested build's wrapper (e.g. <repo>/android/gradle/…).
+cooee_gradle_wrapper_props() {
+  local root="${COOEE_CHECKOUTS_DIR:-}"
+  if [[ -z "$root" ]]; then
+    local dir; dir=$(cooee_project_dir)
+    root=$(dirname "$dir")   # workspace root = the parent holding the checkouts
+    # Never root the scan at a broad system directory — fall back to the project
+    # dir itself, so a single-repo layout still gets its own wrapper seeded.
+    case "$root" in ""|.|/|/home|/Users|/root|/usr|/var|/opt|/tmp) root="$dir" ;; esac
+  fi
+  [[ -d "$root" ]] || return 0
+  find "$root" -maxdepth 5 -type f \
+    -path '*/gradle/wrapper/gradle-wrapper.properties' 2>/dev/null | sort
+}
+
+# distributionUrl from a gradle-wrapper.properties, unescaping the properties-file
+# '\:' -> ':' and stripping any trailing CR. Empty output when absent.
+cooee_gradle_distribution_url() {
+  local props="$1" url
+  [[ -f "$props" ]] || return 0
   url=$(sed -n 's/^[[:space:]]*distributionUrl[[:space:]]*=[[:space:]]*//p' "$props" | head -1)
   url="${url%$'\r'}"; url="${url//\\:/:}"
-  [[ -n "$url" ]] || return 0
+  printf '%s' "$url"
+}
+
+# Seed one wrapper's distribution (props file + its already-extracted distributionUrl)
+# into the wrapper cache. See cooee_seed_gradle_wrapper for the rationale.
+cooee_seed_one_gradle_wrapper() {
+  local props="$1" url="$2"
+  local repo="${props%/gradle/wrapper/gradle-wrapper.properties}"
 
   # Only handle the stock services.gradle.org distribution — the one whose GitHub
   # redirect is what gets blocked. A custom distributionUrl is left untouched.
   case "$url" in
     https://services.gradle.org/distributions/*.zip) : ;;
-    *) log "java: wrapper distributionUrl isn't the services.gradle.org default ($url); leaving the wrapper download to Gradle."; return 0 ;;
+    *) log "java: $repo wrapper distributionUrl isn't the services.gradle.org default ($url); leaving the wrapper download to Gradle."; return 0 ;;
   esac
 
   local zipname="${url##*/}"                 # gradle-9.6.1-bin.zip
@@ -171,7 +220,7 @@ cooee_seed_gradle_wrapper() {
   # Where the wrapper looks: <dists>/<distname>/<hash>/, hash = base36(md5(url)).
   # GRADLE_USER_HOME defaults to ~/.gradle; distributionPath to wrapper/dists.
   local hash; hash=$(cooee_gradle_wrapper_hash "$url") \
-    || { warn "java: couldn't compute the wrapper cache hash; leaving the wrapper download to Gradle."; return 0; }
+    || { warn "java: couldn't compute the wrapper cache hash for $repo; leaving the wrapper download to Gradle."; return 0; }
   local dest="${GRADLE_USER_HOME:-$HOME/.gradle}/wrapper/dists/$distname/$hash"
 
   # Already there? Either Gradle installed it (.ok marker) or a prior seed placed
