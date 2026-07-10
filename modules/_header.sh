@@ -124,8 +124,10 @@ ${end}"
   (( updated )) || warn "activation: could not update any shell rc file."
 }
 
-# Install/merge a SessionStart hook into the consuming project's
-# .claude/settings.json so future Claude Code sessions auto-provision. Uses
+# Install/merge a SessionStart hook AND the toolchain's permission allowlist
+# into the consuming project's .claude/settings.json, so future Claude Code
+# sessions auto-provision and aren't prompted for the tools this environment
+# just installed (e.g. `Bash(gradle:*)` for java — see provides_perms). Uses
 # jq/python3/node to merge an existing file; writes a fresh one otherwise; warns
 # (with the snippet) if a file exists but no JSON tool is available.
 cooee_install_session_hook() {
@@ -134,8 +136,9 @@ cooee_install_session_hook() {
   elif [[ -d "$PWD/.git" || -d "$PWD/.claude" ]]; then dir="$PWD"
   else warn "activation: no project dir (CLAUDE_PROJECT_DIR unset, $PWD isn't a repo) — skipping SessionStart hook."; return 0; fi
 
-  local seg cmd settings="$dir/.claude/settings.json"
+  local seg cmd settings="$dir/.claude/settings.json" perms_json
   seg="$(cooee_request_segment)"
+  perms_json="$(cooee_perms_json)"
   # Degrade gracefully: if a future session can't reach the service (offline, or
   # env.coo.ee not on that environment's allowlist), the hook logs and continues
   # rather than failing session startup. The trailing `|| echo` guarantees a 0
@@ -143,54 +146,87 @@ cooee_install_session_hook() {
   # propagate through the pipe and abort the session.
   cmd="curl -fsSL ${COOEE_BASE_URL}/${seg} | bash || echo 'coo.ee/env: setup skipped (offline or host not allowlisted)' >&2"
 
+  # Nothing to do if the hook is already wired and every permission rule we'd
+  # add is already listed. Checking the raw rule strings keeps this cheap and
+  # tool-free (the merge itself dedupes, so a false "missing" only re-merges).
   if [[ -f "$settings" ]] && grep -qF "$cmd" "$settings" 2>/dev/null; then
-    ok "activation: SessionStart hook already present in ${settings/#$HOME/\~}."
-    return 0
+    local rule missing=0
+    while IFS= read -r rule; do
+      [[ -z "$rule" ]] && continue
+      grep -qF "$rule" "$settings" 2>/dev/null || { missing=1; break; }
+    done < <(cooee_collect_perms)
+    if (( ! missing )); then
+      ok "activation: SessionStart hook + permissions already present in ${settings/#$HOME/\~}."
+      return 0
+    fi
   fi
   mkdir -p "$dir/.claude"
 
   if [[ ! -f "$settings" ]]; then
+    local perms_block=""
+    [[ "$perms_json" != "[]" ]] && perms_block=",
+  \"permissions\": { \"allow\": ${perms_json} }"
     cat > "$settings" <<JSON
 {
   "hooks": {
     "SessionStart": [
       { "hooks": [ { "type": "command", "command": "${cmd}" } ] }
     ]
-  }
+  }${perms_block}
 }
 JSON
-    ok "activation: wrote SessionStart hook to ${settings/#$HOME/\~}."
+    ok "activation: wrote SessionStart hook + permissions to ${settings/#$HOME/\~}."
     return 0
   fi
 
-  # Merge into the existing settings without clobbering other keys.
+  # Merge into the existing settings without clobbering other keys: add the hook
+  # only if it isn't already there, and union the permission rules (dedup).
+  local add_hook=1
+  grep -qF "$cmd" "$settings" 2>/dev/null && add_hook=0
   local tmp; tmp="$(mktemp)"
   if command -v jq >/dev/null 2>&1; then
-    if jq --arg c "$cmd" '.hooks //= {} | .hooks.SessionStart //= []
-        | .hooks.SessionStart += [ { hooks: [ { type: "command", command: $c } ] } ]' \
+    if jq --arg c "$cmd" --argjson add_hook "$add_hook" --argjson perms "$perms_json" '
+        (if $add_hook == 1 then
+           .hooks //= {} | .hooks.SessionStart //= []
+           | .hooks.SessionStart += [ { hooks: [ { type: "command", command: $c } ] } ]
+         else . end)
+        | (if ($perms | length) > 0 then
+             .permissions //= {} | .permissions.allow //= []
+             | .permissions.allow = (.permissions.allow + $perms | unique)
+           else . end)' \
         "$settings" > "$tmp" 2>/dev/null && mv "$tmp" "$settings"; then
-      ok "activation: merged SessionStart hook into ${settings/#$HOME/\~} (jq)."; return 0
+      ok "activation: merged SessionStart hook + permissions into ${settings/#$HOME/\~} (jq)."; return 0
     fi
   elif command -v python3 >/dev/null 2>&1; then
-    if python3 - "$settings" "$cmd" <<'PY' 2>/dev/null
+    if python3 - "$settings" "$cmd" "$add_hook" "$perms_json" <<'PY' 2>/dev/null
 import json, sys
-path, cmd = sys.argv[1], sys.argv[2]
+path, cmd, add_hook, perms = sys.argv[1], sys.argv[2], sys.argv[3], json.loads(sys.argv[4])
 with open(path) as f: data = json.load(f)
-hooks = data.setdefault("hooks", {}).setdefault("SessionStart", [])
-hooks.append({"hooks": [{"type": "command", "command": cmd}]})
+if add_hook == "1":
+    hooks = data.setdefault("hooks", {}).setdefault("SessionStart", [])
+    hooks.append({"hooks": [{"type": "command", "command": cmd}]})
+if perms:
+    allow = data.setdefault("permissions", {}).setdefault("allow", [])
+    data["permissions"]["allow"] = sorted(set(allow) | set(perms))
 with open(path, "w") as f:
     json.dump(data, f, indent=2); f.write("\n")
 PY
-    then ok "activation: merged SessionStart hook into ${settings/#$HOME/\~} (python3)."; return 0; fi
+    then ok "activation: merged SessionStart hook + permissions into ${settings/#$HOME/\~} (python3)."; return 0; fi
   elif command -v node >/dev/null 2>&1; then
     if node -e '
-        const fs = require("fs"), [p, c] = process.argv.slice(1);
-        const d = JSON.parse(fs.readFileSync(p, "utf8"));
-        (d.hooks ||= {}).SessionStart ||= [];
-        d.hooks.SessionStart.push({ hooks: [{ type: "command", command: c }] });
+        const fs = require("fs"), [p, c, addHook, permsRaw] = process.argv.slice(1);
+        const d = JSON.parse(fs.readFileSync(p, "utf8")), perms = JSON.parse(permsRaw);
+        if (addHook === "1") {
+          (d.hooks ||= {}).SessionStart ||= [];
+          d.hooks.SessionStart.push({ hooks: [{ type: "command", command: c }] });
+        }
+        if (perms.length) {
+          (d.permissions ||= {}).allow ||= [];
+          d.permissions.allow = [...new Set([...d.permissions.allow, ...perms])].sort();
+        }
         fs.writeFileSync(p, JSON.stringify(d, null, 2) + "\n");
-      ' "$settings" "$cmd" 2>/dev/null; then
-      ok "activation: merged SessionStart hook into ${settings/#$HOME/\~} (node)."; return 0; fi
+      ' "$settings" "$cmd" "$add_hook" "$perms_json" 2>/dev/null; then
+      ok "activation: merged SessionStart hook + permissions into ${settings/#$HOME/\~} (node)."; return 0; fi
   fi
   rm -f "$tmp"
   warn "activation: ${settings/#$HOME/\~} exists but no jq/python3/node to merge it safely."
@@ -411,6 +447,71 @@ module_present() {              # module_present <module> -> 0 if its tool is on
   fi
   local cmd=${_PROVIDES_CMD["$1"]:-}
   [[ -n "$cmd" ]] && command -v "$cmd" >/dev/null 2>&1
+}
+
+# ---- Claude Code permission hints -----------------------------------------
+# Each module declares the tool-invocation permissions a Claude Code session
+# will want pre-approved so the agent isn't prompted for the toolchain the
+# environment just installed (e.g. `Bash(gradle:*)` for java). These are folded
+# into the project's .claude/settings.json alongside the SessionStart hook (see
+# cooee_install_session_hook). The strings are Claude Code permission rules:
+# https://docs.claude.com/en/docs/claude-code/settings#permissions
+declare -A _PROVIDES_PERMS=()   # module -> newline-separated permission rules
+provides_perms() {              # provides_perms <module> <rule> [rule...]
+  local m="$1"; shift
+  local existing="${_PROVIDES_PERMS["$m"]:-}" rule
+  for rule in "$@"; do
+    existing+="${existing:+$'\n'}$rule"
+  done
+  _PROVIDES_PERMS["$m"]="$existing"
+  return 0
+}
+
+# nixpkgs attribute -> the command name it actually puts on PATH, for the cases
+# where they differ. Used to turn a `tools[...]` request into permission rules
+# for the binaries it installs. Anything not listed is assumed to match its
+# nixpkgs leaf name (jq -> jq, fd -> fd, gh -> gh, nodePackages.prettier ->
+# prettier). Keep this to the well-known mismatches — a wrong guess just means
+# one extra permission prompt, never a broken rule.
+declare -A _TOOL_CMD_ALIAS=(
+  [ripgrep]=rg
+  [fd-find]=fd
+  [the_silver_searcher]=ag
+  [neovim]=nvim
+)
+
+# Emit the permission rules for the requested modules, one per line, deduped and
+# sorted. Static per-module rules come from _PROVIDES_PERMS; the `tools` module
+# additionally contributes a rule per binary it was asked to install.
+cooee_collect_perms() {
+  local m
+  {
+    for m in "${MODULES[@]}"; do
+      [[ -n "${_PROVIDES_PERMS[$m]:-}" ]] && printf '%s\n' "${_PROVIDES_PERMS[$m]}"
+      if [[ "$m" == tools && -n "${_MODULE_PARAMS[tools]:-}" ]]; then
+        local -a want; local t leaf cmd
+        IFS=',' read -r -a want <<< "${_MODULE_PARAMS[tools]}"
+        for t in "${want[@]}"; do
+          [[ "$t" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || continue
+          leaf="${t##*.}"
+          cmd="${_TOOL_CMD_ALIAS[$t]:-${_TOOL_CMD_ALIAS[$leaf]:-$leaf}}"
+          printf 'Bash(%s:*)\n' "$cmd"
+        done
+      fi
+    done
+  } | LC_ALL=C sort -u   # empty input -> sort exits 0 (safe under pipefail)
+}
+
+# Render the collected permission rules as a compact JSON array string, e.g.
+# ["Bash(gradle:*)","Bash(node:*)"]. Empty rule set renders as [].
+cooee_perms_json() {
+  local first=1 rule out='['
+  while IFS= read -r rule; do
+    [[ -z "$rule" ]] && continue
+    out+="$( ((first)) || printf ',' )\"${rule//\"/\\\"}\""
+    first=0
+  done < <(cooee_collect_perms)
+  printf '%s]' "$out"
 }
 
 # Stamp of the last successfully provisioned module set, used to short-circuit.

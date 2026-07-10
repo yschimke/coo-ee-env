@@ -13,6 +13,8 @@
 # ===========================================================================
 register_module java
 provides_tool java java   # adopt an existing JDK (warm box or cloud base image)
+# Pre-approve the JVM build toolchain for Claude Code sessions.
+provides_perms java "Bash(./gradlew:*)" "Bash(gradle:*)" "Bash(java:*)" "Bash(javac:*)" "Bash(kotlin:*)" "Bash(kotlinc:*)" "Bash(mvn:*)"
 need_host cache.nixos.org      "prebuilt Temurin JDK from the Nix cache"
 want_host services.gradle.org  "Gradle distributions (wrapper download; 307-redirects to GitHub releases)"
 want_host github.com           "Gradle distribution redirect target (gradle/gradle-distributions releases)"

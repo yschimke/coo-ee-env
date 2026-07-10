@@ -8,6 +8,8 @@
 # ===========================================================================
 register_module go
 provides_tool go go CODEX_ENV_GO_VERSION
+# Pre-approve the Go toolchain for Claude Code sessions.
+provides_perms go "Bash(go:*)" "Bash(gofmt:*)"
 need_host cache.nixos.org     "prebuilt Go toolchain from the Nix cache"
 want_host proxy.golang.org    "Go module proxy"
 want_host sum.golang.org      "Go checksum database"

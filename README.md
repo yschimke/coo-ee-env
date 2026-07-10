@@ -570,15 +570,26 @@ manual `source`, no per-project boilerplate:
   `~/.zshrc` when zsh is in play) that sources the persisted env, so every
   future shell has the toolchain on `PATH`. The block is fenced by
   `# >>> coo.ee/env >>>` markers and added at most once.
-- **Claude Code SessionStart hook.** The script installs (or merges) a
-  `SessionStart` hook into the consuming project's `.claude/settings.json` that
-  re-runs the *same request* — `curl -fsSL https://env.coo.ee/<your,modules> | bash` —
-  so a fresh web session re-provisions automatically. It reconstructs the
-  request (modules + params) from the run itself, merges with `jq`/`python3`/
-  `node` so existing settings are preserved (and warns with the snippet if none
-  is available), and is idempotent — the hook is added at most once. The target
-  is `$CLAUDE_PROJECT_DIR`, falling back to the current directory when it's a
-  git repo.
+- **Claude Code SessionStart hook + permissions.** The script installs (or
+  merges) a `SessionStart` hook into the consuming project's
+  `.claude/settings.json` that re-runs the *same request* —
+  `curl -fsSL https://env.coo.ee/<your,modules> | bash` — so a fresh web session
+  re-provisions automatically. It reconstructs the request (modules + params)
+  from the run itself, merges with `jq`/`python3`/`node` so existing settings
+  are preserved (and warns with the snippet if none is available), and is
+  idempotent — the hook is added at most once. The target is
+  `$CLAUDE_PROJECT_DIR`, falling back to the current directory when it's a git
+  repo.
+
+  In the same write it seeds a **permission allowlist** (`permissions.allow`)
+  for the toolchain it just installed, so the agent isn't prompted the first
+  time it runs the obvious commands — `Bash(gradle:*)` / `Bash(java:*)` for
+  `java`, `Bash(npm:*)` / `Bash(npx:*)` for `node`, `Bash(adb:*)` for `android`,
+  and so on. A `tools[...]` request allowlists each binary it installs (so
+  `tools[ripgrep]` grants `Bash(rg:*)`). Rules are unioned into any existing
+  `permissions.allow` — never removing what's already there — and deduped, so
+  re-runs and hand-added rules coexist. Each module declares its own rules via
+  `provides_perms` in [`modules/`](./modules).
 
 This is generic plumbing baked into the bootstrapper, so **any** project that
 pulls in coo.ee/env gets it — nothing is specific to one repo. GitHub Actions
@@ -671,6 +682,11 @@ hook into the consuming project. The shape it writes (or merges) is:
     "SessionStart": [
       { "hooks": [ { "type": "command",
         "command": "curl -fsSL https://env.coo.ee/java,android | bash" } ] }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(./gradlew:*)", "Bash(adb:*)", "Bash(gradle:*)", "Bash(java:*)"
     ]
   }
 }

@@ -25,6 +25,8 @@
 # coo.ee:implies android-cli
 register_module android
 provides_tool android adb   # adopt a complete existing SDK (adb on PATH, or discovered on disk)
+# Pre-approve the Android SDK command-line tools for Claude Code sessions.
+provides_perms android "Bash(adb:*)" "Bash(sdkmanager:*)" "Bash(avdmanager:*)"
 need_host cache.nixos.org        "prebuilt androidenv dependencies from the Nix cache"
 want_host dl.google.com          "Android SDK components (platforms, build-tools, system images)"
 want_host maven.google.com       "AndroidX / AGP artifacts"

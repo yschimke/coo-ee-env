@@ -8,6 +8,8 @@
 # ===========================================================================
 register_module rust
 provides_tool rust cargo CODEX_ENV_RUST_VERSION
+# Pre-approve the Rust toolchain for Claude Code sessions.
+provides_perms rust "Bash(cargo:*)" "Bash(rustc:*)" "Bash(rustup:*)" "Bash(rustfmt:*)"
 need_host cache.nixos.org     "prebuilt Rust toolchain from the Nix cache"
 want_host static.crates.io    "crates.io package downloads"
 want_host index.crates.io     "crates.io sparse index"
