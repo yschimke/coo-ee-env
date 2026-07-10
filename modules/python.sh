@@ -8,6 +8,8 @@
 # ===========================================================================
 register_module python
 provides_tool python python3 CODEX_ENV_PYTHON_VERSION
+# Pre-approve the Python toolchain for Claude Code sessions.
+provides_perms python "Bash(python:*)" "Bash(python3:*)" "Bash(pip:*)" "Bash(pip3:*)" "Bash(pytest:*)"
 need_host cache.nixos.org          "prebuilt CPython from the Nix cache"
 want_host pypi.org                 "Python package index metadata"
 want_host files.pythonhosted.org   "Python package wheels / sdists"

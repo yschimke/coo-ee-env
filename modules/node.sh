@@ -9,6 +9,8 @@
 # ===========================================================================
 register_module node
 provides_tool node node CODEX_ENV_NODE_VERSION
+# Pre-approve the Node.js toolchain for Claude Code sessions.
+provides_perms node "Bash(node:*)" "Bash(npm:*)" "Bash(npx:*)" "Bash(pnpm:*)" "Bash(yarn:*)" "Bash(corepack:*)"
 need_host cache.nixos.org     "prebuilt Node.js from the Nix cache"
 want_host registry.npmjs.org  "npm package downloads"
 want_host nodejs.org          "Node.js release metadata / corepack"

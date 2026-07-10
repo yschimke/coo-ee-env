@@ -17,6 +17,8 @@
 # coo.ee:implies node
 register_module playwright
 provides_tool playwright playwright-cli   # adopt an existing CLI if present
+# Pre-approve the Playwright CLIs for Claude Code sessions.
+provides_perms playwright "Bash(playwright:*)" "Bash(playwright-cli:*)" "Bash(npx playwright:*)"
 need_host cache.nixos.org    "Playwright browsers (and their library closure) from the Nix cache"
 need_host registry.npmjs.org "the @playwright/cli npm package"
 want_host cdn.playwright.dev "Playwright-managed browser downloads (only with COOEE_PLAYWRIGHT_DOWNLOAD_BROWSERS=1)"

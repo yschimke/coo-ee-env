@@ -17,6 +17,8 @@
 # coo.ee:implies android
 register_module android-emulator
 provides_tool android-emulator emulator   # adopt an existing emulator binary
+# Pre-approve the emulator runtime for Claude Code sessions.
+provides_perms android-emulator "Bash(emulator:*)"
 need_host cache.nixos.org   "prebuilt emulator dependencies from the Nix cache"
 want_host dl.google.com     "Android emulator binaries and system images"
 

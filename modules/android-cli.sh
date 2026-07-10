@@ -21,6 +21,8 @@
 # coo.ee:hidden
 register_module android-cli
 provides_tool android-cli android   # adopt an Android CLI already on PATH
+# Pre-approve Google's agent-first `android` CLI for Claude Code sessions.
+provides_perms android-cli "Bash(android:*)"
 need_host dl.google.com "download of the Android CLI binary and its first-run payload"
 
 # Where the official install.sh puts it. We manage PATH via the env profile

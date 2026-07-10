@@ -10,6 +10,8 @@
 # ===========================================================================
 register_module ruby
 provides_tool ruby ruby CODEX_ENV_RUBY_VERSION
+# Pre-approve the Ruby toolchain for Claude Code sessions.
+provides_perms ruby "Bash(ruby:*)" "Bash(gem:*)" "Bash(bundle:*)" "Bash(bundler:*)" "Bash(rake:*)" "Bash(rspec:*)"
 need_host cache.nixos.org     "prebuilt Ruby from the Nix cache"
 want_host rubygems.org        "RubyGems gem downloads"
 want_host index.rubygems.org  "RubyGems compact index"
