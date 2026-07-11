@@ -5,10 +5,15 @@
 #               android integration over the same androidenv) — platform-tools
 #               (adb), cmdline-tools, the requested platforms + build-tools (and,
 #               when android-emulator is also requested, the emulator + system
-#               images). ANDROID_HOME / ANDROID_SDK_ROOT point at it, and
-#               (for a Gradle project rooted here) sdk.dir is pinned in
-#               local.properties so AGP finds the SDK even when the env vars
-#               don't reach the build.
+#               images). Because Nix builds it at a read-only, unguessable
+#               /nix/store path with the command-line tools under a versioned
+#               dir (no cmdline-tools/latest), a conventional symlink view is
+#               published at /opt/android-sdk (else ~/Android/Sdk) with a
+#               cmdline-tools/latest alias; ANDROID_HOME / ANDROID_SDK_ROOT point
+#               at THAT, and (for a Gradle project rooted here) sdk.dir is pinned
+#               in local.properties so AGP finds the SDK even when the env vars
+#               don't reach the build — and so agents probing conventional paths
+#               or running sdkmanager/avdmanager just work.
 #    params   : android[36] selects the platform API level(s) to install
 #               (e.g. android[30,36,wear-33]); bare `android` installs the
 #               default (API 36).
@@ -136,6 +141,65 @@ cooee_android_pin_sdk_dir() {  # cooee_android_pin_sdk_dir <sdk dir>
   fi
 }
 
+# Publish a conventional, agent-guessable view of the SDK. Nix's androidenv
+# builds the SDK at a read-only /nix/store/<hash>-androidsdk/… path and lays the
+# command-line tools under a VERSIONED dir (cmdline-tools/<ver>/), with no
+# `latest` alias — so `sdkmanager`/`avdmanager` don't resolve (every tool + our
+# own PATH expect cmdline-tools/latest/bin), and an agent can't guess the hashed
+# store path. Mirror the SDK's entries into a writable conventional location
+# (/opt/android-sdk, else ~/Android/Sdk — both are already in the discovery
+# probe list) with symlinks, add the missing cmdline-tools/latest alias, and echo
+# that path for ANDROID_HOME. So an agent that probes $HOME/Android/Sdk or
+# /opt/android-sdk, or runs cmdline-tools/latest/bin/sdkmanager, just works.
+# Idempotent. An SDK that already has cmdline-tools/latest and isn't in the store
+# (an image's own SDK, or a view from a prior run) is echoed unchanged.
+# Override the publish location with COOEE_ANDROID_SDK_LINK_DIR.
+cooee_android_publish_sdk() {  # cooee_android_publish_sdk <sdk dir> -> published dir
+  local sdk="$1"
+
+  # Already usable + guessable? Leave it.
+  if [[ "$sdk" != /nix/store/* && -x "$sdk/cmdline-tools/latest/bin/sdkmanager" ]]; then
+    printf '%s' "$sdk"; return 0
+  fi
+
+  local dest="${COOEE_ANDROID_SDK_LINK_DIR:-}"
+  if [[ -z "$dest" ]]; then
+    if [[ -w /opt ]]; then dest=/opt/android-sdk; else dest="$HOME/Android/Sdk"; fi
+  fi
+  # Never mirror a directory onto itself (e.g. re-provision adopting our view).
+  [[ "$sdk" == "$dest" ]] && { printf '%s' "$sdk"; return 0; }
+
+  if ! mkdir -p "$dest/cmdline-tools" 2>/dev/null; then
+    warn "android: couldn't create an SDK view at $dest; using $sdk directly (agents must rely on ANDROID_HOME)."
+    printf '%s' "$sdk"; return 0
+  fi
+
+  # Mirror every top-level SDK entry except cmdline-tools (handled below).
+  local e name
+  for e in "$sdk"/*; do
+    [[ -e "$e" ]] || continue
+    name=$(basename "$e")
+    [[ "$name" == cmdline-tools ]] && continue
+    ln -sfn "$e" "$dest/$name"
+  done
+
+  # cmdline-tools/latest -> the tools dir that actually holds sdkmanager (prefer
+  # an existing `latest`, else the sole versioned dir Nix laid down, e.g. 21.0).
+  local clt="$sdk/cmdline-tools/latest" sm
+  if [[ ! -x "$clt/bin/sdkmanager" ]]; then
+    sm=$(find "$sdk/cmdline-tools" -maxdepth 3 -type f -path '*/bin/sdkmanager' 2>/dev/null | head -1)
+    clt=${sm:+$(dirname "$(dirname "$sm")")}
+  fi
+  [[ -n "$clt" && -x "$clt/bin/sdkmanager" ]] && ln -sfn "$clt" "$dest/cmdline-tools/latest"
+
+  # Expose the other conventional guess path too (Android Studio's Linux default).
+  if [[ "$dest" == /opt/android-sdk && -d "$HOME" && "$HOME/Android/Sdk" != "$dest" ]]; then
+    mkdir -p "$HOME/Android" 2>/dev/null && ln -sfn "$dest" "$HOME/Android/Sdk"
+  fi
+
+  printf '%s' "$dest"
+}
+
 module_android() {
   # Requested platform API levels come from the params (android[30,36,wear-33]);
   # default to COOEE_ANDROID_DEFAULT_PLATFORM (API 36) when none are given.
@@ -174,17 +238,21 @@ module_android() {
       [[ -d "$sdk/platforms/android-$l" ]] || missing+=("$l")
     done
     if (( ${#missing[@]} == 0 )); then
-      add_env ANDROID_HOME "$sdk"
-      add_env ANDROID_SDK_ROOT "$sdk"
+      # Publish a conventional, guessable view (adds cmdline-tools/latest; no-op
+      # for an SDK that already has it) and point everything at that.
+      local home; home=$(cooee_android_publish_sdk "$sdk")
+      [[ "$home" != "$sdk" ]] && ok "android: published a conventional SDK view at $home -> $sdk."
+      add_env ANDROID_HOME "$home"
+      add_env ANDROID_SDK_ROOT "$home"
       # The SDK may have been on disk with nothing on PATH (the image exported
       # neither the vars nor the tools). Wire platform-tools + cmdline-tools in so
       # adb/sdkmanager resolve here and in every later shell — the missing piece
       # that had the agent complaining about ANDROID_HOME.
       command -v adb >/dev/null 2>&1 \
-        || add_env PATH "$sdk/platform-tools:$sdk/cmdline-tools/latest/bin:$PATH"
-      cooee_android_pin_sdk_dir "$sdk"
-      (( ${#params[@]} )) && warn "requested Android platforms: ${params[*]} (already present in $sdk)."
-      ok "android: adopted complete SDK at $sdk ($(adb --version 2>/dev/null | head -1 || echo adb))."
+        || add_env PATH "$home/platform-tools:$home/cmdline-tools/latest/bin:$PATH"
+      cooee_android_pin_sdk_dir "$home"
+      (( ${#params[@]} )) && warn "requested Android platforms: ${params[*]} (already present in $home)."
+      ok "android: adopted complete SDK at $home ($(adb --version 2>/dev/null | head -1 || echo adb))."
       return 0
     fi
     warn "android: existing SDK at $sdk lacks platform(s): ${missing[*]} — installing a complete SDK via Nix."
@@ -226,17 +294,23 @@ module_android() {
   sdk="${COOEE_ANDROID_SDK_DIR:-}"
   [[ -n "$sdk" && -d "$sdk" ]] || die "android: backend did not return a valid SDK dir (got: '${sdk}')."
 
-  add_env ANDROID_HOME "$sdk"
-  add_env ANDROID_SDK_ROOT "$sdk"
-  cooee_android_pin_sdk_dir "$sdk"
+  # Publish a conventional, guessable view of the read-only store SDK (symlinks +
+  # a cmdline-tools/latest alias) and point ANDROID_HOME / sdk.dir / PATH at it,
+  # so agents that probe $HOME/Android/Sdk or /opt/android-sdk — or run
+  # cmdline-tools/latest/bin/sdkmanager — find a working SDK.
+  local home; home=$(cooee_android_publish_sdk "$sdk")
+  [[ "$home" != "$sdk" ]] && ok "android: published a conventional SDK view at $home -> $sdk (cmdline-tools/latest + guessable path)."
+  add_env ANDROID_HOME "$home"
+  add_env ANDROID_SDK_ROOT "$home"
+  cooee_android_pin_sdk_dir "$home"
 
   # Put the SDK's tools on PATH (and persist it) so adb / sdkmanager / emulator
   # resolve in this and every later shell.
-  local bins="$sdk/platform-tools:$sdk/cmdline-tools/latest/bin"
-  (( want_emu )) && bins+=":$sdk/emulator"
+  local bins="$home/platform-tools:$home/cmdline-tools/latest/bin"
+  (( want_emu )) && bins+=":$home/emulator"
   add_env PATH "$bins:$PATH"
 
-  command -v adb >/dev/null 2>&1 || die "android: adb not on PATH after install ($sdk)."
-  ok "android SDK ready at $sdk: $(adb --version 2>/dev/null | head -1 || echo adb)"
-  warn "platforms ${all_levels[*]} + build-tools ${COOEE_ANDROID_BUILD_TOOLS} installed (ANDROID_HOME=$sdk)."
+  command -v adb >/dev/null 2>&1 || die "android: adb not on PATH after install ($home)."
+  ok "android SDK ready at $home: $(adb --version 2>/dev/null | head -1 || echo adb)"
+  warn "platforms ${all_levels[*]} + build-tools ${COOEE_ANDROID_BUILD_TOOLS} installed (ANDROID_HOME=$home)."
 }
