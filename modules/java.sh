@@ -86,6 +86,45 @@ cooee_jdk_home_for_major() {
   return 1
 }
 
+# The store path (JAVA_HOME) of a Nix-installed Temurin JDK of the given major,
+# resolved from the flake ref. Needed because a JDK that isn't the profile's
+# priority-winner has no bin/java in ~/.nix-profile/bin, so cooee_jdk_home_for_major
+# (which scans PATH + on-disk locations) can't see it. Empty (rc 1) on failure.
+cooee_nix_jdk_home() {  # <major>
+  local major="$1" p
+  command -v nix >/dev/null 2>&1 || return 1
+  p=$(nix path-info "nixpkgs#temurin-bin-$major" 2>/dev/null | head -1)
+  [[ -n "$p" && -x "$p/bin/java" ]] && { printf '%s' "$p"; return 0; }
+  return 1
+}
+
+# JAVA_HOME of an installed JDK of the given major, from anywhere: an on-disk /
+# base-image JDK first (cooee_jdk_home_for_major), else the Nix store. Empty (rc1).
+cooee_jdk_home_any() {  # <major>
+  local major="$1" h
+  h=$(cooee_jdk_home_for_major "$major") && [[ -n "$h" ]] && { printf '%s' "$h"; return 0; }
+  cooee_nix_jdk_home "$major"
+}
+
+# Symlink a JDK into /usr/lib/jvm — a Gradle "Common Linux Location" for toolchain
+# auto-detection, and where agents look for a JDK by major — so a Nix JDK at an
+# unguessable /nix/store path (and the non-active majors, absent from PATH) is
+# discoverable. A JDK already under /usr/lib/jvm (a base image's own) is left as
+# is. Best-effort: warns and skips if the dir isn't writable (needs root).
+# Override the link dir with COOEE_JVM_LINK_DIR.
+cooee_link_jdk_typical() {  # <java_home> <major>
+  local home="$1" major="$2"
+  [[ -x "$home/bin/java" ]] || return 0
+  local jvmdir="${COOEE_JVM_LINK_DIR:-/usr/lib/jvm}"
+  # Already in the conventional dir (base-image JDK)? Nothing to do.
+  case "$home/" in "$jvmdir"/*) return 0 ;; esac
+  local link="$jvmdir/temurin-$major"
+  [[ "$(readlink -f "$link" 2>/dev/null)" == "$(readlink -f "$home" 2>/dev/null)" ]] && return 0
+  mkdir -p "$jvmdir" 2>/dev/null || { warn "java: can't create $jvmdir; JDK $major not linked."; return 0; }
+  [[ -w "$jvmdir" ]] || { warn "java: $jvmdir not writable; JDK $major not linked (needs root)."; return 0; }
+  ln -sfn "$home" "$link" && ok "java: linked $link -> $home (Gradle toolchain auto-detection + guessable path)."
+}
+
 module_java() {
   # Requested JDK majors come from the request params (java[17,21]).
   local -a versions=("$@")
@@ -148,6 +187,19 @@ module_java() {
     jhome="$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")"
   fi
   add_env JAVA_HOME "$jhome"
+
+  # Link every provisioned JDK into the conventional /usr/lib/jvm so Gradle
+  # toolchain auto-detection (a "Common Linux Location") and agents find each
+  # major by a guessable path — a Nix JDK otherwise lives only at an unguessable
+  # /nix/store path, and the non-active majors aren't even on PATH. Best-effort.
+  local lv lh
+  for lv in "${versions[@]}"; do
+    if lh=$(cooee_jdk_home_any "$lv") && [[ -n "$lh" ]]; then
+      cooee_link_jdk_typical "$lh" "$lv"
+    else
+      warn "java: couldn't locate JDK $lv on disk to link into /usr/lib/jvm; skipping."
+    fi
+  done
 
   # Cloud fixes (applied once — each sets JAVA_TOOL_OPTIONS, which every JVM
   # reads, so a single call covers all the JDKs): a Nix JDK ignores the system
