@@ -240,14 +240,23 @@ jobs:
           set -euo pipefail
           source ~/.config/coo-ee/env.sh
           echo "ANDROID_HOME=$ANDROID_HOME"
-          case "$ANDROID_HOME" in
-            /nix/store/*) echo "OK: ANDROID_HOME points into the Nix store";;
-            *) echo "FAIL: ANDROID_HOME is $ANDROID_HOME, not a Nix store path"; exit 1;;
-          esac
+          # ANDROID_HOME points at the published conventional SDK view (adds
+          # cmdline-tools/latest + a guessable path); its tools symlink into the
+          # Nix-built SDK. Assert the view's adb resolves INTO the Nix store —
+          # proving it's backed by the devenv build, not some other SDK.
           test -x "$ANDROID_HOME/platform-tools/adb" \
-            || { echo "FAIL: adb missing under the built SDK"; exit 1; }
+            || { echo "FAIL: adb missing under the SDK view"; exit 1; }
+          adb_real=$(readlink -f "$ANDROID_HOME/platform-tools/adb")
+          case "$adb_real" in
+            /nix/store/*) echo "OK: adb resolves into the Nix-built SDK ($adb_real)";;
+            *) echo "FAIL: adb under $ANDROID_HOME does not resolve into the Nix store (got: $adb_real)"; exit 1;;
+          esac
+          # The whole point of the view: cmdline-tools/latest (absent from the
+          # Nix layout) must resolve so sdkmanager/avdmanager work.
+          test -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            || { echo "FAIL: cmdline-tools/latest/bin/sdkmanager not resolvable under $ANDROID_HOME"; exit 1; }
           adb --version
-          echo "OK: adb resolves from the devenv-built Android SDK"
+          echo "OK: adb + sdkmanager resolve from the devenv-built Android SDK view"
 
       - name: Upload the install log on failure
         if: failure()
