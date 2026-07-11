@@ -124,18 +124,56 @@ ${end}"
   (( updated )) || warn "activation: could not update any shell rc file."
 }
 
-# Install/merge a SessionStart hook AND the toolchain's permission allowlist
-# into the consuming project's .claude/settings.json, so future Claude Code
-# sessions auto-provision and aren't prompted for the tools this environment
-# just installed (e.g. `Bash(gradle:*)` for java — see provides_perms). Uses
-# jq/python3/node to merge an existing file; writes a fresh one otherwise; warns
-# (with the snippet) if a file exists but no JSON tool is available.
-cooee_install_session_hook() {
-  local dir
-  if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then dir="$CLAUDE_PROJECT_DIR"
-  elif [[ -d "$PWD/.git" || -d "$PWD/.claude" ]]; then dir="$PWD"
-  else warn "activation: no project dir (CLAUDE_PROJECT_DIR unset, $PWD isn't a repo) — skipping SessionStart hook."; return 0; fi
+# Enumerate the project checkouts to configure. A cloud session often has
+# several repos checked out side by side under the workspace root (the parent of
+# the project dir), each with its own .claude/settings.json. Writing the hook +
+# permissions into only CLAUDE_PROJECT_DIR leaves the other checkouts
+# un-provisioned, so a session that later opens one of them re-prompts for the
+# toolchain this environment installed and re-runs setup. So we target the
+# primary project dir AND every sibling git checkout, deduped. Override the
+# search root with COOEE_CHECKOUTS_DIR.
+cooee_session_hook_targets() {
+  local primary=""
+  if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then primary="$CLAUDE_PROJECT_DIR"
+  elif [[ -d "$PWD/.git" || -d "$PWD/.claude" ]]; then primary="$PWD"; fi
 
+  local root; root="$(cooee_workspace_root)"
+  {
+    [[ -n "$primary" ]] && printf '%s\n' "$primary"
+    # Sibling checkouts: any dir holding a .git marker (a directory for a normal
+    # clone, a file for a worktree/submodule) OR an existing .claude dir (a repo
+    # someone has already configured). maxdepth 2 catches the workspace root
+    # itself ($root/.git) and side-by-side checkouts ($root/<repo>/.git).
+    [[ -d "$root" ]] && find "$root" -mindepth 1 -maxdepth 2 \
+      \( -name .git -o -name .claude \) 2>/dev/null \
+      | sed -e 's#/\.git$##' -e 's#/\.claude$##'
+  } | LC_ALL=C sort -u
+}
+
+# Install/merge a SessionStart hook AND the toolchain's permission allowlist
+# into EVERY project checkout (see cooee_session_hook_targets), so each repo a
+# future Claude Code session might open auto-provisions and isn't prompted for
+# the tools this environment installed (e.g. `Bash(gradle:*)` for java — see
+# provides_perms). Per checkout it merges intelligently: existing keys and
+# permission rules are preserved and unioned, never clobbered.
+cooee_install_session_hook() {
+  local -a targets=()
+  mapfile -t targets < <(cooee_session_hook_targets)
+  if (( ! ${#targets[@]} )); then
+    warn "activation: no project dir (CLAUDE_PROJECT_DIR unset, $PWD isn't a repo) — skipping SessionStart hook."
+    return 0
+  fi
+  local d
+  for d in "${targets[@]}"; do
+    cooee_install_session_hook_one "$d"
+  done
+}
+
+# Install/merge the hook + permissions into ONE checkout's .claude/settings.json.
+# Uses jq/python3/node to merge an existing file; writes a fresh one otherwise;
+# warns (with the snippet) if a file exists but no JSON tool is available.
+cooee_install_session_hook_one() {
+  local dir="$1"
   local seg cmd settings="$dir/.claude/settings.json" perms_json
   seg="$(cooee_request_segment)"
   perms_json="$(cooee_perms_json)"
@@ -399,6 +437,22 @@ cooee_jvm_utf8_opts() {
 cooee_project_dir() {
   if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then printf '%s' "$CLAUDE_PROJECT_DIR"
   else printf '%s' "$PWD"; fi
+}
+
+# The workspace root that holds the side-by-side project checkouts — the parent
+# of the project dir. Overridable with COOEE_CHECKOUTS_DIR. Never roots a scan at
+# a broad system directory: if the parent is one of those, fall back to the
+# project dir itself so a single-repo layout still resolves to something sane.
+# Shared by the multi-checkout Gradle wrapper seeding (java.sh) and the
+# SessionStart-hook install (cooee_session_hook_targets).
+cooee_workspace_root() {
+  local root="${COOEE_CHECKOUTS_DIR:-}"
+  if [[ -z "$root" ]]; then
+    local dir; dir="$(cooee_project_dir)"
+    root="$(dirname "$dir")"
+    case "$root" in ""|.|/|/home|/Users|/root|/usr|/var|/opt|/tmp) root="$dir" ;; esac
+  fi
+  printf '%s' "$root"
 }
 
 # False when dependency prefetch is opted out (COOEE_NO_DEPS=1). A module's

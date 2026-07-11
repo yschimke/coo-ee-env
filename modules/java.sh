@@ -178,14 +178,7 @@ cooee_seed_gradle_wrapper() {
 # COOEE_CHECKOUTS_DIR. Bounded depth keeps the scan cheap and still catches both a
 # repo-root wrapper and a nested build's wrapper (e.g. <repo>/android/gradle/…).
 cooee_gradle_wrapper_props() {
-  local root="${COOEE_CHECKOUTS_DIR:-}"
-  if [[ -z "$root" ]]; then
-    local dir; dir=$(cooee_project_dir)
-    root=$(dirname "$dir")   # workspace root = the parent holding the checkouts
-    # Never root the scan at a broad system directory — fall back to the project
-    # dir itself, so a single-repo layout still gets its own wrapper seeded.
-    case "$root" in ""|.|/|/home|/Users|/root|/usr|/var|/opt|/tmp) root="$dir" ;; esac
-  fi
+  local root; root="$(cooee_workspace_root)"   # parent holding the side-by-side checkouts
   [[ -d "$root" ]] || return 0
   find "$root" -maxdepth 5 -type f \
     -path '*/gradle/wrapper/gradle-wrapper.properties' 2>/dev/null | sort
