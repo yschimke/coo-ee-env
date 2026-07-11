@@ -2,10 +2,12 @@
 # ===========================================================================
 #  module: java
 #    software : Temurin JDK (via Nix), JAVA_HOME, JDK TLS fix
-#    params   : java[17,21] picks the JDK majors. With no param, defaults to the
-#               JDK the project pins for its Gradle build (toolchainVersion in
-#               gradle/gradle-daemon-jvm.properties), else 21 — or 17 + 21 when
-#               android is also being installed.
+#    params   : java[17,21] picks the JDK majors. With no param, defaults to
+#               BOTH 17 and 21 (the LTS majors this fleet builds against — AGP /
+#               Gradle still pin 17 while app code targets 21), plus any distinct
+#               toolchainVersion the project pins in gradle/gradle-daemon-jvm.properties.
+#               Missing majors are installed via Nix; ones the base image already
+#               ships are adopted, so "17 + 21" is cheap when one is present.
 #    hosts    : cache.nixos.org (install)
 #             : Gradle / Maven / toolchain registries (build; used by the
 #               best-effort dependency prefetch, advisory — opt out COOEE_NO_DEPS=1)
@@ -47,76 +49,118 @@ cooee_java_project_version() {
   sed -n 's/^[[:space:]]*toolchainVersion[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$props" | head -1
 }
 
+# The default JDK major set when the request names none: BOTH LTS majors this
+# fleet builds against (17 and 21), plus any distinct toolchain major the project
+# pins for its Gradle daemon. One per line, unsorted (the caller canonicalizes).
+cooee_java_default_versions() {
+  local detected; detected=$(cooee_java_project_version)
+  printf '17\n21\n'
+  [[ -n "$detected" ]] && printf '%s\n' "$detected"
+  return 0   # the trailing [[ ]] must not leak a non-zero rc (pipefail-safe)
+}
+
+# The feature (major) version of the JDK at the given home, e.g. 17. Prefers the
+# `release` file (no JVM start); falls back to `java -version`. Empty on failure.
+cooee_jdk_major() {
+  local home="$1" v=""
+  [[ -x "$home/bin/java" ]] || return 0
+  [[ -r "$home/release" ]] && \
+    v=$(sed -n 's/^JAVA_VERSION="\([0-9][0-9]*\).*/\1/p' "$home/release" | head -1)
+  [[ -n "$v" ]] || v=$("$home/bin/java" -version 2>&1 | sed -n 's/.*version "\([0-9][0-9]*\).*/\1/p' | head -1)
+  printf '%s' "$v"
+}
+
+# Echo the JAVA_HOME of an already-installed JDK of the given feature major, or
+# nothing (rc 1). Checks the active `java`, then the common toolchain locations
+# Gradle also scans — so we don't reinstall a JDK the base image already ships.
+cooee_jdk_home_for_major() {
+  local major="$1" home cand
+  if command -v java >/dev/null 2>&1; then
+    home="$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")"
+    [[ "$(cooee_jdk_major "$home")" == "$major" ]] && { printf '%s' "$home"; return 0; }
+  fi
+  for cand in /usr/lib/jvm/* /opt/jdk* /opt/*jdk* "$HOME"/.sdkman/candidates/java/*; do
+    [[ -x "$cand/bin/java" ]] || continue
+    [[ "$(cooee_jdk_major "$cand")" == "$major" ]] && { printf '%s' "$cand"; return 0; }
+  done
+  return 1
+}
+
 module_java() {
   # Requested JDK majors come from the request params (java[17,21]).
   local -a versions=("$@")
 
-  # Already provisioned (warm box) or provided by the cloud base image? Adopt
-  # the existing JDK — set JAVA_HOME from it and skip the redundant Nix install.
-  # A ready JDK is the right answer regardless of the requested/detected version.
-  if [[ "${COOEE_FORCE:-0}" != 1 ]] && command -v java >/dev/null 2>&1; then
-    add_env JAVA_HOME "$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")"
-    cooee_trust_cas_in_jdk "$JAVA_HOME"
-    cooee_jvm_proxy_opts
-    cooee_jvm_utf8_opts
-    ok "java: adopted existing $(java -version 2>&1 | head -1) (JAVA_HOME=$JAVA_HOME)."
-    cooee_seed_gradle_wrapper
-    cooee_prefetch_gradle
-    return 0
+  # With no explicit param, default to BOTH LTS majors this fleet builds against
+  # (17 and 21) plus any distinct toolchain major the project pins — a box that
+  # ships only one of them makes half the builds fail. See cooee_java_default_versions.
+  if (( ! ${#versions[@]} )); then
+    mapfile -t versions < <(cooee_java_default_versions)
+    log "java: no JDK requested; defaulting to 17 + 21 (plus any project-pinned toolchain)."
   fi
 
-  # With no explicit param, pick a default. Prefer the JDK the project itself
-  # pins for its Gradle build (gradle/gradle-daemon-jvm.properties), so the env
-  # matches what `./gradlew` runs on without repeating the version in the URL.
-  # Otherwise default to 21 (the current LTS most repos here run on) — or 17 + 21
-  # when android is also being installed, since the Android toolchain (AGP/Gradle)
-  # still pins to 17 while app code targets 21. Each major maps to a
-  # nixpkgs#temurin-bin-<major>.
-  if (( ! ${#versions[@]} )); then
-    local detected; detected=$(cooee_java_project_version)
-    if [[ -n "$detected" ]]; then
-      versions=("$detected")
-      log "java: defaulting to JDK ${detected} pinned by the project's Gradle daemon (gradle/gradle-daemon-jvm.properties)."
-    elif cooee_module_requested android; then
-      versions=(17 21)
-    else
-      versions=(21)
-    fi
-  fi
+  # Canonicalize: ascending + unique, so the lowest major stays first (it owns
+  # java/javac + JAVA_HOME) and a project pinning 17/21 doesn't duplicate.
+  mapfile -t versions < <(printf '%s\n' "${versions[@]}" | sort -un)
 
   # Let the backend decide which of the requested majors it can install: the nix
   # backend keeps them all (each gets its own --priority below), the devenv
   # backend keeps only the first (one buildEnv can't hold two colliding JDKs).
   mapfile -t versions < <(cooee_backend_jdks "${versions[@]}")
 
-  log "Installing Temurin JDK (${versions[*]}) via Nix..."
-  # Multiple JDKs ship colliding files (e.g. lib/modules), so a single profile
-  # can't hold them at the same priority — `nix profile add` aborts. Give each a
-  # distinct priority (lower wins), ascending from 5 in request order. Params are
-  # canonicalized ascending, so the lowest JDK owns the java/javac symlinks (the
-  # toolchain most repos here pin to) and the rest stay discoverable by Gradle
-  # toolchain resolution.
-  local v prio=5
+  # Ensure every required major is present: adopt one already on the box (the
+  # cloud base image, or a prior run) and install only the MISSING majors via
+  # Nix. Detecting what's already there avoids a redundant ~200MB Temurin fetch
+  # per JDK — which is what makes "default to 17 + 21" cheap when the image
+  # already ships one. COOEE_FORCE=1 reinstalls everything via Nix. (nix_ensure is
+  # itself idempotent, so a Nix JDK the dir-scan can't see is still not re-fetched.)
+  local -a to_install=()
+  local v home
   for v in "${versions[@]}"; do
-    nix_ensure "temurin-bin-$v" "nixpkgs#temurin-bin-$v" --accept-flake-config --priority "$prio"
-    prio=$((prio + 1))
+    if [[ "${COOEE_FORCE:-0}" != 1 ]] && home=$(cooee_jdk_home_for_major "$v") && [[ -n "$home" ]]; then
+      ok "java: JDK $v already present ($home); skipping install."
+    else
+      to_install+=("$v")
+    fi
   done
 
-  # JAVA_HOME -> the active (priority-winning) JDK, i.e. the lowest requested.
-  command -v java >/dev/null 2>&1 || die "java not on PATH after install."
-  add_env JAVA_HOME "$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")"
+  if (( ${#to_install[@]} )); then
+    log "Installing missing Temurin JDK(s) (${to_install[*]}) via Nix..."
+    # Multiple JDKs ship colliding files (e.g. lib/modules), so a single profile
+    # can't hold them at the same priority — `nix profile add` aborts. Give each a
+    # distinct priority (lower wins), ascending from 5 in install order (ascending
+    # by major), so the lowest JDK owns the java/javac symlinks and the rest stay
+    # discoverable by Gradle toolchain resolution.
+    local prio=5
+    for v in "${to_install[@]}"; do
+      nix_ensure "temurin-bin-$v" "nixpkgs#temurin-bin-$v" --accept-flake-config --priority "$prio"
+      prio=$((prio + 1))
+    done
+  else
+    ok "java: all required JDK(s) (${versions[*]}) already present; nothing to install."
+  fi
 
-  # Cloud fix: a Nix JDK ignores the system trust store, so teach it about the
-  # sandbox proxy CA now (otherwise Gradle HTTPS fails with PKIX errors).
+  # JAVA_HOME -> the lowest required major (the toolchain most repos pin to),
+  # resolved whether it came from the base image or Nix. Fall back to whatever
+  # `java` resolves to if the lowest can't be located (shouldn't happen).
+  local jhome; jhome=$(cooee_jdk_home_for_major "${versions[0]}") || jhome=""
+  if [[ -z "$jhome" ]]; then
+    command -v java >/dev/null 2>&1 || die "java not on PATH after install."
+    jhome="$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")"
+  fi
+  add_env JAVA_HOME "$jhome"
+
+  # Cloud fixes (applied once — each sets JAVA_TOOL_OPTIONS, which every JVM
+  # reads, so a single call covers all the JDKs): a Nix JDK ignores the system
+  # trust store, so teach the shared truststore the sandbox proxy CA (else Gradle
+  # HTTPS fails with PKIX errors); route the JVM through the sandbox proxy (it
+  # ignores http(s)_proxy) so the Gradle wrapper/daemon can reach
+  # services.gradle.org et al.; and force a UTF-8 locale + JVM file encoding so
+  # Gradle report paths with non-ASCII chars don't die under a C locale.
   cooee_trust_cas_in_jdk "$JAVA_HOME"
-  # Cloud fix: route the JVM through the sandbox proxy (it ignores http(s)_proxy),
-  # so the Gradle wrapper/daemon can actually reach services.gradle.org et al.
   cooee_jvm_proxy_opts
-  # Cloud fix: force a UTF-8 locale + JVM file encoding so Gradle report paths
-  # with non-ASCII chars don't die with "unmappable character" under a C locale.
   cooee_jvm_utf8_opts
 
-  ok "java ready: $(java -version 2>&1 | head -1)"
+  ok "java ready: $("$JAVA_HOME/bin/java" -version 2>&1 | head -1) (toolchains: ${versions[*]})"
 
   cooee_seed_gradle_wrapper
   cooee_prefetch_gradle
