@@ -132,14 +132,20 @@ ${end}"
 # toolchain this environment installed and re-runs setup. So we target the
 # primary project dir AND every sibling git checkout, deduped. Override the
 # search root with COOEE_CHECKOUTS_DIR.
+#
+# Never targets $HOME itself. On providers that check the repo out directly
+# under the home dir, the workspace root resolves to $HOME, whose `.claude` is
+# the user's GLOBAL config (credentials, projects) — not a per-project settings
+# file. Matching it would inject a project SessionStart hook into the global
+# config, so $HOME is filtered from the results.
 cooee_session_hook_targets() {
   local primary=""
   if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then primary="$CLAUDE_PROJECT_DIR"
   elif [[ -d "$PWD/.git" || -d "$PWD/.claude" ]]; then primary="$PWD"; fi
 
-  local root; root="$(cooee_workspace_root)"
+  local root home; root="$(cooee_workspace_root)"; home="${HOME%/}"
   {
-    [[ -n "$primary" ]] && printf '%s\n' "$primary"
+    [[ -n "$primary" ]] && printf '%s\n' "${primary%/}"
     # Sibling checkouts: any dir holding a .git marker (a directory for a normal
     # clone, a file for a worktree/submodule) OR an existing .claude dir (a repo
     # someone has already configured). maxdepth 2 catches the workspace root
@@ -147,7 +153,11 @@ cooee_session_hook_targets() {
     [[ -d "$root" ]] && find "$root" -mindepth 1 -maxdepth 2 \
       \( -name .git -o -name .claude \) 2>/dev/null \
       | sed -e 's#/\.git$##' -e 's#/\.claude$##'
-  } | LC_ALL=C sort -u
+  } | LC_ALL=C sort -u | while IFS= read -r d; do
+    # Drop the home dir: its .claude is the global config, not a project.
+    [[ -n "$home" && "${d%/}" == "$home" ]] && continue
+    printf '%s\n' "$d"
+  done
 }
 
 # Install/merge a SessionStart hook AND the toolchain's permission allowlist

@@ -133,6 +133,34 @@ test("each sibling checkout merges with its OWN existing settings, without cross
   assert.ok(!sb.permissions.allow.includes("Bash(only-a:*)"), "a's rule does not leak into b");
 });
 
+test("never targets the home dir itself — its ~/.claude is the global config, not a project", () => {
+  // Provider layout where the repo is checked out directly under $HOME, and a
+  // global ~/.claude exists. The workspace root resolves to $HOME, whose
+  // .claude must NOT be treated as a project checkout.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "cooee-home-"));
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true }); // global config
+  fs.writeFileSync(
+    path.join(home, ".claude", "settings.json"),
+    JSON.stringify({ permissions: { allow: ["Bash(global:*)"] } }),
+  );
+  const repo = path.join(home, "repo");
+  fs.mkdirSync(path.join(repo, ".git"), { recursive: true });
+  const targets = evalRendered("java", "cooee_session_hook_targets", {
+    HOME: home,
+    COOEE_CHECKOUTS_DIR: home,
+    CLAUDE_PROJECT_DIR: repo,
+  })
+    .split("\n")
+    .filter(Boolean);
+  assert.ok(targets.includes(repo), "the repo checkout is a target");
+  assert.ok(!targets.includes(home), "the home dir itself is NOT a target");
+  // And the global config is left untouched.
+  const g = JSON.parse(
+    fs.readFileSync(path.join(home, ".claude", "settings.json"), "utf8"),
+  );
+  assert.deepEqual(g, { permissions: { allow: ["Bash(global:*)"] } });
+});
+
 test("setup preserves existing settings and unions permissions, without duplicating the hook", () => {
   const proj = fs.mkdtempSync(path.join(os.tmpdir(), "cooee-proj-"));
   fs.mkdirSync(path.join(proj, ".claude"), { recursive: true });
