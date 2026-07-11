@@ -16,7 +16,7 @@ need_host objects.githubusercontent.com  "GitHub release assets for flake inputs
 # back to cache.nixos.org / github. The apex is concrete; the CDN + cache paths
 # live on subdomains, hence the wildcard (which can't be probed, so it's a want).
 want_host flakehub.com                   "Determinate FlakeHub — flake registry + binary cache"
-want_host '*.flakehub.com'               "FlakeHub CDN / cache subdomains (flake tarballs + cached store paths)"
+want_host "*.flakehub.com"               "FlakeHub CDN / cache subdomains (flake tarballs + cached store paths)"
 # The coo.ee/env service itself (or your COOEE_BASE_URL mirror). Not needed to
 # install Nix, but the curl|bash bootstrap and the auto-activation / SessionStart
 # hook re-fetch it on later runs — so it must be allowed once egress is locked
