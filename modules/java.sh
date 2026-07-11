@@ -184,14 +184,49 @@ cooee_gradle_wrapper_props() {
     -path '*/gradle/wrapper/gradle-wrapper.properties' 2>/dev/null | sort
 }
 
-# distributionUrl from a gradle-wrapper.properties, unescaping the properties-file
+# A property value from a gradle-wrapper.properties, unescaping the properties-file
 # '\:' -> ':' and stripping any trailing CR. Empty output when absent.
-cooee_gradle_distribution_url() {
-  local props="$1" url
+cooee_gradle_prop() {
+  local props="$1" key="$2" v
   [[ -f "$props" ]] || return 0
-  url=$(sed -n 's/^[[:space:]]*distributionUrl[[:space:]]*=[[:space:]]*//p' "$props" | head -1)
-  url="${url%$'\r'}"; url="${url//\\:/:}"
-  printf '%s' "$url"
+  v=$(sed -n "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*//p" "$props" | head -1)
+  v="${v%$'\r'}"; v="${v//\\:/:}"
+  printf '%s' "$v"
+}
+
+# distributionUrl from a gradle-wrapper.properties (see cooee_gradle_prop).
+cooee_gradle_distribution_url() { cooee_gradle_prop "$1" distributionUrl; }
+
+# Resolve a wrapper store-base keyword (GRADLE_USER_HOME | PROJECT) to a path.
+# PROJECT is the build root (the dir holding gradle/wrapper/…); the default and
+# any unknown value map to GRADLE_USER_HOME (~/.gradle).
+cooee_gradle_store_base() {
+  local base="$1" repo="$2"
+  case "$base" in
+    PROJECT) printf '%s' "$repo" ;;
+    *)       printf '%s' "${GRADLE_USER_HOME:-$HOME/.gradle}" ;;
+  esac
+}
+
+# The wrapper cache dir where Gradle looks for a distribution's downloaded zip:
+# <store>/<zipStorePath>/<distname>/<hash>, hash = base36(md5(url)). The zip AND
+# the `.ok` marker Gradle writes both live in the zip store (zipStoreBase /
+# zipStorePath), not the distribution dir (distributionBase / distributionPath) —
+# so honor those rather than assuming the GRADLE_USER_HOME / wrapper/dists
+# defaults. A wrapper pinning zipStoreBase=PROJECT or a custom zipStorePath would
+# otherwise get the seed placed where Gradle never looks, and it would still fall
+# back to the blocked services.gradle.org download. Args: props, url, repo (the
+# build root holding gradle/wrapper/…). Empty output + rc 1 if the hash can't be
+# computed (no md5 tool).
+cooee_gradle_zip_dest() {
+  local props="$1" url="$2" repo="$3"
+  local zipname="${url##*/}" distname hash zbase zpath store
+  distname="${zipname%.zip}"
+  hash=$(cooee_gradle_wrapper_hash "$url") || return 1
+  zbase=$(cooee_gradle_prop "$props" zipStoreBase); zbase="${zbase:-GRADLE_USER_HOME}"
+  zpath=$(cooee_gradle_prop "$props" zipStorePath); zpath="${zpath:-wrapper/dists}"
+  store=$(cooee_gradle_store_base "$zbase" "$repo")
+  printf '%s/%s/%s/%s' "$store" "$zpath" "$distname" "$hash"
 }
 
 # Seed one wrapper's distribution (props file + its already-extracted distributionUrl)
@@ -212,11 +247,10 @@ cooee_seed_one_gradle_wrapper() {
   local ver="${distname#gradle-}"            # 9.6.1-bin
   ver="${ver%-bin}"; ver="${ver%-all}"       # 9.6.1
 
-  # Where the wrapper looks: <dists>/<distname>/<hash>/, hash = base36(md5(url)).
-  # GRADLE_USER_HOME defaults to ~/.gradle; distributionPath to wrapper/dists.
-  local hash; hash=$(cooee_gradle_wrapper_hash "$url") \
+  # The wrapper cache dir where Gradle looks for the downloaded zip, honoring the
+  # wrapper's zipStoreBase/zipStorePath (see cooee_gradle_zip_dest).
+  local dest; dest=$(cooee_gradle_zip_dest "$props" "$url" "$repo") \
     || { warn "java: couldn't compute the wrapper cache hash for $repo; leaving the wrapper download to Gradle."; return 0; }
-  local dest="${GRADLE_USER_HOME:-$HOME/.gradle}/wrapper/dists/$distname/$hash"
 
   # Already there? Either Gradle installed it (.ok marker) or a prior seed placed
   # the zip pending unpack. Nothing to do.
