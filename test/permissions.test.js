@@ -64,112 +64,79 @@ test("a module set with no runners yields an empty allowlist (no failure)", () =
   assert.deepEqual(perms("skills"), []);
 });
 
-test("setup writes the hook AND a permissions allowlist to a fresh settings.json", () => {
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), "cooee-proj-"));
-  fs.mkdirSync(path.join(proj, ".git"));
+test("setup writes the hook AND a permissions allowlist to the global ~/.claude/settings.json", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "cooee-home-"));
   evalRendered("java,node", "cooee_install_session_hook >/dev/null 2>&1", {
-    CLAUDE_PROJECT_DIR: proj,
+    HOME: home,
     COOEE_BASE_URL: "https://env.coo.ee",
   });
   const s = JSON.parse(
-    fs.readFileSync(path.join(proj, ".claude", "settings.json"), "utf8"),
+    fs.readFileSync(path.join(home, ".claude", "settings.json"), "utf8"),
   );
   assert.equal(s.hooks.SessionStart.length, 1, "SessionStart hook is present");
   assert.ok(s.permissions.allow.includes("Bash(gradle:*)"));
   assert.ok(s.permissions.allow.includes("Bash(node:*)"));
 });
 
-test("setup writes the hook + permissions into every sibling checkout, not just CLAUDE_PROJECT_DIR", () => {
-  // Two repos checked out side by side under a workspace root, the classic
-  // cloud layout. CLAUDE_PROJECT_DIR points at one; the other must still get
-  // provisioned, or a session that opens it re-prompts for the toolchain.
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cooee-ws-"));
+test("setup writes ONLY to the global config, never into any project checkout", () => {
+  // The classic cloud layout: repos checked out side by side under a workspace
+  // root, each with its own git-tracked .claude/settings.json. The hook install
+  // must leave every checkout's tree pristine — writing into them would dirty a
+  // committed file — and put everything in the environment's global config.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "cooee-home-"));
+  const root = path.join(home, "workspace");
   const a = path.join(root, "repo-a");
   const b = path.join(root, "repo-b");
   for (const p of [a, b]) fs.mkdirSync(path.join(p, ".git"), { recursive: true });
   evalRendered("java,node", "cooee_install_session_hook >/dev/null 2>&1", {
-    CLAUDE_PROJECT_DIR: a,
-    COOEE_BASE_URL: "https://env.coo.ee",
-  });
-  for (const p of [a, b]) {
-    const s = JSON.parse(
-      fs.readFileSync(path.join(p, ".claude", "settings.json"), "utf8"),
-    );
-    assert.equal(s.hooks.SessionStart.length, 1, `${p}: SessionStart hook present`);
-    assert.ok(s.permissions.allow.includes("Bash(gradle:*)"), `${p}: gradle perm`);
-    assert.ok(s.permissions.allow.includes("Bash(node:*)"), `${p}: node perm`);
-  }
-});
-
-test("each sibling checkout merges with its OWN existing settings, without cross-contaminating", () => {
-  // repo-a and repo-b each declare their own project-specific permission. The
-  // coo.ee setup must union its rules into each without leaking a's rule into b.
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cooee-ws-"));
-  const a = path.join(root, "repo-a");
-  const b = path.join(root, "repo-b");
-  for (const p of [a, b]) fs.mkdirSync(path.join(p, ".claude"), { recursive: true });
-  fs.writeFileSync(
-    path.join(a, ".claude", "settings.json"),
-    JSON.stringify({ model: "opus", permissions: { allow: ["Bash(only-a:*)"] } }),
-  );
-  fs.writeFileSync(
-    path.join(b, ".claude", "settings.json"),
-    JSON.stringify({ permissions: { allow: ["Bash(only-b:*)"] } }),
-  );
-  // a is not a git repo here, so drive discovery from the workspace root.
-  evalRendered("java", "cooee_install_session_hook >/dev/null 2>&1", {
-    COOEE_CHECKOUTS_DIR: root,
-    CLAUDE_PROJECT_DIR: a,
-    COOEE_BASE_URL: "https://env.coo.ee",
-  });
-  const sa = JSON.parse(fs.readFileSync(path.join(a, ".claude", "settings.json"), "utf8"));
-  const sb = JSON.parse(fs.readFileSync(path.join(b, ".claude", "settings.json"), "utf8"));
-  assert.equal(sa.model, "opus", "a's unrelated keys preserved");
-  assert.ok(sa.permissions.allow.includes("Bash(only-a:*)"), "a keeps its own rule");
-  assert.ok(sa.permissions.allow.includes("Bash(gradle:*)"), "a gets the coo.ee rule");
-  assert.ok(!sa.permissions.allow.includes("Bash(only-b:*)"), "b's rule does not leak into a");
-  assert.ok(sb.permissions.allow.includes("Bash(only-b:*)"), "b keeps its own rule");
-  assert.ok(sb.permissions.allow.includes("Bash(gradle:*)"), "b gets the coo.ee rule");
-  assert.ok(!sb.permissions.allow.includes("Bash(only-a:*)"), "a's rule does not leak into b");
-});
-
-test("never targets the home dir itself — its ~/.claude is the global config, not a project", () => {
-  // Provider layout where the repo is checked out directly under $HOME, and a
-  // global ~/.claude exists. The workspace root resolves to $HOME, whose
-  // .claude must NOT be treated as a project checkout.
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "cooee-home-"));
-  fs.mkdirSync(path.join(home, ".claude"), { recursive: true }); // global config
-  fs.writeFileSync(
-    path.join(home, ".claude", "settings.json"),
-    JSON.stringify({ permissions: { allow: ["Bash(global:*)"] } }),
-  );
-  const repo = path.join(home, "repo");
-  fs.mkdirSync(path.join(repo, ".git"), { recursive: true });
-  const targets = evalRendered("java", "cooee_session_hook_targets", {
     HOME: home,
-    COOEE_CHECKOUTS_DIR: home,
-    CLAUDE_PROJECT_DIR: repo,
-  })
-    .split("\n")
-    .filter(Boolean);
-  assert.ok(targets.includes(repo), "the repo checkout is a target");
-  assert.ok(!targets.includes(home), "the home dir itself is NOT a target");
-  // And the global config is left untouched.
+    CLAUDE_PROJECT_DIR: a,
+    COOEE_CHECKOUTS_DIR: root,
+    COOEE_BASE_URL: "https://env.coo.ee",
+  });
+  // Global config got the hook + perms...
   const g = JSON.parse(
     fs.readFileSync(path.join(home, ".claude", "settings.json"), "utf8"),
   );
-  assert.deepEqual(g, { permissions: { allow: ["Bash(global:*)"] } });
+  assert.equal(g.hooks.SessionStart.length, 1, "global: SessionStart hook present");
+  assert.ok(g.permissions.allow.includes("Bash(gradle:*)"), "global: gradle perm");
+  assert.ok(g.permissions.allow.includes("Bash(node:*)"), "global: node perm");
+  // ...and neither checkout was touched.
+  for (const p of [a, b]) {
+    assert.ok(
+      !fs.existsSync(path.join(p, ".claude")),
+      `${p}: no .claude dir created in the checkout`,
+    );
+  }
 });
 
-test("setup preserves existing settings and unions permissions, without duplicating the hook", () => {
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), "cooee-proj-"));
-  fs.mkdirSync(path.join(proj, ".claude"), { recursive: true });
-  const file = path.join(proj, ".claude", "settings.json");
+test("CLAUDE_CONFIG_DIR overrides the target global config location", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "cooee-home-"));
+  const cfg = path.join(home, "custom-claude");
+  evalRendered("java", "cooee_install_session_hook >/dev/null 2>&1", {
+    HOME: home,
+    CLAUDE_CONFIG_DIR: cfg,
+    COOEE_BASE_URL: "https://env.coo.ee",
+  });
+  const s = JSON.parse(fs.readFileSync(path.join(cfg, "settings.json"), "utf8"));
+  assert.equal(s.hooks.SessionStart.length, 1, "hook written to CLAUDE_CONFIG_DIR");
+  assert.ok(s.permissions.allow.includes("Bash(gradle:*)"));
+  // The default ~/.claude was NOT used.
+  assert.ok(
+    !fs.existsSync(path.join(home, ".claude", "settings.json")),
+    "default ~/.claude not written when CLAUDE_CONFIG_DIR is set",
+  );
+});
+
+test("setup preserves existing global settings and unions permissions, without duplicating the hook", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "cooee-home-"));
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true });
+  const file = path.join(home, ".claude", "settings.json");
   fs.writeFileSync(
     file,
     JSON.stringify({ model: "opus", permissions: { allow: ["Bash(git:*)"] } }),
   );
-  const env = { CLAUDE_PROJECT_DIR: proj, COOEE_BASE_URL: "https://env.coo.ee" };
+  const env = { HOME: home, COOEE_BASE_URL: "https://env.coo.ee" };
   // Run twice: the second run must be a no-op (idempotent).
   evalRendered("java", "cooee_install_session_hook >/dev/null 2>&1", env);
   evalRendered("java", "cooee_install_session_hook >/dev/null 2>&1", env);

@@ -3,6 +3,11 @@ node_modules/
 *.log
 .DS_Store
 
+# Injected by coo.ee/env's own SessionStart hook when this repo is opened as a
+# checkout — environment plumbing, not a tracked deliverable. (New runs write it
+# to the global ~/.claude config, but the deployed service still seeds it here.)
+/.claude/
+
 # Playwright run output (committed: tests/__screenshots__ baselines + screenshots/ docs)
 /test-results/
 /playwright-report/
