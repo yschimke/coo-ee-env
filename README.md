@@ -368,7 +368,8 @@ Knobs:
 | --- | --- |
 | `COOEE_FORCE=1` | Ignore the short-circuit and adoption; force a fresh Nix install / repair. |
 | `COOEE_IGNORE_HOST_CHECK=1` | Continue even if a required install host is blocked. |
-| `COOEE_NO_ACTIVATE=1` | Skip [auto-activation](#auto-activation) — don't touch shell rc files or `.claude/settings.json`. |
+| `COOEE_NO_ACTIVATE=1` | Skip [auto-activation](#auto-activation) — don't touch shell rc files or `~/.claude/settings.json`. |
+| `CLAUDE_CONFIG_DIR` | Override the global Claude config dir the SessionStart hook is written into (default `~/.claude`). |
 | `COOEE_NO_DEPS=1` | Skip [build-dependency prefetch](#build-dependency-prefetch) — install the toolchain only, don't resolve the project's dependencies. |
 | `COOEE_GRADLE_DEPS_TASK` | Run a specific Gradle task for the prefetch (e.g. `assemble -x test`) instead of the default whole-graph artifact resolution. |
 | `COOEE_BASE_URL` | Service base URL baked into the installed SessionStart hook (default `https://env.coo.ee`). |
@@ -571,15 +572,20 @@ manual `source`, no per-project boilerplate:
   future shell has the toolchain on `PATH`. The block is fenced by
   `# >>> coo.ee/env >>>` markers and added at most once.
 - **Claude Code SessionStart hook + permissions.** The script installs (or
-  merges) a `SessionStart` hook into the consuming project's
-  `.claude/settings.json` that re-runs the *same request* —
+  merges) a `SessionStart` hook into the **global** Claude config —
+  `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR/settings.json`) — that
+  re-runs the *same request* —
   `curl -fsSL https://env.coo.ee/<your,modules> | bash` — so a fresh web session
   re-provisions automatically. It reconstructs the request (modules + params)
   from the run itself, merges with `jq`/`python3`/`node` so existing settings
   are preserved (and warns with the snippet if none is available), and is
-  idempotent — the hook is added at most once. The target is
-  `$CLAUDE_PROJECT_DIR`, falling back to the current directory when it's a git
-  repo.
+  idempotent — the hook is added at most once. The global config is part of the
+  **environment** (the container's home) and applies to every session no matter
+  which repo it opens, so a single write provisions the toolchain everywhere.
+  Deliberately **no project checkout is touched**: a repo's
+  `.claude/settings.json` is git-tracked, and writing into it would dirty a
+  committed file and nag the agent to commit environment plumbing that doesn't
+  belong in the repo.
 
   In the same write it seeds a **permission allowlist** (`permissions.allow`)
   for the toolchain it just installed, so the agent isn't prompted the first
@@ -671,10 +677,10 @@ script) — runs once, result is cached:
 curl -fsSL https://env.coo.ee/java,android | bash
 ```
 
-**Project config / `SessionStart` hook** (`.claude/settings.json`) — runs in
+**Global config / `SessionStart` hook** (`~/.claude/settings.json`) — runs in
 both local and cloud sessions; idempotency keeps it cheap. You usually don't
 write this by hand: the first run [auto-installs](#auto-activation) exactly this
-hook into the consuming project. The shape it writes (or merges) is:
+hook into the global Claude config. The shape it writes (or merges) is:
 
 ```json
 {

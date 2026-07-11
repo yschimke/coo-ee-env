@@ -124,67 +124,37 @@ ${end}"
   (( updated )) || warn "activation: could not update any shell rc file."
 }
 
-# Enumerate the project checkouts to configure. A cloud session often has
-# several repos checked out side by side under the workspace root (the parent of
-# the project dir), each with its own .claude/settings.json. Writing the hook +
-# permissions into only CLAUDE_PROJECT_DIR leaves the other checkouts
-# un-provisioned, so a session that later opens one of them re-prompts for the
-# toolchain this environment installed and re-runs setup. So we target the
-# primary project dir AND every sibling git checkout, deduped. Override the
-# search root with COOEE_CHECKOUTS_DIR.
+# The global Claude config dir — $HOME/.claude — is the *environment's* settings
+# home, not a project's. Overridable with CLAUDE_CONFIG_DIR (Claude Code's own
+# override) so a non-default config location is still targeted correctly.
+cooee_global_claude_dir() {
+  printf '%s' "${CLAUDE_CONFIG_DIR:-${HOME%/}/.claude}"
+}
+
+# Install/merge the SessionStart hook AND the toolchain's permission allowlist
+# into the user's GLOBAL Claude config ($HOME/.claude/settings.json) — the
+# environment, never a project checkout.
 #
-# Never targets $HOME itself. On providers that check the repo out directly
-# under the home dir, the workspace root resolves to $HOME, whose `.claude` is
-# the user's GLOBAL config (credentials, projects) — not a per-project settings
-# file. Matching it would inject a project SessionStart hook into the global
-# config, so $HOME is filtered from the results.
-cooee_session_hook_targets() {
-  local primary=""
-  if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then primary="$CLAUDE_PROJECT_DIR"
-  elif [[ -d "$PWD/.git" || -d "$PWD/.claude" ]]; then primary="$PWD"; fi
-
-  local root home; root="$(cooee_workspace_root)"; home="${HOME%/}"
-  {
-    [[ -n "$primary" ]] && printf '%s\n' "${primary%/}"
-    # Sibling checkouts: any dir holding a .git marker (a directory for a normal
-    # clone, a file for a worktree/submodule) OR an existing .claude dir (a repo
-    # someone has already configured). maxdepth 2 catches the workspace root
-    # itself ($root/.git) and side-by-side checkouts ($root/<repo>/.git).
-    [[ -d "$root" ]] && find "$root" -mindepth 1 -maxdepth 2 \
-      \( -name .git -o -name .claude \) 2>/dev/null \
-      | sed -e 's#/\.git$##' -e 's#/\.claude$##'
-  } | LC_ALL=C sort -u | while IFS= read -r d; do
-    # Drop the home dir: its .claude is the global config, not a project.
-    [[ -n "$home" && "${d%/}" == "$home" ]] && continue
-    printf '%s\n' "$d"
-  done
-}
-
-# Install/merge a SessionStart hook AND the toolchain's permission allowlist
-# into EVERY project checkout (see cooee_session_hook_targets), so each repo a
-# future Claude Code session might open auto-provisions and isn't prompted for
-# the tools this environment installed (e.g. `Bash(gradle:*)` for java — see
-# provides_perms). Per checkout it merges intelligently: existing keys and
-# permission rules are preserved and unioned, never clobbered.
+# A cloud session checks out one or more repos side by side, each with its own
+# *git-tracked* .claude/settings.json. Writing the hook + permissions into those
+# dirties committed files: every provisioned repo shows spurious changes in
+# `git status` and the agent is nagged to commit environment plumbing that
+# doesn't belong in the repo. The global config, by contrast, is part of the
+# environment (the container's home) and applies to every session regardless of
+# which repo it opens — so a single merge here provisions the toolchain
+# everywhere without touching a single working tree. It merges intelligently:
+# existing keys and permission rules are preserved and unioned, never clobbered.
 cooee_install_session_hook() {
-  local -a targets=()
-  mapfile -t targets < <(cooee_session_hook_targets)
-  if (( ! ${#targets[@]} )); then
-    warn "activation: no project dir (CLAUDE_PROJECT_DIR unset, $PWD isn't a repo) — skipping SessionStart hook."
-    return 0
-  fi
-  local d
-  for d in "${targets[@]}"; do
-    cooee_install_session_hook_one "$d"
-  done
+  cooee_install_session_hook_one "$(cooee_global_claude_dir)"
 }
 
-# Install/merge the hook + permissions into ONE checkout's .claude/settings.json.
-# Uses jq/python3/node to merge an existing file; writes a fresh one otherwise;
-# warns (with the snippet) if a file exists but no JSON tool is available.
+# Install/merge the hook + permissions into <claude_dir>/settings.json (the arg
+# is a .claude config dir, e.g. ~/.claude). Uses jq/python3/node to merge an
+# existing file; writes a fresh one otherwise; warns (with the snippet) if a
+# file exists but no JSON tool is available.
 cooee_install_session_hook_one() {
-  local dir="$1"
-  local seg cmd settings="$dir/.claude/settings.json" perms_json
+  local claude_dir="$1"
+  local seg cmd settings="$claude_dir/settings.json" perms_json
   seg="$(cooee_request_segment)"
   perms_json="$(cooee_perms_json)"
   # Degrade gracefully: if a future session can't reach the service (offline, or
@@ -208,7 +178,7 @@ cooee_install_session_hook_one() {
       return 0
     fi
   fi
-  mkdir -p "$dir/.claude"
+  mkdir -p "$claude_dir"
 
   if [[ ! -f "$settings" ]]; then
     local perms_block=""
@@ -453,8 +423,9 @@ cooee_project_dir() {
 # of the project dir. Overridable with COOEE_CHECKOUTS_DIR. Never roots a scan at
 # a broad system directory: if the parent is one of those, fall back to the
 # project dir itself so a single-repo layout still resolves to something sane.
-# Shared by the multi-checkout Gradle wrapper seeding (java.sh) and the
-# SessionStart-hook install (cooee_session_hook_targets).
+# Used by the multi-checkout Gradle wrapper seeding (java.sh), which reads each
+# checkout's gradle-wrapper.properties to warm the wrapper cache in ~/.gradle
+# (it never writes into the checkouts themselves).
 cooee_workspace_root() {
   local root="${COOEE_CHECKOUTS_DIR:-}"
   if [[ -z "$root" ]]; then
