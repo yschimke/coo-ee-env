@@ -304,12 +304,13 @@ test("java forces a UTF-8 locale + JVM file encoding (sun.jnu.encoding fix)", ()
   assert.ok(header.includes("C.UTF-8"), "the helper sets a UTF-8 locale");
   assert.ok(header.includes("-Dfile.encoding=UTF-8"), "the helper pins file.encoding");
 
-  // java calls it on both the install and the adopt-existing-JDK paths.
+  // java calls it once on the unified provisioning path (adopt-present +
+  // install-missing both fall through to the same cloud-fix block).
   const java = render("java").body;
   assert.equal(
     (java.match(/cooee_jvm_utf8_opts/g) || []).length,
-    3,
-    "one definition + a call on each of the install and adopt paths",
+    2,
+    "one definition + a single call on the unified provisioning path",
   );
 });
 
