@@ -534,7 +534,62 @@ cooee_collect_perms() {
         done
       fi
     done
+    # Union in the allowlists from the side-by-side project checkouts, so a
+    # repo's own pre-approvals apply globally regardless of which one is opened.
+    cooee_collect_checkout_perms
   } | LC_ALL=C sort -u   # empty input -> sort exits 0 (safe under pipefail)
+}
+
+# Extract the `.permissions.allow[]` strings from a Claude Code settings.json,
+# one rule per line. Tries whatever JSON tool is on PATH (jq, then python3, then
+# node — the same set the settings merge relies on) and prints nothing (exit 0)
+# when the file is missing/unreadable/malformed or no tool is available, so an
+# unparseable checkout simply contributes no rules rather than failing the run.
+cooee_settings_allow() {   # cooee_settings_allow <settings.json>
+  local f="$1"
+  [[ -f "$f" ]] || return 0
+  if command -v jq >/dev/null 2>&1; then
+    jq -r '(.permissions.allow // [])[]' "$f" 2>/dev/null
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 - "$f" <<'PY' 2>/dev/null
+import json, sys
+try:
+    with open(sys.argv[1]) as fh: data = json.load(fh)
+except Exception:
+    sys.exit(0)
+for rule in (data.get("permissions") or {}).get("allow") or []:
+    print(rule)
+PY
+  elif command -v node >/dev/null 2>&1; then
+    node -e 'try{const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));for(const r of ((d.permissions||{}).allow||[]))console.log(r)}catch(e){}' "$f" 2>/dev/null
+  fi
+  return 0
+}
+
+# Permission rules contributed by the side-by-side project checkouts. A cloud
+# session checks out one or more repos under the workspace root, each carrying
+# its own git-tracked .claude/settings.json. Claude Code only auto-loads the
+# settings of the session's *own* project dir, so a repo opened as a sibling (or
+# a subdirectory of the workspace root) never gets its allowlist applied. Folding
+# every checkout's `permissions.allow` into the GLOBAL config makes those
+# pre-approvals hold no matter which repo the session opens — and does it without
+# writing into (and dirtying) any tracked working tree. Scans both the workspace
+# root's immediate children and the project dir itself (the single-repo layout,
+# where the root *is* the checkout). Opt out with COOEE_NO_CHECKOUT_PERMS=1.
+cooee_collect_checkout_perms() {
+  [[ "${COOEE_NO_CHECKOUT_PERMS:-0}" == 1 ]] && return 0
+  local root proj d
+  root="$(cooee_workspace_root)"
+  proj="$(cooee_project_dir)"
+  {
+    [[ -d "$root" ]] && for d in "$root"/*/; do
+      cooee_settings_allow "${d}.claude/settings.json"
+    done
+    # The project dir itself, in case it isn't a child of the scanned root
+    # (COOEE_CHECKOUTS_DIR points elsewhere, or root fell back to proj).
+    cooee_settings_allow "${proj%/}/.claude/settings.json"
+  } 2>/dev/null
+  return 0
 }
 
 # Render the collected permission rules as a compact JSON array string, e.g.

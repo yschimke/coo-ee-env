@@ -24,6 +24,43 @@ want_host "*.flakehub.com"               "FlakeHub CDN / cache subdomains (flake
 # probed, so a COOEE_BASE_URL override or a vendored script can't trip it.
 want_host env.coo.ee                     "the coo.ee/env service — fetch + re-provision the script (auto-activation hook)"
 
+# Environment-wide Claude Code permissions. Unlike the toolchain rules other
+# modules declare, these aren't tied to anything Nix installs — they pre-approve
+# the *harness's* own tools that every cloud session leans on: the scheduling /
+# trigger MCP (send-later, cron-style wakeups) and the routine, mostly read-only
+# GitHub collaboration operations (open/update PRs, reply to reviews, read job
+# logs, subscribe to PR activity). Baking them into `base` — always included —
+# means they land in the GLOBAL config on every provision, so a fresh box never
+# prompts for them. Individual project checkouts can still add their own rules;
+# those are merged up into the global config too (see cooee_collect_perms). Both
+# the capitalized (`Claude_Code_Remote`) and hyphenated (`claude-code-remote`)
+# server spellings are listed because the MCP server name varies by host build,
+# and a permission rule must match the server name exactly.
+provides_perms base \
+  'mcp__Claude_Code_Remote__send_later' \
+  'mcp__Claude_Code_Remote__create_trigger' \
+  'mcp__Claude_Code_Remote__update_trigger' \
+  'mcp__Claude_Code_Remote__delete_trigger' \
+  'mcp__Claude_Code_Remote__list_triggers' \
+  'mcp__Claude_Code_Remote__fire_trigger' \
+  'mcp__claude-code-remote__send_later' \
+  'mcp__claude-code-remote__create_trigger' \
+  'mcp__claude-code-remote__update_trigger' \
+  'mcp__claude-code-remote__delete_trigger' \
+  'mcp__claude-code-remote__list_triggers' \
+  'mcp__claude-code-remote__fire_trigger' \
+  'mcp__github__pull_request_read' \
+  'mcp__github__get_job_logs' \
+  'mcp__github__create_pull_request' \
+  'mcp__github__update_pull_request' \
+  'mcp__github__resolve_review_thread' \
+  'mcp__github__add_reply_to_pull_request_comment' \
+  'mcp__github__add_issue_comment' \
+  'mcp__github__issue_write' \
+  'mcp__github__subscribe_pr_activity' \
+  'mcp__github__search_issues' \
+  'mcp__github__list_pull_requests'
+
 # Determinate's installer always lays down a root-owned (multi-user) store.
 # - As root (typical agent sandbox) we read/write that store directly, so a
 #   daemonless `--init none` install is enough.
