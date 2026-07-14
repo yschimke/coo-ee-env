@@ -369,6 +369,8 @@ Knobs:
 | `COOEE_FORCE=1` | Ignore the short-circuit and adoption; force a fresh Nix install / repair. |
 | `COOEE_IGNORE_HOST_CHECK=1` | Continue even if a required install host is blocked. |
 | `COOEE_NO_ACTIVATE=1` | Skip [auto-activation](#auto-activation) — don't touch shell rc files or `~/.claude/settings.json`. |
+| `COOEE_NO_CHECKOUT_PERMS=1` | Don't merge the side-by-side project checkouts' `permissions.allow` into the global Claude config (see [activation](#auto-activation)). |
+| `COOEE_CHECKOUTS_DIR` | Workspace root holding the side-by-side checkouts to seed Gradle wrappers from and scan for `permissions.allow` (default: the project dir's parent). |
 | `CLAUDE_CONFIG_DIR` | Override the global Claude config dir the SessionStart hook is written into (default `~/.claude`). |
 | `COOEE_NO_DEPS=1` | Skip [build-dependency prefetch](#build-dependency-prefetch) — install the toolchain only, don't resolve the project's dependencies. |
 | `COOEE_GRADLE_DEPS_TASK` | Run a specific Gradle task for the prefetch (e.g. `assemble -x test`) instead of the default whole-graph artifact resolution. |
@@ -596,6 +598,26 @@ manual `source`, no per-project boilerplate:
   `permissions.allow` — never removing what's already there — and deduped, so
   re-runs and hand-added rules coexist. Each module declares its own rules via
   `provides_perms` in [`modules/`](./modules).
+
+  The allowlist also carries two things that aren't tied to any toolchain:
+
+  - **Environment-wide harness defaults** (declared on `base`, so always
+    present): the scheduling / trigger MCP the harness exposes
+    (`send_later`, `create_trigger`, …, in both the `Claude_Code_Remote` and
+    `claude-code-remote` server spellings) and the routine, mostly read-only
+    GitHub collaboration operations a cloud session uses to open and shepherd a
+    PR (`create_pull_request`, `update_pull_request`,
+    `add_reply_to_pull_request_comment`, `get_job_logs`, `subscribe_pr_activity`,
+    …). A fresh box gets these without a prompt.
+  - **Merged-in checkout allowlists.** Claude Code only auto-loads the settings
+    of the session's *own* project dir, so a repo checked out **beside** it
+    (the classic cloud layout, many repos under one workspace root) never gets
+    its own `permissions.allow` applied. The activation step scans the workspace
+    root's checkouts, reads each `.claude/settings.json`'s `permissions.allow`,
+    and unions those rules into the global config — so a repo's pre-approvals
+    hold no matter which sibling the session opens, still without writing into
+    any tracked tree. Opt out with `COOEE_NO_CHECKOUT_PERMS=1`; point the scan
+    at a specific workspace root with `COOEE_CHECKOUTS_DIR`.
 
 This is generic plumbing baked into the bootstrapper, so **any** project that
 pulls in coo.ee/env gets it — nothing is specific to one repo. GitHub Actions
