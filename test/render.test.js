@@ -305,12 +305,15 @@ test("java forces a UTF-8 locale + JVM file encoding (sun.jnu.encoding fix)", ()
   assert.ok(header.includes("-Dfile.encoding=UTF-8"), "the helper pins file.encoding");
 
   // java calls it once on the unified provisioning path (adopt-present +
-  // install-missing both fall through to the same cloud-fix block).
+  // install-missing both fall through to the same cloud-fix block). Count call
+  // sites (a bare invocation line), not textual mentions, so a doc-comment that
+  // names the helper (e.g. cooee_gradle_props_utf8's "companion to ...") doesn't
+  // inflate the count.
   const java = render("java").body;
   assert.equal(
-    (java.match(/cooee_jvm_utf8_opts/g) || []).length,
-    2,
-    "one definition + a single call on the unified provisioning path",
+    (java.match(/^\s*cooee_jvm_utf8_opts\s*$/gm) || []).length,
+    1,
+    "a single call on the unified provisioning path",
   );
 });
 
