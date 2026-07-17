@@ -110,35 +110,81 @@ cooee_present_android() {
   command -v adb >/dev/null 2>&1 || cooee_android_discover_sdk >/dev/null 2>&1
 }
 
-# Pin the SDK location in the project's local.properties. AGP resolves the SDK
-# from local.properties' sdk.dir first, and only then from the ANDROID_HOME /
-# ANDROID_SDK_ROOT env vars. Some harnesses launch `./gradlew` in a shell that
-# never sourced our persisted env, so those vars are absent and the build dies
-# with "SDK location not found"; an explicit sdk.dir makes the SDK findable no
-# matter how the build is started. local.properties is machine-specific (the
-# Nix store path is unique to this container) and conventionally gitignored, so
-# we (re)write it on every provision rather than commit it — preserving any
-# other entries already in the file.
-cooee_android_pin_sdk_dir() {  # cooee_android_pin_sdk_dir <sdk dir>
-  local sdk=$1 f=local.properties m found=0
-  # Only act for a Gradle project rooted here — the build that reads sdk.dir.
-  for m in settings.gradle settings.gradle.kts build.gradle build.gradle.kts gradlew; do
-    [[ -e "$m" ]] && { found=1; break; }
-  done
-  (( found )) || return 0
+# Pin the SDK location in local.properties for every Gradle build across the
+# local checkouts. AGP resolves the SDK from local.properties' sdk.dir first, and
+# only then from the ANDROID_HOME / ANDROID_SDK_ROOT env vars. Some harnesses
+# launch `./gradlew` in a shell that never sourced our persisted env, so those
+# vars are absent and the build dies with "SDK location not found"; an explicit
+# sdk.dir makes the SDK findable no matter how the build is started. A cloud
+# session often checks out several repos side by side under the workspace root
+# (the parent of the project dir), and any of them can be — or contain — an
+# Android build; pinning only the one project rooted at the invocation dir leaves
+# the siblings' builds broken. So we discover every Gradle build root across the
+# checkouts (the same multi-checkout shape the java module seeds wrappers for) and
+# pin each. local.properties is machine-specific (the Nix store path is unique to
+# this container) and conventionally gitignored, so we (re)write it on every
+# provision rather than commit it — preserving any other entries already in the
+# file.
 
+# Every Gradle build root across the local checkouts — a directory a `./gradlew`
+# build runs in and where AGP reads local.properties. A build root is identified
+# by a settings file (settings.gradle[.kts]) or, for a settings-less single-module
+# build, a `gradlew` launcher — deliberately NOT by a bare build.gradle, which
+# every subproject of a multi-module build also carries (a subproject's SDK comes
+# from the root's local.properties, so writing one per subproject would be wrong
+# and noisy). The project dir itself is always included when it looks like a build
+# root — for the single-repo layout (the root IS the checkout) or when
+# COOEE_CHECKOUTS_DIR points somewhere the scan can't reach — and there a bare
+# build.gradle counts, since the invocation dir is known to be a root, not a
+# subproject. Bounded depth keeps the scan cheap while still catching a repo-root
+# build and a nested one (e.g. <repo>/android/). Deduped, sorted. Override the
+# search root with COOEE_CHECKOUTS_DIR.
+cooee_android_gradle_roots() {
+  local root proj m
+  root="$(cooee_workspace_root)"
+  proj="$(cooee_project_dir)"
+  {
+    if [[ -d "$root" ]]; then
+      find "$root" -maxdepth 5 -type f \
+        \( -name settings.gradle -o -name settings.gradle.kts -o -name gradlew \) \
+        2>/dev/null | while IFS= read -r f; do printf '%s\n' "${f%/*}"; done
+    fi
+    # The project dir itself, when it is a build root — covers the single-repo
+    # layout and a COOEE_CHECKOUTS_DIR that points away from it. A bare
+    # build.gradle counts here (the invocation dir is a root, not a subproject).
+    for m in settings.gradle settings.gradle.kts build.gradle build.gradle.kts gradlew; do
+      [[ -e "${proj%/}/$m" ]] && { printf '%s\n' "${proj%/}"; break; }
+    done
+  } | LC_ALL=C sort -u
+}
+
+# (Re)write sdk.dir in one project's local.properties, preserving every other
+# entry. See cooee_android_pin_sdk_dir for the rationale.
+cooee_android_write_sdk_dir() {  # cooee_android_write_sdk_dir <sdk dir> <project root>
+  local sdk=$1 f="${2%/}/local.properties"
   if [[ -f "$f" ]] && grep -q '^[[:space:]]*sdk\.dir[[:space:]]*=' "$f"; then
     local cur
     cur=$(sed -n 's/^[[:space:]]*sdk\.dir[[:space:]]*=[[:space:]]*\(.*\)$/\1/p' "$f" | head -1)
-    [[ "$cur" == "$sdk" ]] && { log "android: local.properties already pins sdk.dir=$sdk."; return 0; }
+    [[ "$cur" == "$sdk" ]] && { log "android: $f already pins sdk.dir=$sdk."; return 0; }
     local tmp; tmp=$(mktemp)
     # Rewrite the stale sdk.dir line in place; keep every other entry untouched.
     sed "s|^[[:space:]]*sdk\.dir[[:space:]]*=.*|sdk.dir=$sdk|" "$f" > "$tmp" && mv "$tmp" "$f"
-    ok "android: updated sdk.dir in $PWD/local.properties -> $sdk."
+    ok "android: updated sdk.dir in $f -> $sdk."
   else
     printf 'sdk.dir=%s\n' "$sdk" >> "$f"
-    ok "android: wrote sdk.dir to $PWD/local.properties -> $sdk."
+    ok "android: wrote sdk.dir to $f -> $sdk."
   fi
+}
+
+# Pin sdk.dir across every Gradle build root in the local checkouts (see above).
+cooee_android_pin_sdk_dir() {  # cooee_android_pin_sdk_dir <sdk dir>
+  local sdk=$1 root pinned=0
+  while IFS= read -r root; do
+    [[ -n "$root" ]] || continue
+    cooee_android_write_sdk_dir "$sdk" "$root"
+    pinned=$((pinned + 1))
+  done < <(cooee_android_gradle_roots)
+  (( pinned )) || log "android: no Gradle build found in the local checkouts; nothing to pin sdk.dir into."
 }
 
 # Publish a conventional, agent-guessable view of the SDK. Nix's androidenv

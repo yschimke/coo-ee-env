@@ -370,7 +370,7 @@ Knobs:
 | `COOEE_IGNORE_HOST_CHECK=1` | Continue even if a required install host is blocked. |
 | `COOEE_NO_ACTIVATE=1` | Skip [auto-activation](#auto-activation) — don't touch shell rc files or `~/.claude/settings.json`. |
 | `COOEE_NO_CHECKOUT_PERMS=1` | Don't merge the side-by-side project checkouts' `permissions.allow` into the global Claude config (see [activation](#auto-activation)). |
-| `COOEE_CHECKOUTS_DIR` | Workspace root holding the side-by-side checkouts to seed Gradle wrappers from and scan for `permissions.allow` (default: the project dir's parent). |
+| `COOEE_CHECKOUTS_DIR` | Workspace root holding the side-by-side checkouts to seed Gradle wrappers from, pin `sdk.dir` in (android), and scan for `permissions.allow` (default: the project dir's parent). |
 | `CLAUDE_CONFIG_DIR` | Override the global Claude config dir the SessionStart hook is written into (default `~/.claude`). |
 | `COOEE_NO_DEPS=1` | Skip [build-dependency prefetch](#build-dependency-prefetch) — install the toolchain only, don't resolve the project's dependencies. |
 | `COOEE_GRADLE_DEPS_TASK` | Run a specific Gradle task for the prefetch (e.g. `assemble -x test`) instead of the default whole-graph artifact resolution. |
