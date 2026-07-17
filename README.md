@@ -374,6 +374,7 @@ Knobs:
 | `CLAUDE_CONFIG_DIR` | Override the global Claude config dir the SessionStart hook is written into (default `~/.claude`). |
 | `COOEE_NO_DEPS=1` | Skip [build-dependency prefetch](#build-dependency-prefetch) — install the toolchain only, don't resolve the project's dependencies. |
 | `COOEE_GRADLE_DEPS_TASK` | Run a specific Gradle task for the prefetch (e.g. `assemble -x test`) instead of the default whole-graph artifact resolution. |
+| `COOEE_NO_GRADLE_PROPS=1` | Don't pin `org.gradle.jvmargs=-Dfile.encoding=UTF-8` in the user-dir `gradle.properties` (`$GRADLE_USER_HOME/gradle.properties`). The `java` module writes it (merge-safe) as a Gradle-native companion to the `LANG`/`LC_ALL`/`JAVA_TOOL_OPTIONS` UTF-8 fix, so the encoding also holds for a Gradle daemon launched outside the provisioning shell. |
 | `COOEE_BASE_URL` | Service base URL baked into the installed SessionStart hook (default `https://env.coo.ee`). |
 
 The [devenv.sh backend](#devenvsh-backend) is selected per request with the
