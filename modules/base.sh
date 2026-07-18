@@ -29,7 +29,8 @@ want_host env.coo.ee                     "the coo.ee/env service — fetch + re-
 # the *harness's* own tools that every cloud session leans on: the scheduling /
 # trigger MCP (send-later, cron-style wakeups) and the routine, mostly read-only
 # GitHub collaboration operations (open/update PRs, reply to reviews, read job
-# logs, subscribe to PR activity). Baking them into `base` — always included —
+# logs and CI check status, subscribe/unsubscribe to PR activity). Baking them
+# into `base` — always included —
 # means they land in the GLOBAL config on every provision, so a fresh box never
 # prompts for them. Individual project checkouts can still add their own rules;
 # those are merged up into the global config too (see cooee_collect_perms). Both
@@ -58,6 +59,10 @@ provides_perms base \
   'mcp__github__add_issue_comment' \
   'mcp__github__issue_write' \
   'mcp__github__subscribe_pr_activity' \
+  'mcp__github__unsubscribe_pr_activity' \
+  'mcp__github__get_check_run' \
+  'mcp__github__actions_get' \
+  'mcp__github__actions_list' \
   'mcp__github__search_issues' \
   'mcp__github__list_pull_requests'
 

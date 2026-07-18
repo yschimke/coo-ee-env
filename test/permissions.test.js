@@ -85,7 +85,9 @@ test("base pre-approves the harness scheduling + GitHub collaboration tools", ()
     "mcp__claude-code-remote__create_trigger", // hyphenated server spelling too
     "mcp__github__create_pull_request",
     "mcp__github__subscribe_pr_activity",
+    "mcp__github__unsubscribe_pr_activity",
     "mcp__github__get_job_logs",
+    "mcp__github__get_check_run",
   ]) {
     assert.ok(p.includes(rule), `expected ${rule}`);
   }
