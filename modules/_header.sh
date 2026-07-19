@@ -52,12 +52,44 @@ mkdir -p "$(dirname "$COOEE_PROFILE")"
 
 cooee_init_profile() { : > "$COOEE_PROFILE"; : > "$COOEE_HARNESS_ENV"; }
 
-# Append a raw KEY=value line to whichever harness env files this run has.
+# Upsert a raw KEY=value line into whichever harness env files this run has
+# (Claude Code's $CLAUDE_ENV_FILE, GitHub Actions' $GITHUB_ENV). Claude Code
+# re-runs this whole bootstrap on every SessionStart — including resume and
+# compact — and inlines $CLAUDE_ENV_FILE into the preamble of *every* Bash
+# call. A naive `>>` re-appends the same lines on each re-fire, so the file —
+# and thus every spawned command string — grows without bound until it trips
+# the ~128 KiB argv limit (E2BIG) even though the resulting environment is
+# tiny (hundreds of duplicate lines collapse to the same few vars). Upsert
+# instead: rewrite the target so each key appears exactly once, which both
+# caps growth and heals a file already bloated by the old append behaviour.
 cooee_forward_to_harness() {  # cooee_forward_to_harness KEY=value
-  local kv=$1
-  [[ -n "${CLAUDE_ENV_FILE:-}" ]] && printf '%s\n' "$kv" >> "$CLAUDE_ENV_FILE" || true
-  [[ -n "${GITHUB_ENV:-}"     ]] && printf '%s\n' "$kv" >> "$GITHUB_ENV"     || true
+  local kv=$1 key=${1%%=*}
+  cooee_env_file_upsert "${CLAUDE_ENV_FILE:-}" "$key" "$kv"
+  cooee_env_file_upsert "${GITHUB_ENV:-}"     "$key" "$kv"
   return 0
+}
+
+# Replace every existing `KEY=…` line in FILE with LINE (appending if none was
+# present), leaving all other lines — including keys written by other harness
+# hooks — untouched. No-op when FILE is empty (harness absent). Atomic via a
+# sibling temp file + rename so a concurrent reader never sees a torn file.
+cooee_env_file_upsert() {  # cooee_env_file_upsert FILE KEY LINE
+  local file=$1 key=$2 line=$3
+  [[ -n "$file" ]] || return 0
+  if [[ ! -e "$file" ]]; then
+    printf '%s\n' "$line" >> "$file"
+    return 0
+  fi
+  local tmp
+  tmp=$(mktemp "${file}.cooee.XXXXXX" 2>/dev/null) || {
+    # Couldn't stage a rewrite — fall back to a plain append so the value is at
+    # least present, rather than silently dropping it.
+    printf '%s\n' "$line" >> "$file"
+    return 0
+  }
+  grep -v -- "^${key}=" "$file" > "$tmp" 2>/dev/null || true
+  printf '%s\n' "$line" >> "$tmp"
+  mv -f "$tmp" "$file"
 }
 
 add_env() {  # add_env KEY VALUE — export now and persist for later shells
