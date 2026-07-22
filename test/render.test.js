@@ -191,6 +191,30 @@ test("compose is a curated target that implies java and android", () => {
   assert.ok(byName["compose"].hosts.need.map((h) => h.host).includes("github.com"));
 });
 
+test("compose provisions the Compose Desktop native GL libs onto LD_LIBRARY_PATH", () => {
+  // skiko (Compose Desktop's Skia backend) has load-time DT_NEEDED deps the Nix
+  // render JVM's loader can't find in the system /usr/lib; compose builds them
+  // from the Nix cache and prepends the closure to LD_LIBRARY_PATH so the forked
+  // render worker can load libskiko.
+  const body = render("compose").body;
+  assert.ok(body.includes("cooee_compose_desktop_gl"), "defines + calls the desktop GL setup");
+  assert.ok(body.includes("cooee_prepend_ld_library_path"), "persists LD_LIBRARY_PATH for future shells + the harness");
+  assert.ok(body.includes("LD_LIBRARY_PATH"), "sets LD_LIBRARY_PATH");
+  // The default package set covers every soname skiko links directly.
+  for (const pkg of ["libglvnd", "xorg.libX11", "fontconfig.lib", "stdenv.cc.cc.lib"]) {
+    assert.ok(body.includes(pkg), `default GL package set includes ${pkg}`);
+  }
+  // Both escape hatches are wired: skip entirely, or adjust the package set.
+  assert.ok(body.includes("COOEE_NO_DESKTOP_GL"), "GL provisioning is opt-out-able");
+  assert.ok(body.includes("COOEE_DESKTOP_GL_PACKAGES"), "the GL package set is overridable");
+  // The libs are fetched from the Nix cache, so that host rides into the allowlist.
+  const byName = Object.fromEntries(moduleInfo().map((m) => [m.name, m]));
+  assert.ok(
+    byName["compose"].hosts.want.map((h) => h.host).includes("cache.nixos.org"),
+    "cache.nixos.org is advertised for the GL libs",
+  );
+});
+
 test("skills selects a single skill via a path segment after the repo", () => {
   // owner/repo/<skill> is a valid param and round-trips through canonicalization.
   assert.deepEqual(canon("skills[yschimke/skills/compose-preview]"), [
