@@ -73,7 +73,7 @@ treats an already-present package as success — so a partial/cold box is
 | `go`      | Go toolchain, `GOPATH`                    | `cache.nixos.org`, `proxy.golang.org`, `sum.golang.org` | Codex: `CODEX_ENV_GO_VERSION` |
 | `rust`    | `rustc` + `cargo`                         | `cache.nixos.org`, `static.crates.io`, `index.crates.io` | Codex: `CODEX_ENV_RUST_VERSION` |
 | `ruby`    | Ruby + RubyGems (default 3; `ruby[3.4.9]` to pin) | `cache.nixos.org`, `rubygems.org`, `index.rubygems.org` | Codex: `CODEX_ENV_RUBY_VERSION` |
-| `compose` | Jetpack Compose `@Preview` rendering: installs the `compose-preview` agent skill (renders previews to PNG, no emulator) and pulls in a JDK + the Android SDK; **implies `java`, `android`** | `github.com`, `cache.nixos.org` (git, if absent) | — |
+| `compose` | Jetpack Compose `@Preview` rendering: installs the `compose-preview` agent skill (renders previews to PNG, no emulator), pulls in a JDK + the Android SDK, and provisions the native GL libs (`libGL`/`libX11`/`fontconfig`/`libstdc++`) Compose **Desktop** (skiko/Skia) loads at render time, onto `LD_LIBRARY_PATH`; **implies `java`, `android`** | `github.com`, `cache.nixos.org` (git + the GL libs) | `COOEE_NO_DESKTOP_GL=1` to skip GL; `COOEE_DESKTOP_GL_PACKAGES` to adjust the set |
 | `skills`  | Claude Code agent skills, linked into `~/.claude/skills/`; `skills[owner/repo]` links every skill in a repo, `skills[owner/repo/<skill>]` links just one | `github.com` (`cache.nixos.org` if `git` is absent) | — |
 | `tools`   | Arbitrary CLI tools from nixpkgs, by name (`tools[ripgrep,jq,gh]`) | `cache.nixos.org` | — |
 
@@ -171,6 +171,17 @@ but *not* `android-emulator`, which the renderer doesn't use) and installs the
 ```bash
 curl -fsSL https://env.coo.ee/compose | bash
 ```
+
+It also provisions the native libraries Compose **Desktop** rendering pulls in.
+Desktop previews render through Skia (skiko), whose native library declares
+load-time dependencies on `libGL.so.1`, `libX11.so.6`, `libfontconfig.so.1` and
+`libstdc++.so.6`. On the Nix backend the render JVM is a Nix-store Temurin whose
+loader searches the Nix store rather than the system `/usr/lib`, so without help
+the forked render worker dies at load with `libGL.so.1: cannot open shared
+object file`. `compose` builds those libs from the Nix cache (a closure
+consistent with the JDK's own glibc) and prepends them to `LD_LIBRARY_PATH`,
+which the Nix `java` wrapper preserves into the JVM. Skip it with
+`COOEE_NO_DESKTOP_GL=1`, or adjust the set with `COOEE_DESKTOP_GL_PACKAGES`.
 
 `tools` is the same idea for the long tail of CLIs that don't deserve their own
 module — each parameter is a nixpkgs attribute name, installed through the same
