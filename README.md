@@ -414,7 +414,7 @@ Knobs:
 | `CLAUDE_CONFIG_DIR` | Override the global Claude config dir the SessionStart hook is written into (default `~/.claude`). |
 | `COOEE_NO_DEPS=1` | Skip [build-dependency prefetch](#build-dependency-prefetch) — install the toolchain only, don't resolve the project's dependencies. |
 | `COOEE_GRADLE_DEPS_TASK` | Run a specific Gradle task for the prefetch (e.g. `assemble -x test`) instead of the default whole-graph artifact resolution. |
-| `COOEE_NO_GRADLE_PROPS=1` | Don't pin `org.gradle.jvmargs=-Dfile.encoding=UTF-8` in the user-dir `gradle.properties` (`$GRADLE_USER_HOME/gradle.properties`). The `java` module writes it (merge-safe) as a Gradle-native companion to the `LANG`/`LC_ALL`/`JAVA_TOOL_OPTIONS` UTF-8 fix, so the encoding also holds for a Gradle daemon launched outside the provisioning shell. |
+| `COOEE_NO_GRADLE_PROPS=1` | Don't pin the cloud JVM flags on `org.gradle.jvmargs` in the user-dir `gradle.properties` (`$GRADLE_USER_HOME/gradle.properties`). The `java` module writes them there (merge-safe, never overriding a property you set yourself): the proxy host/port + `nonProxyHosts`, the extra-CA truststore, and `-Dfile.encoding=UTF-8`. This is the **primary** channel for those flags — see [JVM flags and `JAVA_TOOL_OPTIONS`](#jvm-flags-and-java_tool_options). |
 | `COOEE_BASE_URL` | Service base URL baked into the installed SessionStart hook (default `https://env.coo.ee`). |
 
 The [devenv.sh backend](#devenvsh-backend) is selected per request with the
@@ -574,6 +574,44 @@ build-cached `RUN` layer — the true per-module-layer translation — is the ne
 step; it needs the Nix-store / build-user story validated in a live container
 (no Docker in CI yet, so the bundle is currently verified by generation +
 `bash -n`, not a real build).
+
+## JVM flags and `JAVA_TOOL_OPTIONS`
+
+Three cloud fixes need JVM system properties: the sandbox proxy (the JVM ignores
+`http(s)_proxy`), the extra CA truststore (a Nix JDK ignores the system trust
+store), and `-Dfile.encoding=UTF-8`. They are applied through **two** channels,
+and the split is deliberate.
+
+`JAVA_TOOL_OPTIONS` is set for the provisioning run and written to
+`~/.config/coo-ee/env.sh` (`export KEY=<shell-quoted>`), so any shell that
+sources the profile gets it. It is **not** forwarded to a harness env file, and
+it is **restored to its entry value** before the script exits.
+
+The reason is that harnesses replay their env files as *unquoted shell*, one
+`KEY=value` line at a time — Claude Code inlines the file as the preamble of
+every Bash call. `JAVA_TOOL_OPTIONS` is unavoidably space-separated, and its
+`nonProxyHosts` value is pipe-separated, so the line stops being one assignment:
+
+```
+JAVA_TOOL_OPTIONS=-Dhttp.proxyHost=p -Dhttp.proxyPort=8080 -Dhttp.nonProxyHosts=a|b
+#                 ^ assignment       ^ "command not found"  ^ …and a pipeline of more
+```
+
+That sprays dozens of `command not found` lines into the output of *every*
+command for the rest of the session. Restoring the variable matters as much as
+not forwarding it: a harness snapshot is a diff of what the hook changed, so a
+variable left exactly as found never enters the preamble at all — which is also
+the only way to keep the *container's own* (equally space-laden) value out of it.
+
+Gradle — the consumer that actually needs these flags — gets them from
+`org.gradle.jvmargs` in the user-dir `gradle.properties` instead. That file is
+parsed as properties rather than shell (spaces are simply fine), needs no
+environment inheritance, and reaches the client, its daemon, and every forked
+worker, including a daemon started by an IDE or a bare `./gradlew` that never saw
+the provisioning shell. Opt out with `COOEE_NO_GRADLE_PROPS=1`.
+
+Adding a new JVM flag? Route it through `cooee_add_jvm_flag` so it reaches both
+channels; a bare `add_env JAVA_TOOL_OPTIONS …` would reach only the profile.
 
 ## Build-dependency prefetch
 

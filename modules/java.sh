@@ -211,10 +211,10 @@ module_java() {
   cooee_trust_cas_in_jdk "$JAVA_HOME"
   cooee_jvm_proxy_opts
   cooee_jvm_utf8_opts
-  # Also pin the encoding through Gradle's own canonical channel (user-dir
-  # gradle.properties), so it holds for a Gradle build even where this shell's
-  # JAVA_TOOL_OPTIONS isn't inherited (an IDE- or wrapper-launched daemon).
-  cooee_gradle_props_utf8
+  # Pin the same flags through Gradle's own canonical channel (user-dir
+  # gradle.properties). This is the channel that actually carries them to a
+  # build: JAVA_TOOL_OPTIONS is shell-only now and is restored before we exit.
+  cooee_gradle_props_jvmargs
 
   ok "java ready: $("$JAVA_HOME/bin/java" -version 2>&1 | head -1) (toolchains: ${versions[*]})"
 
@@ -222,63 +222,76 @@ module_java() {
   cooee_prefetch_gradle
 }
 
-# Cloud fix, the Gradle-native companion to cooee_jvm_utf8_opts: pin
-#   org.gradle.jvmargs=-Dfile.encoding=UTF-8
+# Cloud fix, the Gradle-native companion to the JAVA_TOOL_OPTIONS flags: pin
+# every flag the cloud fixes added (see cooee_add_jvm_flag — proxy host/port +
+# nonProxyHosts, the extra-CA truststore, -Dfile.encoding=UTF-8) on
+#   org.gradle.jvmargs
 # in the *user-dir* gradle.properties ($GRADLE_USER_HOME/gradle.properties,
-# default ~/.gradle/gradle.properties). JAVA_TOOL_OPTIONS already carries
-# -Dfile.encoding=UTF-8 for every JVM this shell starts, but a Gradle daemon or
-# wrapper launched outside this shell (an IDE, a detached build) may not inherit
-# it — so also write the flag through Gradle's own canonical channel, where it
-# applies to the client, its daemon, and forked workers regardless.
+# default ~/.gradle/gradle.properties).
+#
+# This is now the PRIMARY channel, not a backstop. JAVA_TOOL_OPTIONS is no longer
+# forwarded to harness env files (see COOEE_ENV_SHELL_ONLY: harnesses replay
+# those as unquoted shell, and a value with spaces and pipes turns into a spray
+# of bogus commands on every command the agent runs) and is restored to its entry
+# value before we exit. gradle.properties has neither problem: Gradle parses it
+# as properties, it needs no environment inheritance, and it reaches the client,
+# its daemon, and every forked worker — including a daemon started by an IDE or a
+# bare ./gradlew, which never saw this shell.
 #
 # Merge-safe and idempotent — never clobbers a user's existing heap/other args:
-#   * no gradle.properties / no org.gradle.jvmargs line -> append a fresh
-#     `org.gradle.jvmargs=-Dfile.encoding=UTF-8`.
-#   * an org.gradle.jvmargs WITHOUT any -Dfile.encoding -> append the flag to
-#     that line in place, preserving its existing args (-Xmx, -XX:…).
-#   * an org.gradle.jvmargs that already sets -Dfile.encoding (UTF-8, or a
-#     deliberate other charset) -> left untouched; we never override an encoding
-#     the user chose.
+#   * no gradle.properties / no org.gradle.jvmargs line -> append a fresh line
+#     with our flags.
+#   * an org.gradle.jvmargs line -> append only the flags whose *property name*
+#     (the -Dkey= prefix) isn't already on it, so a value the user chose
+#     deliberately (a different charset, their own proxy) always wins.
 # Opt out entirely with COOEE_NO_GRADLE_PROPS=1.
-cooee_gradle_props_utf8() {
+cooee_gradle_props_jvmargs() {
   if [[ "${COOEE_NO_GRADLE_PROPS:-0}" == 1 ]]; then
-    log "java: skipping user-dir gradle.properties UTF-8 write (COOEE_NO_GRADLE_PROPS=1)."
+    log "java: skipping user-dir gradle.properties JVM-args write (COOEE_NO_GRADLE_PROPS=1)."
     return 0
   fi
+  [[ -n "${COOEE_JVM_FLAGS:-}" ]] || { log "java: no cloud JVM flags to pin in gradle.properties."; return 0; }
 
   local guh="${GRADLE_USER_HOME:-$HOME/.gradle}"
   local props="$guh/gradle.properties"
   mkdir -p "$guh" 2>/dev/null || {
-    warn "java: can't create $guh; skipping user-dir gradle.properties UTF-8 write."; return 0; }
+    warn "java: can't create $guh; skipping user-dir gradle.properties JVM-args write."; return 0; }
 
-  # Already pins an explicit file.encoding on an org.gradle.jvmargs line? Respect
-  # it — UTF-8 means we're done, any other charset is the user's deliberate call.
-  if [[ -f "$props" ]] && \
-     grep -Eq '^[[:space:]]*org\.gradle\.jvmargs[[:space:]]*=.*-Dfile\.encoding=' "$props"; then
-    log "java: $props already sets file.encoding on org.gradle.jvmargs; leaving it as-is."
+  # Existing org.gradle.jvmargs line (empty when absent) — used to decide which
+  # of our flags are already represented.
+  local existing=""
+  [[ -f "$props" ]] && existing=$(grep -E '^[[:space:]]*org\.gradle\.jvmargs[[:space:]]*=' "$props" | head -1)
+
+  local -a add=()
+  local flag key
+  for flag in $COOEE_JVM_FLAGS; do
+    key="${flag%%=*}="                       # -Dfile.encoding=UTF-8 -> -Dfile.encoding=
+    [[ "$existing" == *"$key"* ]] && continue
+    add+=("$flag")
+  done
+  if (( ! ${#add[@]} )); then
+    log "java: $props already carries every cloud JVM flag; leaving it as-is."
     return 0
   fi
 
-  # An org.gradle.jvmargs line without a file.encoding -> extend it in place so
-  # the user's other JVM args (heap, GC, …) are preserved.
-  if [[ -f "$props" ]] && \
-     grep -Eq '^[[:space:]]*org\.gradle\.jvmargs[[:space:]]*=' "$props"; then
-    local tmp; tmp=$(mktemp "${TMPDIR:-/tmp}/cooee-gradle-props.XXXXXX") || {
-      warn "java: couldn't stage a gradle.properties edit; leaving $props unchanged."; return 0; }
-    if sed -E 's/^([[:space:]]*org\.gradle\.jvmargs[[:space:]]*=.*)$/\1 -Dfile.encoding=UTF-8/' \
-         "$props" > "$tmp" && mv -f "$tmp" "$props"; then
-      ok "java: appended -Dfile.encoding=UTF-8 to org.gradle.jvmargs in $props."
+  if [[ -z "$existing" ]]; then
+    if printf 'org.gradle.jvmargs=%s\n' "${add[*]}" >> "$props"; then
+      ok "java: set org.gradle.jvmargs=${add[*]} in $props."
     else
-      warn "java: couldn't update $props; leaving it unchanged."; rm -f "$tmp"
+      warn "java: couldn't write $props; skipping user-dir gradle.properties JVM-args write."
     fi
     return 0
   fi
 
-  # No org.gradle.jvmargs at all -> add the line (creating the file if needed).
-  if printf 'org.gradle.jvmargs=-Dfile.encoding=UTF-8\n' >> "$props"; then
-    ok "java: set org.gradle.jvmargs=-Dfile.encoding=UTF-8 in $props."
+  # Extend the existing line in place so the user's other JVM args (heap, GC, …)
+  # are preserved.
+  local tmp; tmp=$(mktemp "${TMPDIR:-/tmp}/cooee-gradle-props.XXXXXX") || {
+    warn "java: couldn't stage a gradle.properties edit; leaving $props unchanged."; return 0; }
+  if sed -E "s|^([[:space:]]*org\.gradle\.jvmargs[[:space:]]*=.*)$|\1 ${add[*]}|" \
+       "$props" > "$tmp" && mv -f "$tmp" "$props"; then
+    ok "java: appended ${add[*]} to org.gradle.jvmargs in $props."
   else
-    warn "java: couldn't write $props; skipping user-dir gradle.properties UTF-8 write."
+    warn "java: couldn't update $props; leaving it unchanged."; rm -f "$tmp"
   fi
 }
 

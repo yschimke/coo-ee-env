@@ -124,6 +124,14 @@ main() {
   # Wire up auto-activation so the env applies without a manual `source`.
   cooee_install_activation
 
+  # Hand JAVA_TOOL_OPTIONS back exactly as we found it. Provisioning above needed
+  # the enriched value for its own JVM calls, but leaving it changed is what puts
+  # it into a harness's environment snapshot — where a value with spaces and
+  # pipes is replayed as unquoted shell and sprays "command not found" into every
+  # later command. Gradle already has these flags via org.gradle.jvmargs, and a
+  # shell that sources $COOEE_PROFILE still gets the full value, properly quoted.
+  cooee_restore_java_tool_options
+
   echo
   ok "Environment ready: ${MODULES[*]:-}"
   log "Persisted env -> ${COOEE_PROFILE}"

@@ -96,8 +96,76 @@ add_env() {  # add_env KEY VALUE — export now and persist for later shells
   local key=$1 val=$2
   export "${key}=${val}"
   printf 'export %s=%q\n' "$key" "$val" >> "$COOEE_PROFILE"
+  cooee_env_is_shell_only "$key" && return 0
   printf '%s=%s\n'        "$key" "$val" >> "$COOEE_HARNESS_ENV"
   cooee_forward_to_harness "${key}=${val}"
+}
+
+# Variables that must NOT reach a harness env file, because harnesses replay
+# those files as *unquoted shell*, one `KEY=value` line at a time.
+#
+# A value containing whitespace then stops being one assignment. Claude Code
+# inlines the file as the preamble of every Bash call, so
+#
+#   JAVA_TOOL_OPTIONS=-Dhttp.proxyHost=p -Dhttp.proxyPort=8080 -Dhttp.nonProxyHosts=a|b
+#
+# assigns only the first token, runs `-Dhttp.proxyPort=8080` as a command, and
+# then splits the pipe-separated nonProxyHosts list into a pipeline of more
+# bogus commands — spraying dozens of "command not found" lines into the result
+# of *every* command the agent runs, for the rest of the session. The variable
+# is still set correctly in the shell; the damage is pure output pollution, and
+# it drowns real output. (`cooee_trust_cas_in_jdk` already worked around one
+# instance of this by keeping its own option whitespace-free; this generalises
+# the rule instead of re-discovering it per option.)
+#
+# Skipped keys are still exported for this run and still written to
+# $COOEE_PROFILE (`export KEY=%q`, properly quoted), so a shell that sources the
+# profile gets them. What replaces the harness path for Gradle — the consumer
+# that actually needs these flags — is $GRADLE_USER_HOME/gradle.properties; see
+# cooee_gradle_props_jvmargs.
+COOEE_ENV_SHELL_ONLY="${COOEE_ENV_SHELL_ONLY:-JAVA_TOOL_OPTIONS}"
+
+cooee_env_is_shell_only() {  # <key>
+  local k
+  for k in $COOEE_ENV_SHELL_ONLY; do [[ "$1" == "$k" ]] && return 0; done
+  return 1
+}
+
+# JAVA_TOOL_OPTIONS as it was when this script started, so the footer can put it
+# back before exiting. Claude Code derives its replay file from the *difference*
+# this hook makes to the environment, so a variable we leave exactly as we found
+# it never enters the preamble at all — which is the only way to keep the
+# container's own (equally space-laden) value out of it too.
+COOEE_ORIG_JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS-}"
+COOEE_ORIG_JAVA_TOOL_OPTIONS_SET=0
+[[ -n "${JAVA_TOOL_OPTIONS+x}" ]] && COOEE_ORIG_JAVA_TOOL_OPTIONS_SET=1
+
+# Restore JAVA_TOOL_OPTIONS to its entry value. Called from the footer once all
+# provisioning (which legitimately needs the enriched value for its own JVM
+# calls) is done.
+cooee_restore_java_tool_options() {
+  if (( COOEE_ORIG_JAVA_TOOL_OPTIONS_SET )); then
+    export JAVA_TOOL_OPTIONS="$COOEE_ORIG_JAVA_TOOL_OPTIONS"
+  else
+    unset JAVA_TOOL_OPTIONS
+  fi
+}
+
+# Every JVM flag the cloud fixes added this run, so the java module can also pin
+# them through Gradle's own channel (org.gradle.jvmargs in the user-dir
+# gradle.properties). That file is read by the Gradle client, its daemon, and
+# every forked worker, needs no environment inheritance, and — unlike a harness
+# env file — is not parsed as shell, so spaces in the value are simply fine.
+COOEE_JVM_FLAGS=""
+
+# Append <flags> to JAVA_TOOL_OPTIONS (for this run and the persisted profile)
+# and record them for the Gradle-properties pin. Single entry point so a new
+# cloud fix can't add a flag that reaches one channel but not the other.
+cooee_add_jvm_flag() {  # <flag> [<flag> ...]
+  local flags="$*"
+  [[ -n "$flags" ]] || return 0
+  add_env JAVA_TOOL_OPTIONS "${JAVA_TOOL_OPTIONS:+$JAVA_TOOL_OPTIONS }$flags"
+  COOEE_JVM_FLAGS="${COOEE_JVM_FLAGS:+$COOEE_JVM_FLAGS }$flags"
 }
 
 # Short-circuit replay: re-export the last run's env into THIS session without
@@ -359,9 +427,8 @@ cooee_trust_cas_in_jdk() {  # cooee_trust_cas_in_jdk <java_home>
   # whitespace-free token means the persisted env line (and any naive consumer
   # that word-splits it) can't break it into a bogus second command — the source
   # of the stray "...trustStorePassword=changeit: command not found" noise.
-  local opts="-Djavax.net.ssl.trustStore=$store"
-  add_env JAVA_TOOL_OPTIONS "${JAVA_TOOL_OPTIONS:+$JAVA_TOOL_OPTIONS }$opts"
-  ok "JDK now trusts ${#extra[@]} extra CA(s) via JAVA_TOOL_OPTIONS."
+  cooee_add_jvm_flag "-Djavax.net.ssl.trustStore=$store"
+  ok "JDK now trusts ${#extra[@]} extra CA(s) (JAVA_TOOL_OPTIONS + org.gradle.jvmargs)."
 }
 
 # Cloud fix: the JVM ignores the http(s)_proxy env vars that curl honors, so in
@@ -398,8 +465,7 @@ cooee_jvm_proxy_opts() {
   [[ -n "$port" ]] && opts="$opts -Dhttp.proxyPort=$port -Dhttps.proxyPort=$port"
   opts="$opts -Dhttp.nonProxyHosts=$nph"
 
-  # Append to (not clobber) any JAVA_TOOL_OPTIONS already set (e.g. the JDK CA fix).
-  add_env JAVA_TOOL_OPTIONS "${JAVA_TOOL_OPTIONS:+$JAVA_TOOL_OPTIONS }$opts"
+  cooee_add_jvm_flag "$opts"
   ok "JVM routed through proxy $host${port:+:$port} (Gradle wrapper/daemon will reach the network)."
 }
 
@@ -431,8 +497,7 @@ cooee_jvm_utf8_opts() {
       ok "Locale set to C.UTF-8 (JVM sun.jnu.encoding + tool I/O now UTF-8)." ;;
   esac
 
-  # Append to (not clobber) any JAVA_TOOL_OPTIONS already set (proxy/CA fixes).
-  add_env JAVA_TOOL_OPTIONS "${JAVA_TOOL_OPTIONS:+$JAVA_TOOL_OPTIONS }-Dfile.encoding=UTF-8"
+  cooee_add_jvm_flag "-Dfile.encoding=UTF-8"
   ok "JVM file.encoding pinned to UTF-8 (Gradle client/daemon/workers)."
 }
 
