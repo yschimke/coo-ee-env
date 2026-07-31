@@ -110,6 +110,15 @@ main() {
     gha_endgroup
   done
 
+  # Post-module finalizers: steps that need the *combined* result of several
+  # modules and so can't live inside any one of them. Guarded by declare -F
+  # because the rendered script only contains the modules that were requested.
+  # (compose: point JAVA_HOME at a JDK that carries the Compose Desktop GL libs —
+  # needs the JDK the `java` module settled on, and module order isn't fixed.)
+  if declare -F cooee_compose_wrap_render_jdk >/dev/null; then
+    cooee_compose_wrap_render_jdk
+  fi
+
   printf '%s' "${MODULES[*]:-}" > "$COOEE_STAMP"
 
   # Wire up auto-activation so the env applies without a manual `source`.
