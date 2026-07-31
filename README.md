@@ -74,6 +74,7 @@ treats an already-present package as success — so a partial/cold box is
 | `rust`    | `rustc` + `cargo`                         | `cache.nixos.org`, `static.crates.io`, `index.crates.io` | Codex: `CODEX_ENV_RUST_VERSION` |
 | `ruby`    | Ruby + RubyGems (default 3; `ruby[3.4.9]` to pin) | `cache.nixos.org`, `rubygems.org`, `index.rubygems.org` | Codex: `CODEX_ENV_RUBY_VERSION` |
 | `compose` | Jetpack Compose `@Preview` rendering: installs the `compose-preview` agent skill (renders previews to PNG, no emulator), pulls in a JDK + the Android SDK, and provisions the native GL libs (`libGL`/`libX11`/`fontconfig`/`libstdc++`) Compose **Desktop** (skiko/Skia) loads at render time, onto `LD_LIBRARY_PATH`; **implies `java`, `android`** | `github.com`, `cache.nixos.org` (git + the GL libs) | `COOEE_NO_DESKTOP_GL=1` to skip GL; `COOEE_DESKTOP_GL_PACKAGES` to adjust the set |
+| `dotfiles` | A config repo cloned and applied to `$HOME`; `dotfiles[owner/repo]` (optionally `@ref`) — **required**, there is no default repo. Applies by linking the top-level dotfiles (backing up anything it would clobber to `*.cooee.bak`), or via GNU Stow when that's already installed and the repo is a package tree. A repo-provided `install.sh` is **not** run unless `COOEE_DOTFILES_RUN_INSTALL=1` | `github.com` (`cache.nixos.org` if `git` is absent) | `COOEE_DOTFILES_RUN_INSTALL=1` to allow the repo's installer |
 | `skills`  | Claude Code agent skills, linked into `~/.claude/skills/`; `skills[owner/repo]` links every skill in a repo, `skills[owner/repo/<skill>]` links just one | `github.com` (`cache.nixos.org` if `git` is absent) | — |
 | `tools`   | Arbitrary CLI tools from nixpkgs, by name (`tools[ripgrep,jq,gh]`) | `cache.nixos.org` | — |
 
@@ -116,6 +117,34 @@ A repo entry takes an optional **skill selector** — a path segment after
 `skills[owner/repo/<skill>]` links only the directory named `<skill>` (matched
 by name, wherever it lives in the repo), and `@ref` still applies
 (`owner/repo/<skill>@v1`). Bare `owner/repo` links every skill, as before.
+
+`dotfiles` takes the **same coordinate shape** and reuses the same clone/cache/
+re-pull path, but applies the repo to `$HOME` instead of linking skills out of it:
+
+```bash
+curl -fsSL -g 'https://env.coo.ee/dotfiles[yschimke/dotfiles]' | bash
+curl -fsSL -g 'https://env.coo.ee/dotfiles[yschimke/dotfiles@main],tools[ripgrep]' | bash
+```
+
+Unlike `skills` it has **no default** — bare `dotfiles` warns with usage rather
+than guessing whose config you meant. How a repo gets applied has no standard, so
+it tries the strategies most-specific-first:
+
+1. the repo's own `install.sh` / `bootstrap` / `setup`, **only** with
+   `COOEE_DOTFILES_RUN_INSTALL=1`;
+2. **GNU Stow**, when `stow` is already on the box and the repo looks like a
+   package tree (top-level directories, no top-level dotfiles) — never installed
+   just for this;
+3. **symlink** each top-level dotfile into `$HOME`.
+
+The opt-in on step 1 is the one deliberate restriction: the repo comes from a
+request parameter, so running its installer is arbitrary code execution triggered
+by a URL, while linking files is not. Turn it on for your own dotfiles.
+Everything it would overwrite is moved to `<name>.cooee.bak` first, and an
+existing backup is never overwritten — so the original survives however many
+times the module runs. Repo metadata (`.git`, `.github`, `.gitignore`,
+`.gitmodules`, `.gitattributes`) is never linked; override the list with
+`COOEE_DOTFILES_SKIP`.
 
 The same brackets carry **versions** for the toolchain modules:
 
