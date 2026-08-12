@@ -191,15 +191,24 @@ test("compose is a curated target that implies java and android", () => {
   assert.ok(byName["compose"].hosts.need.map((h) => h.host).includes("github.com"));
 });
 
-test("compose provisions the Compose Desktop native GL libs onto LD_LIBRARY_PATH", () => {
+test("compose provisions the Compose Desktop native GL libs into a wrapper JDK", () => {
   // skiko (Compose Desktop's Skia backend) has load-time DT_NEEDED deps the Nix
   // render JVM's loader can't find in the system /usr/lib; compose builds them
-  // from the Nix cache and prepends the closure to LD_LIBRARY_PATH so the forked
-  // render worker can load libskiko.
+  // from the Nix cache and gives them to that JVM through a wrapper JDK, whose
+  // bin/java sets LD_LIBRARY_PATH for itself. Not session-wide: the libraries
+  // carry the store's own glibc, and a system-glibc JVM that sees them dies at
+  // dlopen (compose-ai-tools#3690).
   const body = render("compose").body;
   assert.ok(body.includes("cooee_compose_desktop_gl"), "defines + calls the desktop GL setup");
-  assert.ok(body.includes("cooee_prepend_ld_library_path"), "persists LD_LIBRARY_PATH for future shells + the harness");
-  assert.ok(body.includes("LD_LIBRARY_PATH"), "sets LD_LIBRARY_PATH");
+  assert.ok(body.includes("cooee_build_gl_jdk_wrapper"), "builds the GL-aware wrapper JDK");
+  assert.ok(
+    body.includes("cooee_prepend_ld_library_path"),
+    "keeps the LD_LIBRARY_PATH fallback for when the wrapper can't be built",
+  );
+  assert.ok(
+    body.includes("cooee_unforward_from_harness LD_LIBRARY_PATH"),
+    "retires a session-wide LD_LIBRARY_PATH left by an earlier version of this module",
+  );
   // The default package set covers every soname skiko links directly.
   for (const pkg of ["libglvnd", "xorg.libX11", "fontconfig.lib", "stdenv.cc.cc.lib"]) {
     assert.ok(body.includes(pkg), `default GL package set includes ${pkg}`);

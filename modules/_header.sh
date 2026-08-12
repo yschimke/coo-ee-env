@@ -69,6 +69,30 @@ cooee_forward_to_harness() {  # cooee_forward_to_harness KEY=value
   return 0
 }
 
+# The counterpart: drop every `KEY=…` line from the harness env files, for a
+# variable a PREVIOUS run forwarded and this one has decided must not be set.
+# Harness files are upserted rather than rebuilt (see above), so without this a
+# retired value outlives the run that retired it — and since Claude Code replays
+# the file as the preamble of every Bash call, it would keep poisoning every
+# command in the session. No-op when the key isn't there.
+cooee_unforward_from_harness() {  # cooee_unforward_from_harness KEY
+  cooee_env_file_delete "${CLAUDE_ENV_FILE:-}" "$1"
+  cooee_env_file_delete "${GITHUB_ENV:-}"      "$1"
+  return 0
+}
+
+# Remove every `KEY=…` line from FILE, atomically. No-op when FILE is empty
+# (harness absent), missing, or carries no such key.
+cooee_env_file_delete() {  # cooee_env_file_delete FILE KEY
+  local file=$1 key=$2
+  [[ -n "$file" && -e "$file" ]] || return 0
+  grep -q -- "^${key}=" "$file" 2>/dev/null || return 0
+  local tmp
+  tmp=$(mktemp "${file}.cooee.XXXXXX" 2>/dev/null) || return 0
+  grep -v -- "^${key}=" "$file" > "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$file"
+}
+
 # Replace every existing `KEY=…` line in FILE with LINE (appending if none was
 # present), leaving all other lines — including keys written by other harness
 # hooks — untouched. No-op when FILE is empty (harness absent). Atomic via a

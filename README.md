@@ -73,7 +73,7 @@ treats an already-present package as success — so a partial/cold box is
 | `go`      | Go toolchain, `GOPATH`                    | `cache.nixos.org`, `proxy.golang.org`, `sum.golang.org` | Codex: `CODEX_ENV_GO_VERSION` |
 | `rust`    | `rustc` + `cargo`                         | `cache.nixos.org`, `static.crates.io`, `index.crates.io` | Codex: `CODEX_ENV_RUST_VERSION` |
 | `ruby`    | Ruby + RubyGems (default 3; `ruby[3.4.9]` to pin) | `cache.nixos.org`, `rubygems.org`, `index.rubygems.org` | Codex: `CODEX_ENV_RUBY_VERSION` |
-| `compose` | Jetpack Compose `@Preview` rendering: installs the `compose-preview` agent skill (renders previews to PNG, no emulator), pulls in a JDK + the Android SDK, and provisions the native GL libs (`libGL`/`libX11`/`fontconfig`/`libstdc++`) Compose **Desktop** (skiko/Skia) loads at render time, onto `LD_LIBRARY_PATH`; **implies `java`, `android`** | `github.com`, `cache.nixos.org` (git + the GL libs) | `COOEE_NO_DESKTOP_GL=1` to skip GL; `COOEE_DESKTOP_GL_PACKAGES` to adjust the set |
+| `compose` | Jetpack Compose `@Preview` rendering: installs the `compose-preview` agent skill (renders previews to PNG, no emulator), pulls in a JDK + the Android SDK, and provisions the native GL libs (`libGL`/`libX11`/`fontconfig`/`libstdc++`) Compose **Desktop** (skiko/Skia) loads at render time, baked into a wrapper JDK rather than the session environment; **implies `java`, `android`** | `github.com`, `cache.nixos.org` (git + the GL libs) | `COOEE_NO_DESKTOP_GL=1` to skip GL; `COOEE_DESKTOP_GL_PACKAGES` to adjust the set |
 | `dotfiles` | A config repo cloned and applied to `$HOME`; `dotfiles[owner/repo]` (optionally `@ref`) — **required**, there is no default repo. Applies by linking the top-level dotfiles (backing up anything it would clobber to `*.cooee.bak`), or via GNU Stow when that's already installed and the repo is a package tree. A repo-provided `install.sh` is **not** run unless `COOEE_DOTFILES_RUN_INSTALL=1` | `github.com` (`cache.nixos.org` if `git` is absent) | `COOEE_DOTFILES_RUN_INSTALL=1` to allow the repo's installer |
 | `skills`  | Claude Code agent skills, linked into `~/.claude/skills/`; `skills[owner/repo]` links every skill in a repo, `skills[owner/repo/<skill>]` links just one | `github.com` (`cache.nixos.org` if `git` is absent) | — |
 | `tools`   | Arbitrary CLI tools from nixpkgs, by name (`tools[ripgrep,jq,gh]`) | `cache.nixos.org` | — |
@@ -208,9 +208,24 @@ load-time dependencies on `libGL.so.1`, `libX11.so.6`, `libfontconfig.so.1` and
 loader searches the Nix store rather than the system `/usr/lib`, so without help
 the forked render worker dies at load with `libGL.so.1: cannot open shared
 object file`. `compose` builds those libs from the Nix cache (a closure
-consistent with the JDK's own glibc) and prepends them to `LD_LIBRARY_PATH`,
-which the Nix `java` wrapper preserves into the JVM. Skip it with
-`COOEE_NO_DESKTOP_GL=1`, or adjust the set with `COOEE_DESKTOP_GL_PACKAGES`.
+consistent with the JDK's own glibc) and hands them to the render JVM **through
+the JDK itself**: it builds a wrapper JDK whose `bin/java` sets
+`LD_LIBRARY_PATH` before exec'ing the real launcher, and points `JAVA_HOME` and
+`org.gradle.java.home` at it. Skip it with `COOEE_NO_DESKTOP_GL=1`, or adjust
+the set with `COOEE_DESKTOP_GL_PACKAGES`.
+
+The wrapper rather than a session-wide `LD_LIBRARY_PATH` for two reasons. It
+survives harnesses that replay a hook's environment as bare `KEY=value` lines
+with no `export` (a *new* variable then never reaches the Gradle daemon). And,
+more importantly, store libraries must only ever be loaded by a store JVM: a
+store `libGL` drags the store's own glibc into the process, so a JVM linked
+against the system glibc — an Ubuntu JDK 21 picked by `jvmToolchain(21)`, say —
+dies at `dlopen` with ``libc.so.6: version `GLIBC_ABI_DT_X86_64_PLT' not
+found``. A session-wide variable reaches that JVM too; a wrapped JDK does not
+(see [compose-ai-tools#3690](https://github.com/yschimke/compose-ai-tools/issues/3690)).
+A conventional (non-store) JDK is left alone entirely — its loader finds the
+system libs itself, and store libs would only break it. `LD_LIBRARY_PATH` is
+used only as a fallback, when the wrapper JDK could not be built.
 
 `tools` is the same idea for the long tail of CLIs that don't deserve their own
 module — each parameter is a nixpkgs attribute name, installed through the same
