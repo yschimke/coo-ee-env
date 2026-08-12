@@ -78,8 +78,10 @@ module_android-cli() {
   mkdir -p "$dir"
 
   log "Downloading the Android CLI ($url_os) from dl.google.com..."
-  curl -fsSL "https://dl.google.com/android/cli/latest/${url_os}/android" -o "$bin" \
-    || die "android-cli: download failed (is dl.google.com reachable?)."
+  # Retried: same class of failure as the Nix installer — a CDN 5xx here would
+  # otherwise take the whole provisioning run down with an opaque curl exit code.
+  cooee_fetch "https://dl.google.com/android/cli/latest/${url_os}/android" "$bin" \
+    || die "android-cli: download failed after several attempts (is dl.google.com reachable?)."
   chmod +x "$bin"
 
   # Persist the bin dir on PATH for this and every later shell — via the env

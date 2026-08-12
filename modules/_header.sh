@@ -743,6 +743,37 @@ cooee_detect_provider() {
   fi
 }
 
+# ---- fetching -------------------------------------------------------------
+
+# Download <url> to <dest>, retrying transient failures. Returns non-zero when
+# every attempt failed, leaving the caller to decide between `die` and a warn.
+#
+# Every download in a provisioning run is one 503 away from taking the whole
+# session with it: `curl -f` exits 22 on an HTTP error, the script runs under
+# `set -e`, and the agent harness reports nothing but "Setup script failed with
+# exit code 22". A CDN answering 503 for a few seconds — install.determinate.
+# systems did exactly this — is not a broken environment, it is a retry.
+#
+# Two layers on purpose. curl's own `--retry` handles the sub-second case
+# (connection resets, an immediate 429/5xx) without paying process startup
+# again; the outer loop with growing backoff handles an endpoint that is having
+# a bad half-minute. Bounded at four attempts (~14s of sleeping plus curl's own
+# waits) so a genuinely blocked host still fails fast enough to be diagnosed by
+# the allowlist help above rather than hanging the session.
+cooee_fetch() {  # cooee_fetch URL DEST [ATTEMPTS]
+  local url=$1 dest=$2 attempts=${3:-4} i delay=2
+  for (( i = 1; i <= attempts; i++ )); do
+    if curl -fsSL --retry 2 --retry-delay 1 --retry-connrefused -o "$dest" "$url"; then
+      return 0
+    fi
+    (( i < attempts )) || break
+    warn "fetch failed for $url (attempt $i/$attempts); retrying in ${delay}s..."
+    sleep "$delay"
+    delay=$(( delay * 2 ))
+  done
+  return 1
+}
+
 # ---- preconditions: tools, OS, and host reachability ----------------------
 probe_host() {
   # Reachable == we got *any* HTTP response (even 403/404). "000" == the
