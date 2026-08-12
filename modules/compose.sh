@@ -127,8 +127,10 @@ cooee_compose_desktop_gl() {
   local -a gl_pkgs; read -r -a gl_pkgs <<< "$COOEE_DESKTOP_GL_PACKAGES"
   local paths_nix="" a
   for a in "${gl_pkgs[@]}"; do paths_nix+="pkgs.$a "; done
+  cooee_nixpkgs_note_revision
+  local nixpkgs_ref; nixpkgs_ref="$(cooee_nixpkgs_ref)"
   local expr="let
-    pkgs = import (builtins.getFlake \"nixpkgs\").outPath { system = builtins.currentSystem; };
+    pkgs = import (builtins.getFlake \"${nixpkgs_ref}\").outPath { system = builtins.currentSystem; };
   in pkgs.buildEnv { name = \"cooee-desktop-gl\"; paths = [ ${paths_nix}]; }"
 
   local link="$HOME/.cache/coo-ee/desktop-gl"
@@ -138,7 +140,7 @@ cooee_compose_desktop_gl() {
   local out errf; errf=$(mktemp "${TMPDIR:-/tmp}/cooee-desktop-gl.XXXXXX" 2>/dev/null)
   if ! out=$(nix build --impure --print-out-paths --out-link "$link" --expr "$expr" 2>"$errf"); then
     [[ -n "$errf" ]] && { cat "$errf" >&2; rm -f "$errf"; }
-    warn "compose: couldn't build the desktop GL libs; Compose Desktop renders may fail to load skiko. Set COOEE_NO_DESKTOP_GL=1 to silence, or COOEE_DESKTOP_GL_PACKAGES to adjust the set."
+    warn "compose: couldn't build the desktop GL libs; Compose Desktop renders may fail to load skiko. $(cooee_nixpkgs_hint) Set COOEE_NO_DESKTOP_GL=1 to silence, or COOEE_DESKTOP_GL_PACKAGES to adjust the set."
     return 0
   fi
   [[ -n "$errf" ]] && rm -f "$errf"

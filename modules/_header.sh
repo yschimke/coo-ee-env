@@ -743,6 +743,51 @@ cooee_detect_provider() {
   fi
 }
 
+# ---- nixpkgs --------------------------------------------------------------
+
+# The nixpkgs flake ref every module builds against.
+#
+# By default this is the registry's `nixpkgs`, which is a *rolling* ref — on a
+# Determinate install it resolves to nixpkgs-weekly or nixpkgs-unstable. That is
+# usually what you want, and occasionally the whole problem: when it lands on a
+# revision the binary cache has not finished building, nothing substitutes and
+# Nix compiles the closure from source. The visible symptom is bewildering —
+# `bash-5.3p15.drv` failing to build during an *Android SDK* provision — and it
+# has nothing to do with the SDK, dl.google.com, or the requested build-tools.
+#
+# COOEE_NIXPKGS_REF pins a way out without waiting for a code change, e.g.
+#   COOEE_NIXPKGS_REF=github:NixOS/nixpkgs/nixos-25.05
+cooee_nixpkgs_ref() { printf '%s' "${COOEE_NIXPKGS_REF:-nixpkgs}"; }
+
+# Log which revision that ref actually resolved to, once per run.
+#
+# This is the first fact anyone needs when a Nix build fails and the last one
+# they can get after the fact: a rolling ref means two sessions an hour apart
+# build different package sets, and nothing in a failure log says which.
+cooee_nixpkgs_note_revision() {
+  [[ -n "${_COOEE_NIXPKGS_NOTED:-}" ]] && return 0
+  _COOEE_NIXPKGS_NOTED=1
+  local ref rev
+  ref="$(cooee_nixpkgs_ref)"
+  # `|| true` because this is diagnostics: under `set -euo pipefail` a failing
+  # command substitution takes the whole provisioning run with it, and "we could
+  # not name the revision" must never be the thing that stops a working build.
+  rev="$(nix flake metadata "$ref" 2>/dev/null | sed -n 's/^ *Revision: *//p' | head -1)" || true
+  if [[ -n "$rev" ]]; then
+    log "nixpkgs: $ref -> $rev"
+  else
+    log "nixpkgs: $ref (revision could not be resolved)"
+  fi
+}
+
+# One line for a failure message, naming the ref and the escape hatch.
+cooee_nixpkgs_hint() {
+  printf '%s' "Built against nixpkgs ref '$(cooee_nixpkgs_ref)'. If the failure is a *source \
+build* of something unrelated (bash, glibc, ncurses), that ref resolved to a revision \
+cache.nixos.org has not built yet — pin a cached one with \
+COOEE_NIXPKGS_REF=github:NixOS/nixpkgs/nixos-25.05 (or any known-good rev) and re-run."
+}
+
 # ---- fetching -------------------------------------------------------------
 
 # Download <url> to <dest>, retrying transient failures. Returns non-zero when

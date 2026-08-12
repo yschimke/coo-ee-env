@@ -54,8 +54,10 @@ cooee_backend_android_sdk() {
       ];"
   fi
 
+  cooee_nixpkgs_note_revision
+  local nixpkgs_ref; nixpkgs_ref="$(cooee_nixpkgs_ref)"
   local expr="let
-    pkgs = import (builtins.getFlake \"nixpkgs\").outPath {
+    pkgs = import (builtins.getFlake \"${nixpkgs_ref}\").outPath {
       system = builtins.currentSystem;
       config.allowUnfree = true;
       config.android_sdk.accept_license = true;
@@ -78,9 +80,26 @@ cooee_backend_android_sdk() {
   local link="$HOME/.cache/coo-ee/android-sdk"
   mkdir -p "$(dirname "$link")"
   local out
-  if ! out=$(nix build --impure --print-out-paths --out-link "$link" --expr "$expr"); then
-    die "android: SDK build failed. Common causes: dl.google.com unreachable; the requested platform/build-tools versions are absent from nixpkgs (override COOEE_ANDROID_BUILD_TOOLS / COOEE_ANDROID_DEFAULT_PLATFORM); or the build tried to compile 32-bit (i686) ncurses on a kernel without 32-bit x86 support ('Exec format error' — keep the default COOEE_ANDROID_NCURSES5_STUB=1 that stubs it out)."
+  # stderr is captured so the failure can quote Nix's *first* error line. The
+  # message used to offer three guesses (dl.google.com, wrong build-tools
+  # versions, 32-bit ncurses) and a real failure turned out to be none of them —
+  # a guess in place of the actual error is worse than no guess at all, because
+  # it sends the reader off to check things that were never wrong.
+  local errf; errf=$(mktemp "${TMPDIR:-/tmp}/cooee-android-sdk.XXXXXX" 2>/dev/null)
+  if ! out=$(nix build --impure --print-out-paths --out-link "$link" --expr "$expr" 2>"$errf"); then
+    local first_error=""
+    [[ -n "$errf" ]] && {
+      cat "$errf" >&2
+      first_error=$(grep -m1 -E '^error:' "$errf" 2>/dev/null)
+      rm -f "$errf"
+    }
+    die "android: SDK build failed.${first_error:+ First error: ${first_error}} \
+$(cooee_nixpkgs_hint) Other common causes: dl.google.com unreachable; the requested \
+platform/build-tools versions are absent from this nixpkgs (override COOEE_ANDROID_BUILD_TOOLS / \
+COOEE_ANDROID_DEFAULT_PLATFORM); or a 32-bit (i686) ncurses build on a kernel without 32-bit x86 \
+support ('Exec format error' — keep the default COOEE_ANDROID_NCURSES5_STUB=1 that stubs it out)."
   fi
+  [[ -n "$errf" ]] && rm -f "$errf"
   COOEE_ANDROID_SDK_DIR="$out/libexec/android-sdk"
 }
 
