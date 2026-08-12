@@ -24,9 +24,12 @@
 # Nix store, not the system /usr/lib — so those libs are invisible and the
 # forked render worker dies at load with "libGL.so.1: cannot open shared object
 # file". We provision them from the Nix cache (a self-consistent closure built
-# against the same glibc the JDK uses) and put them on LD_LIBRARY_PATH; the Nix
-# `java` wrapper preserves a pre-set LD_LIBRARY_PATH, so the value survives into
-# the JVM. See cooee_compose_desktop_gl.
+# against the same glibc the JDK uses) and hand them to that JVM *through the JDK
+# itself* — a wrapper JDK whose bin/java sets LD_LIBRARY_PATH before exec'ing the
+# real launcher. Not through the session environment: these libraries carry the
+# store's own glibc, so a JVM linked against the system one dies at dlopen if it
+# ever sees them (compose-ai-tools#3690), and a conventional JDK doesn't need
+# them anyway. See cooee_compose_desktop_gl + cooee_compose_wrap_render_jdk.
 # coo.ee:implies java android
 register_module compose
 need_host github.com      "git clone of the compose-preview skill repo"
@@ -64,6 +67,21 @@ COOEE_DESKTOP_GL_LIB=""
 # duplicates. The Nix JDK's own `java` wrapper only *prepends* its GTK/glib dirs
 # to an existing LD_LIBRARY_PATH (it never clears it), so the value set here
 # survives into the render JVM.
+#
+# FALLBACK ONLY, since the GL-aware render JDK below took over the job. A
+# session-wide LD_LIBRARY_PATH reaches *every* process the session starts, not
+# just the store JVM the store libraries belong to, and a store lib loaded into
+# a JVM linked against the system glibc is a hard failure, not a fallback:
+#
+#   /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_ABI_DT_X86_64_PLT' not found
+#     (required by /nix/store/…-glibc-2.42-67/lib/libpthread.so.0)
+#
+# That is compose-ai-tools#3690 — an Ubuntu JDK 21 picked by `jvmToolchain(21)`
+# inheriting this variable, and every preview in the module dying at dlopen. So
+# the libraries now travel with the JDK that can use them (see
+# cooee_compose_wrap_render_jdk) and this is only used when that wrapper could
+# not be built, where a *possibly* mismatched search path still beats a
+# certainly-missing libGL.
 cooee_prepend_ld_library_path() {  # <dir>
   local dir="$1"
   case ":${LD_LIBRARY_PATH:-}:" in
@@ -130,9 +148,12 @@ cooee_compose_desktop_gl() {
     warn "compose: desktop GL env built ($out) but libGL.so.1 is missing under $gllib; not touching LD_LIBRARY_PATH."
     return 0
   fi
-  cooee_prepend_ld_library_path "$gllib"
+  # Deliberately NOT put on LD_LIBRARY_PATH here: which JVMs may see these
+  # libraries is decided by cooee_compose_wrap_render_jdk, once JAVA_HOME is
+  # known. Exporting first and asking later is what handed store libraries to
+  # system-glibc JVMs (see cooee_prepend_ld_library_path).
   COOEE_DESKTOP_GL_LIB="$gllib"
-  ok "compose: desktop GL libs ready — $gllib on LD_LIBRARY_PATH (skiko can load libGL/libX11/fontconfig/libstdc++)."
+  ok "compose: desktop GL libs ready — $gllib (skiko's libGL/libX11/fontconfig/libstdc++)."
 }
 
 # ---- the render JVM carries the GL dir itself -------------------------------
@@ -249,11 +270,20 @@ cooee_gradle_props_java_home() {  # <java_home>
 cooee_compose_wrap_render_jdk() {
   [[ -n "$COOEE_DESKTOP_GL_LIB" ]] || return 0
   local real="${JAVA_HOME:-}"
+  # No JAVA_HOME means we cannot tell whether the render JVM is a store one, and store libraries on
+  # a system-glibc JVM fail harder (and far more confusingly) than a missing libGL does — so the
+  # unknown case gets nothing. The fallback below is taken only where the JDK is known to need it.
   [[ -n "$real" && -x "$real/bin/java" ]] || {
-    warn "compose: no usable JAVA_HOME; skipping the GL-aware render JDK."; return 0; }
+    warn "compose: no usable JAVA_HOME; skipping the GL-aware render JDK (Compose Desktop renders may fail with 'libGL.so.1: cannot open shared object file')."
+    return 0; }
 
   if cooee_jdk_loader_reads_system_cache "$real"; then
+    # A conventional JDK finds the system libGL/libX11/fontconfig/libstdc++ through
+    # /etc/ld.so.cache on its own, and handing it store libraries would *break* it — they carry the
+    # store's glibc. So this box gets no GL environment at all, and any left over from a run of an
+    # older version of this module is retired rather than left to poison the session.
     log "compose: $real is not a store JDK — its loader finds the system libs itself; no wrapper needed."
+    cooee_unforward_from_harness LD_LIBRARY_PATH
     return 0
   fi
 
@@ -263,19 +293,25 @@ cooee_compose_wrap_render_jdk() {
   local wrapper
   if ! wrapper=$(cooee_build_gl_jdk_wrapper "$real" "$COOEE_DESKTOP_GL_LIB" "$major") \
      || [[ -z "$wrapper" || ! -x "$wrapper/bin/java" ]]; then
-    warn "compose: couldn't build the GL-aware render JDK under $COOEE_JDK_GL_DIR; Compose Desktop renders will depend on LD_LIBRARY_PATH being inherited."
+    warn "compose: couldn't build the GL-aware render JDK under $COOEE_JDK_GL_DIR; falling back to LD_LIBRARY_PATH for the whole session."
+    cooee_prepend_ld_library_path "$COOEE_DESKTOP_GL_LIB"
     return 0
   fi
 
   # Prove it before advertising it: a JDK that can't start is worse than none.
   if ! "$wrapper/bin/java" -version >/dev/null 2>&1; then
     warn "compose: the GL-aware render JDK at $wrapper doesn't run; leaving JAVA_HOME at $real."
+    cooee_prepend_ld_library_path "$COOEE_DESKTOP_GL_LIB"
     return 0
   fi
 
   add_env JAVA_HOME "$wrapper"
   cooee_gradle_props_java_home "$wrapper"
-  ok "compose: render JDK $major wraps $real and carries $COOEE_DESKTOP_GL_LIB (skiko loads without LD_LIBRARY_PATH being inherited)."
+  # The wrapper carries the libraries, so nothing else in the session needs to — and must not:
+  # a session-wide value reaches system-glibc JVMs too. Retire any entry a previous run of this
+  # module left in the harness env file (it is upserted, never rebuilt).
+  cooee_unforward_from_harness LD_LIBRARY_PATH
+  ok "compose: render JDK $major wraps $real and carries $COOEE_DESKTOP_GL_LIB (only this JDK sees the store libs; LD_LIBRARY_PATH is left alone)."
 }
 
 module_compose() {

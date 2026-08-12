@@ -128,6 +128,97 @@ test("a non-store JAVA_HOME is left untouched — its loader finds system libs",
   assert.equal(out, `JAVA_HOME=${real}`);
 });
 
+// ---------------------------------------------------------------------------
+// Who is allowed to SEE the store libraries. compose-ai-tools#3690: a
+// session-wide LD_LIBRARY_PATH reaches every JVM, and a store lib inside a JVM
+// linked against the system glibc is a hard dlopen failure, not a degraded one.
+// So the wrapper JDK is the only carrier, and the environment stays clean.
+// ---------------------------------------------------------------------------
+
+/** Env pointing the profile / harness files at scratch paths, never the real ones. */
+function envFiles() {
+  const dir = scratch("envfiles");
+  return {
+    COOEE_PROFILE: path.join(dir, "env.sh"),
+    COOEE_HARNESS_ENV: path.join(dir, "env.harness"),
+    CLAUDE_ENV_FILE: path.join(dir, "claude.env"),
+  };
+}
+
+test("a wrapped store JDK carries the libs alone — nothing lands on LD_LIBRARY_PATH", () => {
+  const real = fakeJdk(path.join(scratch("jdk"), "store"));
+  const files = envFiles();
+  // A previous run of this module forwarded the variable; this run must retire it, since the
+  // harness replays that file into every command it spawns.
+  fs.writeFileSync(
+    files.CLAUDE_ENV_FILE,
+    "ANDROID_HOME=/opt/sdk\nLD_LIBRARY_PATH=/nix/store/gl/lib\n",
+  );
+
+  const out = run(
+    `
+    cooee_jdk_loader_reads_system_cache() { return 1; }   # pretend a store JDK
+    COOEE_DESKTOP_GL_LIB=/opt/gl/lib
+    COOEE_JDK_GL_DIR="${scratch("wrap")}"
+    COOEE_NO_GRADLE_PROPS=1
+    JAVA_HOME="${real}"
+    cooee_compose_wrap_render_jdk >/dev/null
+    echo "LD_LIBRARY_PATH=\${LD_LIBRARY_PATH:-unset}"
+    echo "JAVA_HOME=$JAVA_HOME"
+  `,
+    files,
+  );
+
+  assert.match(out, /^LD_LIBRARY_PATH=unset$/m);
+  assert.match(out, /JAVA_HOME=.*\/17$/m);
+  // Retired from the harness file, and only that key — other hooks' lines are not ours to drop.
+  const harness = fs.readFileSync(files.CLAUDE_ENV_FILE, "utf8");
+  assert.equal(harness.includes("LD_LIBRARY_PATH"), false);
+  assert.equal(harness.includes("ANDROID_HOME=/opt/sdk"), true);
+});
+
+test("a non-store JDK gets no GL environment at all, and a stale one is retired", () => {
+  const real = fakeJdk(path.join(scratch("jdk"), "sys"));
+  const files = envFiles();
+  fs.writeFileSync(files.CLAUDE_ENV_FILE, "LD_LIBRARY_PATH=/nix/store/gl/lib\n");
+
+  const out = run(
+    `
+    COOEE_DESKTOP_GL_LIB=/opt/gl/lib
+    COOEE_JDK_GL_DIR="${scratch("wrap")}"
+    JAVA_HOME="${real}"
+    cooee_compose_wrap_render_jdk >/dev/null
+    echo "LD_LIBRARY_PATH=\${LD_LIBRARY_PATH:-unset}"
+  `,
+    files,
+  );
+
+  assert.equal(out, "LD_LIBRARY_PATH=unset");
+  assert.equal(fs.readFileSync(files.CLAUDE_ENV_FILE, "utf8").includes("LD_LIBRARY_PATH"), false);
+});
+
+test("when the wrapper can't be built, LD_LIBRARY_PATH is still the fallback", () => {
+  const real = fakeJdk(path.join(scratch("jdk"), "store"));
+  const files = envFiles();
+
+  const out = run(
+    `
+    cooee_jdk_loader_reads_system_cache() { return 1; }   # pretend a store JDK
+    COOEE_DESKTOP_GL_LIB=/opt/gl/lib
+    COOEE_JDK_GL_DIR=/proc/nowhere/jdk-gl                 # mkdir will fail here
+    JAVA_HOME="${real}"
+    cooee_compose_wrap_render_jdk >/dev/null 2>&1
+    echo "LD_LIBRARY_PATH=\${LD_LIBRARY_PATH:-unset}"
+  `,
+    files,
+  );
+
+  // A possibly-mismatched search path still beats a certainly-missing libGL, and the render
+  // plugin prunes the store dirs for a non-store render JVM anyway.
+  assert.equal(out, "LD_LIBRARY_PATH=/opt/gl/lib");
+  assert.match(fs.readFileSync(files.CLAUDE_ENV_FILE, "utf8"), /^LD_LIBRARY_PATH=\/opt\/gl\/lib$/m);
+});
+
 test("org.gradle.java.home is written, and someone else's value is respected", () => {
   const guh = scratch("guh");
   const mine = run(`
