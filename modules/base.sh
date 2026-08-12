@@ -108,12 +108,24 @@ module_base() {
       manage_daemon=1                 # no init: we'll start the daemon ourselves
       log "Installing Nix (Determinate, daemon started manually — non-root, no systemd)..."
     fi
+    # Fetched to a file rather than piped straight into `sh`, for two reasons
+    # that are really one: a `curl … | sh` cannot be retried, and it cannot fail
+    # cleanly. A 503 from the CDN (routine, and what killed a provisioning run
+    # with the opaque "Setup script failed with exit code 22") aborts the whole
+    # setup, and a transfer that dies mid-stream feeds `sh` a truncated
+    # installer that has already started running. cooee_fetch retries; the
+    # installer only runs once we hold all of it.
+    local installer
+    installer=$(mktemp "${TMPDIR:-/tmp}/cooee-nix-install.XXXXXX") \
+      || die "could not create a temp file for the Nix installer."
+    cooee_fetch https://install.determinate.systems/nix "$installer" \
+      || die "could not download the Determinate Nix installer from install.determinate.systems (it answered with an error on every attempt). This is usually transient — re-run the setup script; if it persists, check that the host is in your environment's allowlist."
     # flakes: needed for nix#pkgs references used by the modules.
-    curl -fsSL https://install.determinate.systems/nix \
-      | sh -s -- install linux \
-          --no-confirm \
-          "${init_flags[@]}" \
-          --extra-conf "experimental-features = nix-command flakes"
+    sh "$installer" install linux \
+      --no-confirm \
+      "${init_flags[@]}" \
+      --extra-conf "experimental-features = nix-command flakes"
+    rm -f "$installer"
     ok "Nix installed."
     [[ "$manage_daemon" == 1 ]] && cooee_start_nix_daemon
   fi
