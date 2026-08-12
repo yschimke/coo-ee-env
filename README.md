@@ -299,6 +299,28 @@ Nix *builds* it — and any i686 build runs a 32-bit builder, which fails with
 containers). By default the module swaps in a native empty stub so the SDK build
 never needs a 32-bit builder; `COOEE_ANDROID_NCURSES5_STUB=0` restores the real lib.
 
+### Which nixpkgs
+
+Every Nix-building module resolves `nixpkgs` through the flake registry, which on a
+Determinate install is a **rolling** ref. The revision it lands on is logged once per
+run (`nixpkgs: nixpkgs -> <rev>`), because it decides what gets built and nothing else
+in a failure log names it.
+
+That matters in one specific way. If the ref resolves to a revision
+`cache.nixos.org` has not finished building, nothing substitutes and Nix compiles the
+closure **from source** — and the symptom looks nothing like the cause: an Android SDK
+provision that dies with `bash-5.3p15.drv` failing to build has neither an SDK problem
+nor a network problem. When a failure names a source build of something unrelated
+(`bash`, `glibc`, `ncurses`), pin a cached revision and re-run:
+
+```bash
+COOEE_NIXPKGS_REF=github:NixOS/nixpkgs/nixos-25.05
+```
+
+| Variable | Default | Selects |
+| --- | --- | --- |
+| `COOEE_NIXPKGS_REF` | `nixpkgs` (registry, rolling) | the nixpkgs flake ref every module builds against |
+
 Because the SDK is built through Nix, it is reproducible and survives
 `nix store gc` (the build is anchored by a GC root under `~/.cache/coo-ee/`). On
 a box that already has a **complete** SDK (a CI runner, or a warm box with
