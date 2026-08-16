@@ -76,7 +76,7 @@ treats an already-present package as success — so a partial/cold box is
 | `compose` | Jetpack Compose `@Preview` rendering: installs the `compose-preview` agent skill (renders previews to PNG, no emulator), pulls in a JDK + the Android SDK, and provisions the native GL libs (`libGL`/`libX11`/`fontconfig`/`libstdc++`) Compose **Desktop** (skiko/Skia) loads at render time, baked into a wrapper JDK rather than the session environment; **implies `java`, `android`** | `github.com`, `cache.nixos.org` (git + the GL libs) | `COOEE_NO_DESKTOP_GL=1` to skip GL; `COOEE_DESKTOP_GL_PACKAGES` to adjust the set |
 | `dotfiles` | A config repo cloned and applied to `$HOME`; `dotfiles[owner/repo]` (optionally `@ref`) — **required**, there is no default repo. Applies by linking the top-level dotfiles (backing up anything it would clobber to `*.cooee.bak`), or via GNU Stow when that's already installed and the repo is a package tree. A repo-provided `install.sh` is **not** run unless `COOEE_DOTFILES_RUN_INSTALL=1` | `github.com` (`cache.nixos.org` if `git` is absent) | `COOEE_DOTFILES_RUN_INSTALL=1` to allow the repo's installer |
 | `skills`  | Claude Code agent skills, linked into `~/.claude/skills/`; `skills[owner/repo]` links every skill in a repo, `skills[owner/repo/<skill>]` links just one | `github.com` (`cache.nixos.org` if `git` is absent) | — |
-| `tools`   | Arbitrary CLI tools from nixpkgs, by name (`tools[ripgrep,jq,gh]`) | `cache.nixos.org` | — |
+| `tools`   | Arbitrary CLI tools from nixpkgs, optionally versioned through Nix Multiverse Fast (`tools[ripgrep,jq]`, `tools[ripgrep@14.1.1]`) | `cache.nixos.org`; GitHub release assets for version pins | — |
 
 `base` is always included; it is the implicit preamble for every request. The
 language modules above install a Nix toolchain (or adopt the provider's
@@ -240,6 +240,26 @@ curl -fsSL -g 'https://env.coo.ee/tools[ripgrep,jq],node,skills' | bash
 Nested attributes work too (`tools[nodePackages.prettier]`); an unknown name
 just warns and is skipped, so one typo doesn't fail the whole environment.
 
+An exact historical version can be selected with `@version`:
+
+```bash
+curl -fsSL -g 'https://env.coo.ee/tools[ripgrep@14.1.1,jq@1.7.1]' | bash
+```
+
+In the webpage picker, add `tools` and type a top-level package followed by `@`
+(for example `ripgrep@`) to get live Fast-version suggestions from Nix Multiverse.
+
+Version pins use [nixpkgs-multiverse's Fast store-path index](https://github.com/fzakaria/nixpkgs-multiverse/blob/main/docs/store-paths.md):
+the package closure substitutes from
+`cache.nixos.org` without fetching and evaluating a full historical nixpkgs tree.
+Fast currently supports `x86_64-linux` only and only top-level nixpkgs attributes;
+there is deliberately no large automatic fallback on macOS or ARM, and nested
+entries such as `nodePackages.prettier@…` are rejected. Unversioned tools keep the
+existing cross-platform behavior. The resolver is pinned by default; set
+`COOEE_MULTIVERSE_REF` to test a newer Multiverse commit. Versioned tools live in
+coo.ee-owned per-tool profiles under `~/.local/state/nix/profiles/coo-ee-tools/`,
+so changing a pin replaces only that tool and leaves the default Nix profile alone.
+
 #### Recommended tools
 
 A CLI gets its **own module** only when installing it needs logic beyond a
@@ -320,6 +340,8 @@ COOEE_NIXPKGS_REF=github:NixOS/nixpkgs/nixos-25.05
 | Variable | Default | Selects |
 | --- | --- | --- |
 | `COOEE_NIXPKGS_REF` | `nixpkgs` (registry, rolling) | the nixpkgs flake ref every module builds against |
+| `COOEE_MULTIVERSE_REF` | pinned `fzakaria/nixpkgs-multiverse` commit | the resolver/index revision used by versioned `tools[...]` entries |
+| `COOEE_MULTIVERSE_PROFILES` | `~/.local/state/nix/profiles/coo-ee-tools` | coo.ee-owned profiles for versioned tools |
 
 Because the SDK is built through Nix, it is reproducible and survives
 `nix store gc` (the build is anchored by a GC root under `~/.cache/coo-ee/`). On

@@ -19,6 +19,7 @@ const PUBLIC = path.join(ROOT, "public");
 
 // The same functions Vercel deploys (api/**). Required once, reused per request.
 const modulesHandler = require(path.join(ROOT, "api", "modules.js"));
+const versionsHandler = require(path.join(ROOT, "api", "versions.js"));
 const renderHandler = require(path.join(ROOT, "api", "env", "[modules].js"));
 const recommendHandler = require(path.join(ROOT, "api", "env", "recommend", "[modules].js"));
 
@@ -55,6 +56,10 @@ const server = http.createServer((req, res) => {
 
   // --- /api/* : Vercel routes these straight to the function files. ----------
   if (p === "/api/modules") return modulesHandler(req, res);
+  if (p === "/api/versions") {
+    req.query = Object.fromEntries(q);
+    return versionsHandler(req, res);
+  }
   if ((m = p.match(/^\/api\/env\/recommend\/(.+)$/))) return dispatch(recommendHandler, m[1], req, res, q);
   if ((m = p.match(/^\/api\/env\/(.+)$/))) return dispatch(renderHandler, m[1], req, res, q);
 
