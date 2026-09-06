@@ -73,7 +73,7 @@ treats an already-present package as success — so a partial/cold box is
 | `go`      | Go toolchain, `GOPATH`                    | `cache.nixos.org`, `proxy.golang.org`, `sum.golang.org` | Codex: `CODEX_ENV_GO_VERSION` |
 | `rust`    | `rustc` + `cargo`                         | `cache.nixos.org`, `static.crates.io`, `index.crates.io` | Codex: `CODEX_ENV_RUST_VERSION` |
 | `ruby`    | Ruby + RubyGems (default 3; `ruby[3.4.9]` to pin) | `cache.nixos.org`, `rubygems.org`, `index.rubygems.org` | Codex: `CODEX_ENV_RUBY_VERSION` |
-| `compose` | Jetpack Compose `@Preview` rendering: installs the `compose-preview` agent skill (renders previews to PNG, no emulator), pulls in a JDK + the Android SDK, and provisions the native GL libs (`libGL`/`libX11`/`fontconfig`/`libstdc++`) Compose **Desktop** (skiko/Skia) loads at render time, baked into a wrapper JDK rather than the session environment; **implies `java`, `android`** | `github.com`, `cache.nixos.org` (git + the GL libs) | `COOEE_NO_DESKTOP_GL=1` to skip GL; `COOEE_DESKTOP_GL_PACKAGES` to adjust the set |
+| `compose` | Jetpack Compose `@Preview` rendering: installs the `compose-preview` agent skill (renders previews to PNG, no emulator), pulls in a JDK + the Android SDK, and provisions the native GL libs (`libGL`/`libX11`/`fontconfig`/`libstdc++`) Compose **Desktop** (skiko/Skia) loads at render time, baked into a wrapper JDK (plus a Gradle init script that retunes each fork's `LD_LIBRARY_PATH` per JDK) rather than the session environment; **implies `java`, `android`** | `github.com`, `cache.nixos.org` (git + the GL libs) | `COOEE_NO_DESKTOP_GL=1` to skip GL; `COOEE_DESKTOP_GL_PACKAGES` to adjust the set; `COOEE_NO_GRADLE_INIT=1` to skip the init script |
 | `dotfiles` | A config repo cloned and applied to `$HOME`; `dotfiles[owner/repo]` (optionally `@ref`) — **required**, there is no default repo. Applies by linking the top-level dotfiles (backing up anything it would clobber to `*.cooee.bak`), or via GNU Stow when that's already installed and the repo is a package tree. A repo-provided `install.sh` is **not** run unless `COOEE_DOTFILES_RUN_INSTALL=1` | `github.com` (`cache.nixos.org` if `git` is absent) | `COOEE_DOTFILES_RUN_INSTALL=1` to allow the repo's installer |
 | `skills`  | Claude Code agent skills, linked into `~/.claude/skills/`; `skills[owner/repo]` links every skill in a repo, `skills[owner/repo/<skill>]` links just one | `github.com` (`cache.nixos.org` if `git` is absent) | — |
 | `tools`   | Arbitrary CLI tools from nixpkgs, by name (`tools[ripgrep,jq,gh]`) | `cache.nixos.org` | — |
@@ -210,9 +210,18 @@ the forked render worker dies at load with `libGL.so.1: cannot open shared
 object file`. `compose` builds those libs from the Nix cache (a closure
 consistent with the JDK's own glibc) and hands them to the render JVM **through
 the JDK itself**: it builds a wrapper JDK whose `bin/java` sets
-`LD_LIBRARY_PATH` before exec'ing the real launcher, and points `JAVA_HOME` and
-`org.gradle.java.home` at it. Skip it with `COOEE_NO_DESKTOP_GL=1`, or adjust
-the set with `COOEE_DESKTOP_GL_PACKAGES`.
+`LD_LIBRARY_PATH` before exec'ing the real launcher, and points `JAVA_HOME` at
+it. Skip it with `COOEE_NO_DESKTOP_GL=1`, or adjust the set with
+`COOEE_DESKTOP_GL_PACKAGES`.
+
+It does **not** pin that wrapper on `org.gradle.java.home` any more, and retires
+the pin if an earlier version of this module left one behind. Gradle 9 rejects
+the daemon it produces: the daemon reports `java.home` from where its `libjli`
+lives — the real store JDK — so the context check compares that against the
+wrapper path that asked for it, finds them different, and aborts with *"The newly
+created daemon process has a different context than expected"*. That is not
+"renders fail", it is every daemon build in the session failing. Gradle picks the
+daemon JVM itself now.
 
 The wrapper rather than a session-wide `LD_LIBRARY_PATH` for two reasons. It
 survives harnesses that replay a hook's environment as bare `KEY=value` lines
@@ -226,6 +235,22 @@ found``. A session-wide variable reaches that JVM too; a wrapped JDK does not
 A conventional (non-store) JDK is left alone entirely — its loader finds the
 system libs itself, and store libs would only break it. `LD_LIBRARY_PATH` is
 used only as a fallback, when the wrapper JDK could not be built.
+
+The wrapper fixes the JVM it launches and nothing it *forks*, though, and Gradle
+forks a different JDK all the time: `jvmToolchain(N)` resolves `N` against every
+installation on the box, and a cloud image that ships a system JDK 21 and gets
+its 17 from Nix has a mixed fleet by construction. A worker forked out of the
+store-glibc daemon onto the system JDK inherits the exported `LD_LIBRARY_PATH`
+and dies on the same `GLIBC_ABI_DT_X86_64_PLT` — one hop further down than
+compose-ai-tools#3690, with a clean session environment and a poisoned daemon
+one. The wrapper cannot reach that hop, because Gradle canonicalises a detected
+toolchain back to the real JDK and forks its launcher straight past the shim. So
+`compose` also writes a Gradle init script,
+`$GRADLE_USER_HOME/init.d/cooee-desktop-gl.init.gradle`, which retunes
+`LD_LIBRARY_PATH` on each forked `Test` / `JavaExec` from the JDK that fork will
+actually run on: the store dir is removed for a system JVM, and **added** for a
+store JVM — which is the one thing the wrapper could never do. Skip it with
+`COOEE_NO_GRADLE_INIT=1`.
 
 `tools` is the same idea for the long tail of CLIs that don't deserve their own
 module — each parameter is a nixpkgs attribute name, installed through the same
@@ -451,6 +476,7 @@ Knobs:
 | `CLAUDE_CONFIG_DIR` | Override the global Claude config dir the SessionStart hook is written into (default `~/.claude`). |
 | `COOEE_NO_DEPS=1` | Skip [build-dependency prefetch](#build-dependency-prefetch) — install the toolchain only, don't resolve the project's dependencies. |
 | `COOEE_GRADLE_DEPS_TASK` | Run a specific Gradle task for the prefetch (e.g. `assemble -x test`) instead of the default whole-graph artifact resolution. |
+| `COOEE_NO_GRADLE_INIT=1` | Don't write `$GRADLE_USER_HOME/init.d/cooee-desktop-gl.init.gradle`, the init script that gives the Compose Desktop GL libs to each forked JVM that can load them and withholds them from each one that cannot — see [the `compose` module](#curated-targets). Implied by `COOEE_NO_GRADLE_PROPS=1`. |
 | `COOEE_NO_GRADLE_PROPS=1` | Don't pin the cloud JVM flags on `org.gradle.jvmargs` in the user-dir `gradle.properties` (`$GRADLE_USER_HOME/gradle.properties`). The `java` module writes them there (merge-safe, never overriding a property you set yourself): the proxy host/port + `nonProxyHosts`, the extra-CA truststore, and `-Dfile.encoding=UTF-8`. This is the **primary** channel for those flags — see [JVM flags and `JAVA_TOOL_OPTIONS`](#jvm-flags-and-java_tool_options). |
 | `COOEE_BASE_URL` | Service base URL baked into the installed SessionStart hook (default `https://env.coo.ee`). |
 
