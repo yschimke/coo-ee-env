@@ -27,7 +27,11 @@ function run(snippet, env = {}) {
   fs.writeFileSync(file, `${BODY}\n${snippet}\n`);
   return execFileSync("bash", [file], {
     encoding: "utf8",
-    env: { ...process.env, ...env },
+    // GRADLE_USER_HOME defaults to a scratch dir, never the real ~/.gradle: the footer hook
+    // writes an init script there and rewrites gradle.properties, so a test that forgot to
+    // point it somewhere safe would provision the machine running the suite. A snippet that
+    // sets it itself still wins.
+    env: { ...process.env, GRADLE_USER_HOME: path.join(dir, "gradle-user-home"), ...env },
   }).trim();
 }
 
@@ -219,52 +223,171 @@ test("when the wrapper can't be built, LD_LIBRARY_PATH is still the fallback", (
   assert.match(fs.readFileSync(files.CLAUDE_ENV_FILE, "utf8"), /^LD_LIBRARY_PATH=\/opt\/gl\/lib$/m);
 });
 
-test("org.gradle.java.home is written, and someone else's value is respected", () => {
+// ---------------------------------------------------------------------------
+// org.gradle.java.home. Pinning the wrapper there was how the daemon used to be
+// given the GL libs, and Gradle 9 rejects the daemon it produces outright — the
+// daemon reports java.home from the REAL JDK (where its libjli lives), so the
+// context check can never match the wrapper path that asked for it, and every
+// daemon build in the session dies with "The newly created daemon process has a
+// different context than expected". Warm boxes still carry the line.
+// ---------------------------------------------------------------------------
+
+test("our own wrapper pin is removed, and the rest of the file is left intact", () => {
   const guh = scratch("guh");
-  const mine = run(`
-    GRADLE_USER_HOME="${guh}"
-    COOEE_JDK_GL_DIR=/wrap
-    cooee_gradle_props_java_home /wrap/17 >/dev/null
-    cat "${guh}/gradle.properties"
-  `);
-  assert.equal(mine, "org.gradle.java.home=/wrap/17");
-
-  const other = scratch("guh2");
-  fs.writeFileSync(
-    path.join(other, "gradle.properties"),
-    "org.gradle.java.home=/opt/my/jdk\n",
-  );
-  const kept = run(`
-    GRADLE_USER_HOME="${other}"
-    COOEE_JDK_GL_DIR=/wrap
-    cooee_gradle_props_java_home /wrap/17 >/dev/null
-    cat "${other}/gradle.properties"
-  `);
-  assert.equal(kept, "org.gradle.java.home=/opt/my/jdk");
-});
-
-test("our own stale org.gradle.java.home is refreshed, not duplicated", () => {
-  const guh = scratch("guh3");
   fs.writeFileSync(
     path.join(guh, "gradle.properties"),
-    "org.gradle.jvmargs=-Xmx2g\norg.gradle.java.home=/wrap/17\n",
+    "org.gradle.jvmargs=-Xmx2g\norg.gradle.java.home=/wrap/17\norg.gradle.caching=true\n",
   );
   const out = run(`
     GRADLE_USER_HOME="${guh}"
     COOEE_JDK_GL_DIR=/wrap
-    cooee_gradle_props_java_home /wrap/21 >/dev/null
+    cooee_gradle_props_unpin_java_home >/dev/null
     cat "${guh}/gradle.properties"
   `);
-  assert.equal(out, "org.gradle.jvmargs=-Xmx2g\norg.gradle.java.home=/wrap/21");
+  assert.equal(out, "org.gradle.jvmargs=-Xmx2g\norg.gradle.caching=true");
 });
 
-test("COOEE_NO_GRADLE_PROPS=1 leaves gradle.properties alone", () => {
-  const guh = scratch("guh4");
+test("someone else's org.gradle.java.home is never touched", () => {
+  const guh = scratch("guh2");
+  fs.writeFileSync(path.join(guh, "gradle.properties"), "org.gradle.java.home=/opt/my/jdk\n");
   const out = run(`
     GRADLE_USER_HOME="${guh}"
-    COOEE_NO_GRADLE_PROPS=1
-    cooee_gradle_props_java_home /wrap/17 >/dev/null
-    [ -e "${guh}/gradle.properties" ] && echo written || echo untouched
+    COOEE_JDK_GL_DIR=/wrap
+    cooee_gradle_props_unpin_java_home >/dev/null
+    cat "${guh}/gradle.properties"
   `);
-  assert.equal(out, "untouched");
+  assert.equal(out, "org.gradle.java.home=/opt/my/jdk");
+});
+
+test("wrapping a store JDK no longer pins it as the daemon JVM", () => {
+  const real = fakeJdk(path.join(scratch("jdk"), "store"));
+  const guh = scratch("guh3");
+  fs.writeFileSync(path.join(guh, "gradle.properties"), "org.gradle.caching=true\n");
+  const wrapDir = scratch("wrap");
+  const out = run(
+    `
+    cooee_jdk_loader_reads_system_cache() { return 1; }   # pretend a store JDK
+    GRADLE_USER_HOME="${guh}"
+    COOEE_DESKTOP_GL_LIB=/opt/gl/lib
+    COOEE_JDK_GL_DIR="${wrapDir}"
+    JAVA_HOME="${real}"
+    cooee_compose_wrap_render_jdk >/dev/null
+    echo "JAVA_HOME=$JAVA_HOME"
+    cat "${guh}/gradle.properties"
+  `,
+    envFiles(),
+  );
+  // JAVA_HOME still points at the wrapper — a bare `java` render is worth fixing — but Gradle
+  // is left to choose the daemon JVM itself, and the fork boundary does the rest.
+  assert.match(out, new RegExp(`^JAVA_HOME=${wrapDir}/17$`, "m"));
+  assert.equal(out.includes("org.gradle.java.home"), false);
+  assert.match(out, /^org\.gradle\.caching=true$/m);
+});
+
+test("a stale pin is retired even when this run builds no wrapper at all", () => {
+  const guh = scratch("guh4");
+  fs.writeFileSync(path.join(guh, "gradle.properties"), "org.gradle.java.home=/wrap/17\n");
+  const out = run(
+    `
+    GRADLE_USER_HOME="${guh}"
+    COOEE_DESKTOP_GL_LIB=""            # GL provisioning skipped or failed this run
+    COOEE_JDK_GL_DIR=/wrap
+    JAVA_HOME=/nix/store/abc-temurin-17
+    cooee_compose_wrap_render_jdk >/dev/null
+    cat "${guh}/gradle.properties"
+  `,
+    envFiles(),
+  );
+  assert.equal(out, "");
+});
+
+
+// ---------------------------------------------------------------------------
+// The fork boundary. The wrapper fixes the JVM it launches and nothing it
+// forks: `exec java` with LD_LIBRARY_PATH exported hands the store GL dir to
+// every descendant of the Gradle daemon, whatever JDK that descendant runs on.
+// On a mixed fleet — a Nix JDK 17 beside the image's own system JDK 21 —
+// `jvmToolchain(21)` forks a system-glibc worker out of a store-glibc daemon and
+// skiko dies on `GLIBC_ABI_DT_X86_64_PLT'. So a Gradle init script retunes
+// LD_LIBRARY_PATH per fork, in both directions.
+// ---------------------------------------------------------------------------
+
+const INIT_REL = path.join("init.d", "cooee-desktop-gl.init.gradle");
+
+test("the init script hands the GL dir to store JDKs and withholds it from the rest", () => {
+  const guh = scratch("guh-init");
+  run(`
+    GRADLE_USER_HOME="${guh}"
+    cooee_gradle_init_desktop_gl /opt/gl/lib >/dev/null
+  `);
+  const init = fs.readFileSync(path.join(guh, INIT_REL), "utf8");
+
+  assert.match(init, /def glDir = '\/opt\/gl\/lib'/);
+  // Store prefixes decide, exactly as cooee_jdk_loader_reads_system_cache does.
+  assert.match(init, /'\/nix\/store\/'/);
+  assert.match(init, /'\/gnu\/store\/'/);
+  // Both directions: our dir is always dropped first, and re-added only for a JDK that can use it.
+  assert.match(init, /if \(p != glDir\) parts\.add\(p\)/);
+  assert.match(init, /if \(wantsGl\(jdkHome\(task\)\)\) parts\.add\(0, glDir\)/);
+  // Test workers and JavaExec forks are the two ways a render JVM is started.
+  assert.match(init, /org\.gradle\.api\.tasks\.testing\.Test/);
+  assert.match(init, /org\.gradle\.api\.tasks\.JavaExec/);
+});
+
+test("rewriting the init script tracks a moved GL dir instead of stacking rules", () => {
+  const guh = scratch("guh-init2");
+  const out = run(`
+    GRADLE_USER_HOME="${guh}"
+    cooee_gradle_init_desktop_gl /old/gl/lib >/dev/null
+    cooee_gradle_init_desktop_gl /new/gl/lib >/dev/null
+    ls "${guh}/init.d" | wc -l
+  `);
+  assert.equal(out, "1");
+  const init = fs.readFileSync(path.join(guh, INIT_REL), "utf8");
+  assert.match(init, /def glDir = '\/new\/gl\/lib'/);
+  assert.equal(init.includes("/old/gl/lib"), false);
+});
+
+test("no GL dir retires an init script an earlier run left behind", () => {
+  const guh = scratch("guh-init3");
+  const out = run(`
+    GRADLE_USER_HOME="${guh}"
+    cooee_gradle_init_desktop_gl /opt/gl/lib >/dev/null
+    cooee_gradle_init_desktop_gl "" >/dev/null
+    [ -e "${guh}/${INIT_REL}" ] && echo kept || echo retired
+  `);
+  assert.equal(out, "retired");
+});
+
+test("the init script is opt-out, by its own flag and by the Gradle-props one", () => {
+  for (const flag of ["COOEE_NO_GRADLE_INIT", "COOEE_NO_GRADLE_PROPS"]) {
+    const guh = scratch(`guh-init-${flag}`);
+    const out = run(`
+      GRADLE_USER_HOME="${guh}"
+      ${flag}=1
+      cooee_gradle_init_desktop_gl /opt/gl/lib >/dev/null
+      [ -e "${guh}/${INIT_REL}" ] && echo written || echo skipped
+    `);
+    assert.equal(out, "skipped", `${flag} should suppress the init script`);
+  }
+});
+
+test("a non-store JAVA_HOME still gets the init script — the fork boundary is its own problem", () => {
+  // The daemon JVM needing no wrapper says nothing about the JDKs Gradle forks: a system-JDK
+  // daemon can still fork a store toolchain worker, which is the one hop the wrapper can never
+  // reach (Gradle canonicalises a detected toolchain past the shim, to the real launcher).
+  const real = fakeJdk(path.join(scratch("jdk"), "sys"));
+  const guh = scratch("guh-init4");
+  const out = run(
+    `
+    GRADLE_USER_HOME="${guh}"
+    COOEE_DESKTOP_GL_LIB=/opt/gl/lib
+    COOEE_JDK_GL_DIR="${scratch("wrap")}"
+    JAVA_HOME="${real}"
+    cooee_compose_wrap_render_jdk >/dev/null
+    grep -c "def glDir = '/opt/gl/lib'" "${guh}/${INIT_REL}"
+  `,
+    envFiles(),
+  );
+  assert.equal(out, "1");
 });

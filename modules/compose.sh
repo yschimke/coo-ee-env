@@ -29,7 +29,11 @@
 # real launcher. Not through the session environment: these libraries carry the
 # store's own glibc, so a JVM linked against the system one dies at dlopen if it
 # ever sees them (compose-ai-tools#3690), and a conventional JDK doesn't need
-# them anyway. See cooee_compose_desktop_gl + cooee_compose_wrap_render_jdk.
+# them anyway. The wrapper reaches only the JVM it launches, so a Gradle init
+# script covers the JVMs that one *forks* — a toolchain worker runs on whatever
+# JDK `jvmToolchain(N)` resolved, which on a mixed fleet is not the daemon's.
+# See cooee_compose_desktop_gl, cooee_compose_wrap_render_jdk and
+# cooee_gradle_init_desktop_gl.
 # coo.ee:implies java android
 register_module compose
 need_host github.com      "git clone of the compose-preview skill repo"
@@ -176,14 +180,19 @@ cooee_compose_desktop_gl() {
 # So don't depend on the variable surviving: make the JDK itself set it. We build
 # a wrapper JDK — every entry symlinked to the real one, except bin/java, which is
 # a shim that prepends the GL dir and execs the real launcher — and point
-# JAVA_HOME (and Gradle's own org.gradle.java.home) at it.
+# JAVA_HOME at it.
 #
-# ONE wrapper is enough, and it has to be the JDK that launches the Gradle
-# *daemon*: every worker the daemon forks inherits the daemon's environment,
-# whatever toolchain JDK that worker runs on. Wrapping each installed major would
-# be pointless — a JVM reports `java.home` from where its libjli lives, i.e. the
-# real JDK, not the wrapper, so Gradle canonicalises a detected toolchain back to
-# the real path and would fork the store binary directly, straight past the shim.
+# ONE wrapper is enough. Wrapping each installed major would be pointless — a JVM
+# reports `java.home` from where its libjli lives, i.e. the real JDK, not the
+# wrapper, so Gradle canonicalises a detected toolchain back to the real path and
+# forks the store binary directly, straight past the shim.
+#
+# JAVA_HOME only, though: that same canonicalisation is why the wrapper must NOT
+# be pinned on org.gradle.java.home, which is what this module used to do. Gradle
+# 9 compares the daemon's reported java.home against the path that asked for it,
+# the wrapper can never match, and every daemon build in the session dies before
+# it configures. See cooee_gradle_props_unpin_java_home, and
+# cooee_gradle_init_desktop_gl for where the per-JVM decision lives now.
 COOEE_JDK_GL_DIR="${COOEE_JDK_GL_DIR:-$HOME/.cache/coo-ee/jdk-gl}"
 
 # Whether the loader behind <java_home> searches /etc/ld.so.cache and /usr/lib.
@@ -230,39 +239,184 @@ EOF
   printf '%s' "$dest"
 }
 
-# Pin <java_home> as org.gradle.java.home in the user-dir gradle.properties —
-# Gradle's own channel for choosing the daemon JVM, and the one path that needs no
-# environment inheritance at all. Same merge-safety contract as
-# cooee_gradle_props_utf8: a value the user already set is never overwritten.
-# Opt out with COOEE_NO_GRADLE_PROPS=1.
-cooee_gradle_props_java_home() {  # <java_home>
-  local home="$1"
+# Retire a wrapper JDK pinned as org.gradle.java.home in the user-dir
+# gradle.properties by an earlier version of this module.
+#
+# Pinning it there was the original way to make the Gradle daemon carry the GL
+# libs, and Gradle 9 rejects it outright: the daemon launched from the wrapper
+# reports `java.home` from where its libjli lives — the real store JDK — so the
+# context check compares the requested wrapper path against that real one, finds
+# them different, and refuses to reconnect:
+#
+#   The newly created daemon process has a different context than expected.
+#   Wanted:  jvmCriteria=~/.cache/coo-ee/jdk-gl/17 (from org.gradle.java.home)
+#   Actual:  javaHome=/nix/store/…-temurin-bin-17.0.19
+#
+# That is not "renders fail", it is *every* daemon build in the session failing,
+# on a box where nothing but the provisioner ever asked for a wrapper. A warm box
+# still carries the line, so removing it is repair work, not just a code change.
+#
+# Only ever removes a value of OURS (one under $COOEE_JDK_GL_DIR). A path someone
+# else pinned is their deliberate choice and is left exactly as it is — the same
+# merge-safety contract as cooee_gradle_props_jvmargs. Opt out with
+# COOEE_NO_GRADLE_PROPS=1.
+cooee_gradle_props_unpin_java_home() {
   [[ "${COOEE_NO_GRADLE_PROPS:-0}" == 1 ]] && {
-    log "compose: skipping org.gradle.java.home write (COOEE_NO_GRADLE_PROPS=1)."; return 0; }
+    log "compose: skipping the org.gradle.java.home check (COOEE_NO_GRADLE_PROPS=1)."; return 0; }
 
   local guh="${GRADLE_USER_HOME:-$HOME/.gradle}"
   local props="$guh/gradle.properties"
-  mkdir -p "$guh" 2>/dev/null || {
-    warn "compose: can't create $guh; skipping org.gradle.java.home write."; return 0; }
+  [[ -f "$props" ]] || return 0
+  grep -Eq "^[[:space:]]*org\.gradle\.java\.home[[:space:]]*=[[:space:]]*${COOEE_JDK_GL_DIR}/" "$props" || return 0
 
-  if [[ -f "$props" ]] && grep -Eq '^[[:space:]]*org\.gradle\.java\.home[[:space:]]*=' "$props"; then
-    # Ours from a previous run -> refresh it (the wrapper path can change with a
-    # JDK upgrade). Anyone else's -> their deliberate choice, leave it alone.
-    if grep -Eq "^[[:space:]]*org\.gradle\.java\.home[[:space:]]*=[[:space:]]*${COOEE_JDK_GL_DIR}/" "$props"; then
-      local tmp; tmp=$(mktemp "${TMPDIR:-/tmp}/cooee-gradle-props.XXXXXX") || return 0
-      grep -Ev '^[[:space:]]*org\.gradle\.java\.home[[:space:]]*=' "$props" > "$tmp" 2>/dev/null || true
-      printf 'org.gradle.java.home=%s\n' "$home" >> "$tmp"
-      mv -f "$tmp" "$props" && ok "compose: refreshed org.gradle.java.home -> $home in $props."
-    else
-      log "compose: $props already pins org.gradle.java.home; leaving it as-is."
-    fi
+  local tmp; tmp=$(mktemp "${TMPDIR:-/tmp}/cooee-gradle-props.XXXXXX") || {
+    warn "compose: couldn't stage a gradle.properties edit; $props still pins a wrapper JDK on org.gradle.java.home, which Gradle 9 refuses to start a daemon for."
+    return 0; }
+  # `|| true`: grep exits 1 when it filters everything out, and a gradle.properties
+  # holding nothing but our pin is exactly the case that must still be rewritten.
+  grep -Ev "^[[:space:]]*org\.gradle\.java\.home[[:space:]]*=[[:space:]]*${COOEE_JDK_GL_DIR}/" "$props" > "$tmp" 2>/dev/null || true
+  if mv -f "$tmp" "$props"; then
+    ok "compose: dropped the wrapper-JDK org.gradle.java.home pin from $props (Gradle 9 rejects the daemon it produces; the GL libs travel by init script now)."
+  else
+    warn "compose: couldn't update $props; it still pins a wrapper JDK on org.gradle.java.home."
+    rm -f "$tmp"
+  fi
+}
+
+# ---- the fork boundary: a JVM only sees the store libs if it can use them -----
+#
+# The wrapper above fixes the JVM it launches, and NOTHING it forks. `exec java`
+# with LD_LIBRARY_PATH exported means every descendant of the Gradle daemon
+# inherits the store GL dir, whatever JDK that descendant runs on — and Gradle
+# forks a *different* JDK all the time, because `jvmToolchain(N)` resolves N
+# against every installation on the box. A cloud image that ships a system JDK 21
+# and gets its 17 from Nix has a mixed fleet by construction, so a project whose
+# render lane pins the major the image already had forks a system-glibc worker
+# out of a store-glibc daemon, and skiko dies at load:
+#
+#   UnsatisfiedLinkError: libskiko-linux-x64.so: /lib/x86_64-linux-gnu/libc.so.6:
+#     version `GLIBC_ABI_DT_X86_64_PLT' not found
+#     (required by /nix/store/…-glibc-2.42-67/lib/libpthread.so.0)
+#
+# — the store libX11 pulls the store's own libpthread in beside the system libc
+# the worker already runs on, and the newer one demands symbols the older cannot
+# supply. That is compose-ai-tools#3690 again, one hop further down: the session
+# environment is clean, the daemon's is not, and the daemon is what the worker
+# inherits. (Seen on compose-preview-server#460, where all 17 `:ui-builder`
+# render tests fail this way on a clean checkout of main.)
+#
+# The wrapper cannot reach that hop — Gradle canonicalises a detected toolchain
+# back to the real JDK (a JVM reports `java.home` from where its libjli lives),
+# so the forked launcher is the store binary or the system one, never a shim. The
+# fork itself is the only place left that knows *both* the JDK the worker will
+# run on and the environment it will get, and Gradle hands that to an init
+# script: `$GRADLE_USER_HOME/init.d/*.gradle` is applied to every build, so one
+# file retunes LD_LIBRARY_PATH per forked JVM. It cuts both ways —
+#
+#   * a worker on a system JDK gets the store dir removed (the crash above), and
+#   * a worker on a store JDK gets it added, which the wrapper could never do,
+#     since Gradle forks that JDK's real launcher straight past the shim.
+#
+# Opt out with COOEE_NO_GRADLE_INIT=1 (or COOEE_NO_GRADLE_PROPS=1, which turns
+# off every Gradle-user-home write this module makes).
+COOEE_GRADLE_INIT_FILE="${COOEE_GRADLE_INIT_FILE:-cooee-desktop-gl.init.gradle}"
+
+# Write (or, with an empty <gl_lib>, retire) that init script. The file is ours
+# alone — a name no human writes — so it is rewritten wholesale each run and a
+# changed GL path or a retired one can never leave a stale rule behind.
+cooee_gradle_init_desktop_gl() {  # <gl_lib>
+  local gl="$1"
+  if [[ "${COOEE_NO_GRADLE_INIT:-0}" == 1 || "${COOEE_NO_GRADLE_PROPS:-0}" == 1 ]]; then
+    log "compose: skipping the Gradle fork-boundary init script (COOEE_NO_GRADLE_INIT/COOEE_NO_GRADLE_PROPS=1)."
     return 0
   fi
 
-  if printf 'org.gradle.java.home=%s\n' "$home" >> "$props"; then
-    ok "compose: set org.gradle.java.home=$home in $props (daemon JVM carries the GL libs)."
+  local guh="${GRADLE_USER_HOME:-$HOME/.gradle}"
+  local dir="$guh/init.d" file="$guh/init.d/$COOEE_GRADLE_INIT_FILE"
+
+  if [[ -z "$gl" ]]; then
+    # Nothing to hand out this run. An init script from a previous one would keep
+    # pointing at a GC'd store path, so retire it rather than leave it applying.
+    [[ -e "$file" ]] && { rm -f "$file" && log "compose: retired the Gradle fork-boundary init script ($file)."; }
+    return 0
+  fi
+
+  mkdir -p "$dir" 2>/dev/null || {
+    warn "compose: can't create $dir; a forked test worker on a system JDK may die loading skiko."
+    return 0; }
+
+  local tmp; tmp=$(mktemp "${TMPDIR:-/tmp}/cooee-gradle-init.XXXXXX") || {
+    warn "compose: couldn't stage $file; leaving it unchanged."; return 0; }
+
+  # Groovy, applied to every build in this Gradle user home. Everything is
+  # defensive: an init script that throws fails the build, and a render worker
+  # that cannot find libGL is a far better outcome than a build that will not
+  # configure at all.
+  cat > "$tmp" <<EOF
+// Generated by coo.ee/env — do not edit; regenerated on each provision.
+//
+// Hands the Compose Desktop (skiko) native GL libs to each forked JVM that can
+// load them, and takes them away from each one that cannot. The dir below holds
+// libGL/libX11/libfontconfig/libstdc++ built against the Nix store's glibc: a
+// store JVM needs them (its loader never reads /etc/ld.so.cache, so the system
+// copies are invisible to it) and a system-glibc JVM is *killed* by them.
+def glDir = '${gl}'
+def sep = File.pathSeparator
+
+// Only a store JDK's loader is blind to the system libs — anything else finds
+// them itself, and must never see the store ones.
+def wantsGl = { String home ->
+  home != null && (home.startsWith('/nix/store/') || home.startsWith('/gnu/store/'))
+}
+
+// Where the worker will actually launch from. The toolchain launcher is the
+// truth (Gradle has already canonicalised it to a real JDK); \`executable\` is
+// the fallback for a task that pins one by hand.
+def jdkHome = { task ->
+  try {
+    def l = task.javaLauncher
+    if (l != null && l.present) return l.get().metadata.installationPath.asFile.absolutePath
+  } catch (Throwable ignored) { }
+  try {
+    def exe = task.executable
+    if (exe) return new File(exe as String).parentFile?.parentFile?.absolutePath
+  } catch (Throwable ignored) { }
+  return null
+}
+
+// Rebuild the fork's LD_LIBRARY_PATH: drop our dir unconditionally (an inherited
+// one from the daemon, or ours from an earlier run), then put it back only for a
+// JVM that can use it. Every other entry keeps its order — someone else's
+// library path is not ours to reshuffle.
+def retune = { task ->
+  try {
+    def env = new LinkedHashMap<String, Object>(task.environment)
+    def cur = env.get('LD_LIBRARY_PATH')
+    def parts = new ArrayList<String>()
+    if (cur != null) {
+      for (String p : cur.toString().tokenize(sep)) { if (p != glDir) parts.add(p) }
+    }
+    if (wantsGl(jdkHome(task))) parts.add(0, glDir)
+    // '' is a search path of no directories, not a missing variable — but a
+    // forked env cannot express "unset", and glibc treats the two the same.
+    env.put('LD_LIBRARY_PATH', parts.join(sep))
+    task.environment = env
+  } catch (Throwable t) {
+    task.logger.info("coo.ee/env: leaving LD_LIBRARY_PATH alone for \${task.path}: \${t}")
+  }
+}
+
+gradle.allprojects { proj ->
+  proj.tasks.withType(org.gradle.api.tasks.testing.Test).configureEach { t -> t.doFirst { retune(t) } }
+  proj.tasks.withType(org.gradle.api.tasks.JavaExec).configureEach { t -> t.doFirst { retune(t) } }
+}
+EOF
+
+  if mv -f "$tmp" "$file"; then
+    ok "compose: forked JVMs retune LD_LIBRARY_PATH per JDK via $file (store JDKs get $gl; every other JDK is kept clear of it)."
   else
-    warn "compose: couldn't write $props; the Gradle daemon may not find the GL libs."
+    warn "compose: couldn't write $file; a forked test worker on a system JDK may die loading skiko."
+    rm -f "$tmp"
   fi
 }
 
@@ -270,6 +424,17 @@ cooee_gradle_props_java_home() {  # <java_home>
 # module settled on regardless of module order. No-op unless the GL libs were
 # provisioned and the render JDK actually needs the help.
 cooee_compose_wrap_render_jdk() {
+  # Repair first, unconditionally: a warm box provisioned by an older version of
+  # this module carries an org.gradle.java.home pin that breaks every daemon build,
+  # and it has to come out whether or not this run builds a wrapper at all.
+  cooee_gradle_props_unpin_java_home
+
+  # Independent of the wrapper, and of whether JAVA_HOME is a store JDK at all:
+  # the init script is about the JDKs *Gradle* forks, and a system-JDK daemon can
+  # still fork a store toolchain worker (and vice versa). With no GL dir to hand
+  # out it retires an earlier run's file rather than leaving it applying.
+  cooee_gradle_init_desktop_gl "$COOEE_DESKTOP_GL_LIB"
+
   [[ -n "$COOEE_DESKTOP_GL_LIB" ]] || return 0
   local real="${JAVA_HOME:-}"
   # No JAVA_HOME means we cannot tell whether the render JVM is a store one, and store libraries on
@@ -308,12 +473,11 @@ cooee_compose_wrap_render_jdk() {
   fi
 
   add_env JAVA_HOME "$wrapper"
-  cooee_gradle_props_java_home "$wrapper"
   # The wrapper carries the libraries, so nothing else in the session needs to — and must not:
   # a session-wide value reaches system-glibc JVMs too. Retire any entry a previous run of this
   # module left in the harness env file (it is upserted, never rebuilt).
   cooee_unforward_from_harness LD_LIBRARY_PATH
-  ok "compose: render JDK $major wraps $real and carries $COOEE_DESKTOP_GL_LIB (only this JDK sees the store libs; LD_LIBRARY_PATH is left alone)."
+  ok "compose: render JDK $major wraps $real and carries $COOEE_DESKTOP_GL_LIB (only this JDK sees the store libs; LD_LIBRARY_PATH is left alone, and Gradle picks the daemon JVM itself)."
 }
 
 module_compose() {
