@@ -32,6 +32,18 @@ test("params parse, dedupe, and sort numerically", () => {
   assert.deepEqual(canon("java[8,17,11]"), ["base", "java[8,11,17]"]);
 });
 
+test("tools accepts canonical version pins", () => {
+  assert.deepEqual(canon("tools[ripgrep@14.1.1,jq@1.7.1]"), [
+    "base",
+    "tools[jq@1.7.1,ripgrep@14.1.1]",
+  ]);
+  assert.ok(
+    render("tools[ripgrep@14.1.1]").body.includes(
+      "set_params tools 'ripgrep@14.1.1'",
+    ),
+  );
+});
+
 test("param order does not affect the rendered script", () => {
   assert.equal(render("java[21,17]").body, render("java[17,21]").body);
 });

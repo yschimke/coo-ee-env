@@ -85,7 +85,11 @@ function recommend(segment, opts = {}) {
   const selected = new Set(entries.map((e) => e.name));
   const available = new Set(allowedModules());
   const toolsModule = available.has("tools");
-  const haveTools = new Set(entries.find((e) => e.name === "tools")?.params || []);
+  // A pin is still the same requested tool for recommendation purposes:
+  // ripgrep@14.1.1 must not make the baseline bundle suggest ripgrep again.
+  const haveTools = new Set(
+    (entries.find((e) => e.name === "tools")?.params || []).map((t) => t.replace(/@[^@]+$/, "")),
+  );
 
   // --- module suggestions: sum weights from every contributing rule ---------
   const modules = new Map(); // name -> { score, reasons:Set }

@@ -34,6 +34,14 @@ cooee_backend_jdks() {
   printf '%s\n' "${1:-}"
 }
 
+# Multiverse's Fast selector is a concrete store path rather than a pkgs
+# attribute. This backend deliberately builds one coherent `pkgs` environment,
+# so accepting it here would make the two backends mean different things.
+cooee_backend_versioned_tool() {  # <nixpkgs-attr> <version> <profile-match>
+  warn "tools: $1@$2 is not supported by the devenv backend; omit @version or use the default Nix-profile backend."
+  return 1
+}
+
 # Hook: provision the Android SDK as a native devenv `android` integration —
 # devenv's first-class wrapper over the same androidenv. Writes the android
 # config (and the i686/ncurses5 stub overlay) into the devenv project, lets

@@ -50,6 +50,14 @@ test("tools already requested are not suggested again", () => {
   }
 });
 
+test("a versioned tool is not re-suggested unversioned", () => {
+  const out = recommend("tools[ripgrep@14.1.1]");
+  for (const spec of out.recommendations.map((r) => r.spec)) {
+    assert.ok(!/(^|\[|,)ripgrep(,|\]|$)/.test(spec), `ripgrep already pinned: ${spec}`);
+  }
+  assert.ok(!out.next.includes("tools[ripgrep,"), "next must not add bare ripgrep beside its pin");
+});
+
 test("already-selected modules are never re-recommended", () => {
   const out = recommend("java,android,node,python,go,rust");
   for (const r of out.recommendations.filter((x) => x.kind === "module")) {

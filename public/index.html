@@ -333,6 +333,8 @@
   var selected = [];     // chosen modules: [{name, params: [...]}], insertion order
   var active = -1;       // highlighted index in the current match list
   var matches = [];      // current filtered matches
+  var versionCache = {}; // top-level nixpkgs attr -> Promise([Fast versions])
+  var paramListId = 0;   // unique <datalist> ids for parameter inputs
 
   function info(name) {
     for (var i = 0; i < catalog.length; i++) if (catalog[i].name === name) return catalog[i];
@@ -359,6 +361,60 @@
     }
     out.push(buf);
     return out;
+  }
+
+  // The comma-delimited token under the caret, when it has the supported
+  // `top-level-attr@version-prefix` shape. Nested attrs are intentionally not
+  // offered because Multiverse Fast only indexes top-level nixpkgs attributes.
+  function versionToken(value, caret) {
+    var start = value.lastIndexOf(",", Math.max(0, caret - 1)) + 1;
+    var end = value.indexOf(",", caret);
+    if (end < 0) end = value.length;
+    var raw = value.slice(start, end);
+    var left = (raw.match(/^\s*/) || [""])[0].length;
+    var right = (raw.match(/\s*$/) || [""])[0].length;
+    var token = raw.trim();
+    var mm = token.match(/^([A-Za-z0-9][A-Za-z0-9_-]*)@([A-Za-z0-9._-]*)$/);
+    if (!mm) return null;
+    return {
+      attr: mm[1], prefix: mm[2],
+      start: start + left, end: end - right,
+    };
+  }
+
+  function versionsFor(attr) {
+    if (!versionCache[attr]) {
+      versionCache[attr] = fetch("/api/versions?attr=" + encodeURIComponent(attr))
+        .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+        .then(function (data) { return data.versions || []; })
+        .catch(function () { delete versionCache[attr]; return []; });
+    }
+    return versionCache[attr];
+  }
+
+  // Populate a native datalist only after `@` appears. Each option contains the
+  // complete parameter field value, so suggestions also work for the second or
+  // later entry in `ripgrep@14.1.1,jq@…` without replacing its neighbours.
+  function suggestVersions(inp, list) {
+    var token = versionToken(inp.value, inp.selectionStart == null ? inp.value.length : inp.selectionStart);
+    var request = String((Number(inp.dataset.versionRequest || 0) + 1));
+    inp.dataset.versionRequest = request;
+    list.innerHTML = "";
+    if (!token) return;
+    versionsFor(token.attr).then(function (versions) {
+      if (inp.dataset.versionRequest !== request) return;
+      var current = versionToken(inp.value, inp.selectionStart == null ? inp.value.length : inp.selectionStart);
+      if (!current || current.attr !== token.attr || current.prefix !== token.prefix) return;
+      var prefix = current.prefix.toLowerCase();
+      versions.filter(function (v) { return v.toLowerCase().indexOf(prefix) === 0; })
+        .slice(0, 30)
+        .forEach(function (version) {
+          var option = document.createElement("option");
+          option.value = inp.value.slice(0, current.start) + current.attr + "@" + version + inp.value.slice(current.end);
+          option.label = current.attr + " " + version + " · Nix Multiverse Fast";
+          list.appendChild(option);
+        });
+    });
   }
 
   // ---- data load -----------------------------------------------------------
@@ -445,15 +501,26 @@
         inp.value = (e.params || []).join(",");
         inp.placeholder = m.example || "params";
         inp.setAttribute("aria-label", e.name + " parameters");
+        if (e.name === "tools") {
+          var list = document.createElement("datalist");
+          list.id = "tool-versions-" + (++paramListId);
+          inp.setAttribute("list", list.id);
+          inp.title = "Type a top-level package name followed by @ to suggest Fast versions";
+        }
         inp.size = Math.max((inp.value || inp.placeholder).length, 6);
         inp.addEventListener("input", function () {
           e.params = inp.value.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
           inp.size = Math.max(inp.value.length, 6);
           renderCommand(); // update the one-liner without rebuilding chips (keep focus)
+          if (list) suggestVersions(inp, list);
         });
         // don't let typing a space etc. bubble to the page picker shortcuts
         inp.addEventListener("keydown", function (ev) { ev.stopPropagation(); });
         c.appendChild(inp);
+        if (list) {
+          c.appendChild(list);
+          if (inp.value.indexOf("@") >= 0) suggestVersions(inp, list);
+        }
         c.appendChild(spanText("]", "bracket"));
       }
       var x = document.createElement("button");

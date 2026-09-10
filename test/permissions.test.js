@@ -64,6 +64,13 @@ test("tools[...] contributes a permission per installed binary (ripgrep -> rg)",
   assert.deepEqual(bash, ["Bash(jq:*)", "Bash(prettier:*)", "Bash(rg:*)"]);
 });
 
+test("a versioned tool keeps the unversioned command permission", () => {
+  const bash = perms("tools[ripgrep@14.1.1,jq@1.7.1]").filter((r) =>
+    r.startsWith("Bash("),
+  );
+  assert.deepEqual(bash, ["Bash(jq:*)", "Bash(rg:*)"]);
+});
+
 test("a module set with no toolchain runners still carries the base environment defaults", () => {
   const p = perms("skills");
   assert.equal(

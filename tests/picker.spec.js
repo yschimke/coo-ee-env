@@ -62,6 +62,38 @@ test.describe("env.coo.ee picker", () => {
     await snap(page, "02-autocomplete");
   });
 
+  test("tools suggests Fast versions after @", async ({ page }) => {
+    let lookups = 0;
+    await page.route("**/api/versions?attr=ripgrep", async (route) => {
+      lookups++;
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ attribute: "ripgrep", versions: ["15.2.0", "14.1.1", "14.1.0"] }),
+      });
+    });
+    await gotoApp(page);
+
+    await page.locator("#search").fill("tools");
+    await page.locator("#menu .opt", { hasText: "tools" }).first().click();
+    const input = page.locator('#chips input[aria-label="tools parameters"]');
+
+    // Ordinary package-name typing stays entirely local.
+    await input.fill("ripgrep");
+    expect(lookups).toBe(0);
+
+    // `@` switches on Multiverse lookup and fills the input's native datalist.
+    await input.fill("ripgrep@");
+    const options = page.locator("#chips datalist option");
+    await expect(options).toHaveCount(3);
+    await expect(options.nth(0)).toHaveAttribute("value", "ripgrep@15.2.0");
+    await expect(options.nth(1)).toHaveAttribute("value", "ripgrep@14.1.1");
+    expect(lookups).toBe(1);
+
+    // Choosing/typing a suggested value updates the generated one-liner.
+    await input.fill("ripgrep@14.1.1");
+    await expect(page.locator("#cmd-text")).toContainText("tools[ripgrep@14.1.1]");
+  });
+
   test("selecting a module updates chips, command, and hosts", async ({ page }) => {
     await gotoApp(page);
 
