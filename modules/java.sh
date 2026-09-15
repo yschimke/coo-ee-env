@@ -1,7 +1,9 @@
 
 # ===========================================================================
 #  module: java
-#    software : Temurin JDK (via Nix), JAVA_HOME, JDK TLS fix
+#    software : Temurin JDK (via Nix), JAVA_HOME, JDK TLS fix, plus
+#               build-brief (the Gradle output reducer) when the checkout
+#               actually builds with Gradle — see the build-brief section below
 #    params   : java[17,21] picks the JDK majors. With no param, defaults to
 #               BOTH 17 and 21 (the LTS majors this fleet builds against — AGP /
 #               Gradle still pin 17 while app code targets 21), plus any distinct
@@ -11,18 +13,21 @@
 #    hosts    : cache.nixos.org (install)
 #             : Gradle / Maven / toolchain registries (build; used by the
 #               best-effort dependency prefetch, advisory — opt out COOEE_NO_DEPS=1)
+#             : github.com + its release-asset CDN (build-brief; bb.staticvar.dev
+#               is the fallback installer — advisory, opt out COOEE_NO_BUILD_BRIEF=1)
 #  Host set mirrors skills/compose-preview/references/agent-cloud.md.
 # ===========================================================================
 register_module java
 provides_tool java java   # adopt an existing JDK (warm box or cloud base image)
 # Pre-approve the JVM build toolchain for Claude Code sessions.
-provides_perms java "Bash(./gradlew:*)" "Bash(gradle:*)" "Bash(java:*)" "Bash(javac:*)" "Bash(kotlin:*)" "Bash(kotlinc:*)" "Bash(mvn:*)"
+provides_perms java "Bash(./gradlew:*)" "Bash(build-brief:*)" "Bash(gradle:*)" "Bash(java:*)" "Bash(javac:*)" "Bash(kotlin:*)" "Bash(kotlinc:*)" "Bash(mvn:*)"
 need_host cache.nixos.org      "prebuilt Temurin JDK from the Nix cache"
 want_host services.gradle.org  "Gradle distributions (wrapper download; 307-redirects to GitHub releases)"
-want_host github.com           "Gradle distribution redirect target (gradle/gradle-distributions releases)"
-want_host api.github.com       "GitHub release API for JDK/tool provisioning (Adoptium et al. resolve download URLs here)"
-want_host release-assets.githubusercontent.com "GitHub release-asset CDN serving the Gradle distribution zip (current host)"
+want_host github.com           "Gradle distribution redirect target (gradle/gradle-distributions releases) + the build-brief release download (static-var/build-brief)"
+want_host api.github.com       "GitHub release API for JDK/tool provisioning (Adoptium et al. resolve download URLs here; also the build-brief latest-release fallback)"
+want_host release-assets.githubusercontent.com "GitHub release-asset CDN serving the Gradle distribution zip and the build-brief tarball (current host)"
 want_host objects.githubusercontent.com "GitHub release-asset CDN (legacy host; still used for some assets)"
+want_host bb.staticvar.dev     "build-brief's own install.sh — the fallback when the direct GitHub release download is blocked"
 want_host downloads.gradle.org "Gradle direct-download host (legacy/non-wrapper distribution URLs)"
 want_host repo.gradle.org      "Gradle tooling artifacts + the github-downloads-proxy that seeds the wrapper distribution (mirrors the GitHub release the wrapper's services.gradle.org URL 307-redirects to, which is often blocked)"
 want_host central.sonatype.com "Maven Central artifacts"
@@ -219,6 +224,7 @@ module_java() {
   ok "java ready: $("$JAVA_HOME/bin/java" -version 2>&1 | head -1) (toolchains: ${versions[*]})"
 
   cooee_seed_gradle_wrapper
+  cooee_build_brief_setup
   cooee_prefetch_gradle
 }
 
@@ -575,4 +581,342 @@ GRADLE
     printf '%s\n' "$out" >&2
     warn "java: Gradle dependency prefetch failed (continuing). Allowlist the Gradle/Maven hosts, or set COOEE_NO_DEPS=1 to skip."
   fi
+}
+
+# ===========================================================================
+#  build-brief — the Gradle output reducer, set up when Gradle is selected
+# ===========================================================================
+# `build-brief` (https://bb.staticvar.dev, static-var/build-brief, MIT, a single
+# Go binary with no runtime deps) sits in front of Gradle: it writes every line
+# Gradle emits to a log file and prints only what changes the next move — status,
+# failed tasks, failed tests, warnings, build scan URLs, generated output paths.
+# The Gradle exit code passes through unchanged, so it is safe anywhere a bare
+# `./gradlew` was.
+#
+# Why this belongs in the *environment* rather than in a repo: an agent session
+# runs `check` and full render pipelines in-session, and those bury their one
+# real line in thousands — the reducer is what keeps that affordable, and it is
+# only useful if the binary is already on PATH when the session starts. It is
+# also a hard prerequisite for the shared-host Gradle launchers that repos are
+# starting to ship (compose-ai-tools' `scripts/agent-gradle.sh` exits 1 with
+# "build-brief is required" when it isn't installed), so provisioning it here is
+# what makes those checkouts work unattended.
+#
+# Everything below is best-effort: a blocked CDN warns and moves on. Gradle
+# still builds without the reducer, so this never fails a `java` provision.
+#   COOEE_NO_BUILD_BRIEF=1        skip entirely
+#   COOEE_BUILD_BRIEF=1           install even when no Gradle build was detected
+#   COOEE_BUILD_BRIEF_VERSION=x.y.z   pin a release (default: latest); a
+#                                     different version already on PATH is
+#                                     replaced rather than adopted
+#   COOEE_BUILD_BRIEF_BIN_DIR=dir     install location (default ~/.local/bin)
+#   COOEE_NO_BUILD_BRIEF_GUIDE=1  install the binary but write no usage guide
+COOEE_BUILD_BRIEF_REPO="${COOEE_BUILD_BRIEF_REPO:-static-var/build-brief}"
+COOEE_BUILD_BRIEF_BIN_DIR="${COOEE_BUILD_BRIEF_BIN_DIR:-$HOME/.local/bin}"
+
+# True when this environment is being provisioned *for Gradle*, which is the
+# only case build-brief is for (it reduces Gradle output and nothing else —
+# a Maven-only or plain-JDK checkout has no use for it).
+#
+# Gradle counts as selected when any of these hold:
+#   * a Gradle wrapper exists in one of the side-by-side checkouts — the same
+#     scan cooee_seed_gradle_wrapper uses, so "we seeded a distribution for it"
+#     and "we install the reducer for it" can never disagree;
+#   * `gradle` is already on PATH (a warm box, a base image, or `tools[gradle]`
+#     from an earlier run);
+#   * `tools[gradle]` is part of *this* request — the tools module may not have
+#     run yet, so read the request params rather than PATH.
+cooee_gradle_selected() {
+  [[ -n "$(cooee_gradle_wrapper_props)" ]] && return 0
+  command -v gradle >/dev/null 2>&1 && return 0
+  local t; local -a requested=()
+  IFS=',' read -r -a requested <<< "${_MODULE_PARAMS[tools]:-}"
+  for t in "${requested[@]}"; do
+    [[ "$t" == gradle || "$t" == *.gradle ]] && return 0
+  done
+  return 1
+}
+
+# Entry point, called from module_java: gate, adopt or install, then write the
+# usage guide so an agent actually knows to reach for it.
+cooee_build_brief_setup() {
+  if [[ "${COOEE_NO_BUILD_BRIEF:-0}" == 1 ]]; then
+    log "java: skipping build-brief (COOEE_NO_BUILD_BRIEF=1)."
+    return 0
+  fi
+  if [[ "${COOEE_BUILD_BRIEF:-0}" != 1 ]] && ! cooee_gradle_selected; then
+    log "java: no Gradle build selected (no wrapper in the checkouts, no gradle on PATH, no tools[gradle]); skipping build-brief. Force it with COOEE_BUILD_BRIEF=1."
+    return 0
+  fi
+
+  # Adopt an existing install (warm box, or a previous run) — but still make
+  # sure its dir is on PATH for later shells and that the guide is in place.
+  # A version pin is the one thing adoption must not paper over: the request
+  # asked for that release, so a different one on PATH falls through to the
+  # install below rather than being accepted as good enough.
+  local bin
+  if bin="$(command -v build-brief 2>/dev/null)" && [[ -n "$bin" ]]; then
+    if cooee_build_brief_pin_satisfied "$bin"; then
+      cooee_build_brief_path "$(dirname "$bin")"
+      ok "java: adopted existing build-brief ($bin, $("$bin" --version 2>/dev/null | head -1))."
+      cooee_build_brief_guide
+      return 0
+    fi
+    log "java: build-brief at $bin is not the pinned ${COOEE_BUILD_BRIEF_VERSION#v}; installing the pinned release."
+  fi
+
+  if cooee_build_brief_install; then
+    cooee_build_brief_guide
+  fi
+  return 0
+}
+
+# Put <dir> on PATH for this shell and persist it, unless it is already there.
+cooee_build_brief_path() {  # <dir>
+  local dir="$1"
+  case ":${PATH}:" in
+    *":$dir:"*) return 0 ;;
+  esac
+  add_env PATH "$dir:$PATH"
+  export PATH="$dir:$PATH"
+}
+
+# True when an already-present build-brief satisfies the request: either no
+# version was pinned, or the binary reports exactly the pinned one. A binary
+# that won't report a version counts as *not* satisfying a pin — under a pin,
+# "can't tell" has to mean "install the release that was asked for".
+cooee_build_brief_pin_satisfied() {  # <binary>
+  local want="${COOEE_BUILD_BRIEF_VERSION:-}"
+  [[ -n "$want" ]] || return 0
+  local got; got=$("$1" --version 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)+' | head -1)
+  [[ -n "$got" && "$got" == "${want#v}" ]]
+}
+
+# This host's build-brief release asset suffix (<os>_<arch>), mirroring the
+# upstream install.sh naming. Empty + rc 1 on a platform it doesn't publish for.
+cooee_build_brief_platform() {
+  local os arch
+  case "$(uname -s)" in
+    Linux)  os=linux  ;;
+    Darwin) os=darwin ;;
+    *) return 1 ;;
+  esac
+  case "$(uname -m)" in
+    x86_64|amd64)  arch=amd64 ;;
+    arm64|aarch64) arch=arm64 ;;
+    *) return 1 ;;
+  esac
+  printf '%s_%s' "$os" "$arch"
+}
+
+# The latest published version, without the leading `v`. Resolved from the
+# /releases/latest redirect (no API token, no rate limit); falls back to the
+# release API when the redirect can't be followed. Empty + rc 1 on failure.
+cooee_build_brief_latest_version() {
+  local repo="$COOEE_BUILD_BRIEF_REPO" tag=""
+  tag=$(curl -fsSL --retry 2 -o /dev/null -w '%{url_effective}' \
+          "https://github.com/${repo}/releases/latest" 2>/dev/null \
+        | sed -n 's#.*/releases/tag/\([^/?#]*\).*#\1#p' | head -1)
+  if [[ -z "$tag" ]]; then
+    tag=$(curl -fsSL --retry 2 "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null \
+          | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+  fi
+  [[ -n "$tag" ]] || return 1
+  printf '%s' "${tag#v}"
+}
+
+# Download, verify and install the binary. Returns non-zero (after warning) when
+# anything goes wrong — the caller treats that as "no reducer today", not fatal.
+cooee_build_brief_install() {
+  command -v curl >/dev/null 2>&1 || { warn "java: curl is required to install build-brief; skipping."; return 1; }
+  command -v tar  >/dev/null 2>&1 || { warn "java: tar is required to install build-brief; skipping."; return 1; }
+
+  local platform
+  platform=$(cooee_build_brief_platform) || {
+    warn "java: no build-brief release for '$(uname -s) $(uname -m)'; skipping (Gradle still builds without it)."
+    return 1
+  }
+
+  local version="${COOEE_BUILD_BRIEF_VERSION:-}"
+  if [[ -z "$version" ]]; then
+    version=$(cooee_build_brief_latest_version) || {
+      warn "java: couldn't resolve the latest build-brief release (github.com blocked?); trying the upstream installer."
+      cooee_build_brief_install_sh; return $?
+    }
+  fi
+  version="${version#v}"
+
+  local repo="$COOEE_BUILD_BRIEF_REPO"
+  local asset="build-brief_${version}_${platform}.tar.gz"
+  local base="https://github.com/${repo}/releases/download/v${version}"
+  local tmp; tmp=$(mktemp -d "${TMPDIR:-/tmp}/cooee-build-brief.XXXXXX") || {
+    warn "java: couldn't create a temp dir for the build-brief download; skipping."; return 1; }
+
+  log "java: installing build-brief ${version} (${platform}) from github.com..."
+  if ! cooee_fetch "${base}/${asset}" "$tmp/$asset"; then
+    rm -rf "$tmp"
+    warn "java: couldn't download ${asset} (release-asset CDN blocked?); trying the upstream installer."
+    cooee_build_brief_install_sh; return $?
+  fi
+
+  # Verify against the release's SHA256SUMS. A missing sums file (or no sha256
+  # tool) is a warn-and-continue, exactly as upstream's installer treats it; a
+  # *mismatch* is not — don't install bytes that failed their own checksum.
+  local want got
+  want=$(cooee_fetch "${base}/SHA256SUMS" "$tmp/SHA256SUMS" 2 2>/dev/null \
+         && awk -v n="$asset" '$2 == n || $2 == "./"n { print $1; exit }' "$tmp/SHA256SUMS")
+  if [[ -z "$want" ]]; then
+    warn "java: no published checksum for ${asset}; installing unverified."
+  elif command -v sha256sum >/dev/null 2>&1; then
+    got=$(sha256sum "$tmp/$asset" | cut -d' ' -f1)
+    if [[ "$got" != "$want" ]]; then
+      rm -rf "$tmp"
+      warn "java: build-brief checksum mismatch (got $got, want $want); refusing to install."
+      return 1
+    fi
+  fi
+
+  if ! tar -xzf "$tmp/$asset" -C "$tmp"; then
+    rm -rf "$tmp"; warn "java: couldn't unpack ${asset}; skipping build-brief."; return 1
+  fi
+
+  local src; src=$(find "$tmp" -type f -name build-brief -print -quit 2>/dev/null)
+  if [[ -z "$src" ]]; then
+    rm -rf "$tmp"; warn "java: no build-brief binary inside ${asset}; skipping."; return 1
+  fi
+
+  local dir="$COOEE_BUILD_BRIEF_BIN_DIR"
+  if ! (mkdir -p "$dir" && install -m 755 "$src" "$dir/build-brief"); then
+    rm -rf "$tmp"; warn "java: couldn't install build-brief into $dir; skipping."; return 1
+  fi
+  rm -rf "$tmp"
+
+  cooee_build_brief_path "$dir"
+  ok "java: build-brief ready ($dir/build-brief, $("$dir/build-brief" --version 2>/dev/null | head -1))."
+  # PATH is only prepended when $dir wasn't on it, so a copy sitting in an
+  # earlier entry still wins. Say so rather than letting a pinned install look
+  # like it took effect.
+  local resolved; resolved="$(command -v build-brief 2>/dev/null)"
+  [[ "$resolved" == "$dir/build-brief" ]] \
+    || warn "java: another build-brief earlier on PATH ($resolved) shadows the one just installed in $dir."
+  return 0
+}
+
+# Fallback path: upstream's own install.sh. Used only when the direct release
+# download failed, since it needs one more host (bb.staticvar.dev) and resolves
+# the same GitHub asset itself.
+cooee_build_brief_install_sh() {
+  local dir="$COOEE_BUILD_BRIEF_BIN_DIR"
+  mkdir -p "$dir" || { warn "java: couldn't create $dir for build-brief; skipping."; return 1; }
+  local args=(--bin-dir "$dir")
+  [[ -n "${COOEE_BUILD_BRIEF_VERSION:-}" ]] && args+=(--version "${COOEE_BUILD_BRIEF_VERSION#v}")
+  local sh; sh=$(mktemp "${TMPDIR:-/tmp}/cooee-bb-install.XXXXXX") || return 1
+  if ! cooee_fetch "https://bb.staticvar.dev/install.sh" "$sh" 2; then
+    rm -f "$sh"
+    warn "java: build-brief install skipped — neither the GitHub release nor bb.staticvar.dev is reachable. Allowlist github.com (+ its release-asset CDN), or set COOEE_NO_BUILD_BRIEF=1 to silence this."
+    return 1
+  fi
+  if bash "$sh" "${args[@]}" >/dev/null 2>&1; then
+    rm -f "$sh"
+    cooee_build_brief_path "$dir"
+    ok "java: build-brief ready via bb.staticvar.dev ($dir/build-brief)."
+    return 0
+  fi
+  rm -f "$sh"
+  warn "java: build-brief's installer failed; continuing without the reducer."
+  return 1
+}
+
+# ---- the guide -------------------------------------------------------------
+# Installing the binary is half the job: a reducer nobody reaches for changes
+# nothing. So write the usage rules where an agent will actually read them —
+# a managed block in the GLOBAL Claude config's CLAUDE.md
+# ($CLAUDE_CONFIG_DIR/CLAUDE.md, default ~/.claude/CLAUDE.md), which every
+# session in this container loads regardless of which checkout it opens.
+#
+# Deliberately NOT `build-brief --install`: that regenerates a managed block in
+# the *checkout's* AGENTS.md, a git-tracked file. Dirtying provisioned working
+# trees is the thing this project avoids everywhere else (see
+# cooee_install_session_hook), and a repo that wants those rules committed
+# already has them. The environment's copy carries the same rules plus the
+# environment-specific ones (the repo launcher, the raw log path).
+#
+# The block is delimited by markers and rewritten in place, so re-running
+# provisioning updates it rather than stacking copies. Opt out with
+# COOEE_NO_BUILD_BRIEF_GUIDE=1.
+COOEE_BUILD_BRIEF_MARK_START='<!-- coo.ee/env:build-brief:start -->'
+COOEE_BUILD_BRIEF_MARK_END='<!-- coo.ee/env:build-brief:end -->'
+
+cooee_build_brief_guide() {
+  if [[ "${COOEE_NO_BUILD_BRIEF_GUIDE:-0}" == 1 ]]; then
+    log "java: skipping the build-brief usage guide (COOEE_NO_BUILD_BRIEF_GUIDE=1)."
+    return 0
+  fi
+  local dir; dir="$(cooee_global_claude_dir)"
+  local md="$dir/CLAUDE.md"
+  mkdir -p "$dir" || { warn "java: couldn't create $dir; skipping the build-brief guide."; return 0; }
+
+  local tmp; tmp=$(mktemp "${TMPDIR:-/tmp}/cooee-bb-guide.XXXXXX") || {
+    warn "java: couldn't stage the build-brief guide; skipping."; return 0; }
+
+  # Existing content minus any previous block (awk drops start..end inclusive),
+  # then the freshly rendered block appended.
+  if [[ -f "$md" ]]; then
+    if ! awk -v s="$COOEE_BUILD_BRIEF_MARK_START" -v e="$COOEE_BUILD_BRIEF_MARK_END" '
+          $0 == s { skip = 1; next }
+          skip    { if ($0 == e) skip = 0; next }
+          { print }' "$md" > "$tmp"; then
+      rm -f "$tmp"; warn "java: couldn't rewrite ${md/#$HOME/\~}; skipping the build-brief guide."; return 0
+    fi
+    # Collapse the trailing blank lines the removal may have left behind.
+    printf '%s\n' "$(cat "$tmp")" > "$tmp.trim" && mv "$tmp.trim" "$tmp"
+    [[ -s "$tmp" ]] && printf '\n' >> "$tmp"
+  fi
+
+  cooee_build_brief_guide_block >> "$tmp" || {
+    rm -f "$tmp"; warn "java: couldn't render the build-brief guide; skipping."; return 0; }
+
+  if mv "$tmp" "$md"; then
+    ok "java: build-brief usage guide written to ${md/#$HOME/\~} (opt out: COOEE_NO_BUILD_BRIEF_GUIDE=1)."
+  else
+    rm -f "$tmp"; warn "java: couldn't write ${md/#$HOME/\~}; skipping the build-brief guide."
+  fi
+  return 0
+}
+
+# The guide itself. Rules 1-6 are build-brief's own documented behaviour (the
+# block `build-brief --install` writes); the rest is what this environment adds.
+cooee_build_brief_guide_block() {
+  printf '%s\n' "$COOEE_BUILD_BRIEF_MARK_START"
+  cat <<'MD'
+## Gradle: run it through `build-brief`
+
+This environment installed [`build-brief`](https://bb.staticvar.dev) because the
+checkout builds with Gradle. It keeps the full log on disk and prints only the
+parts that decide what you do next — failed tasks, failed tests, warnings, build
+scan URLs, artifact paths — and it preserves Gradle's exit code exactly. Use it
+for every Gradle invocation; `check` and render pipelines otherwise bury their
+one real line in thousands.
+
+- Prefer `build-brief ./gradlew ...` for the project wrapper, `build-brief gradle ...` for a PATH Gradle.
+- Rewrite each Gradle segment of a chained command separately: `build-brief ./gradlew test && build-brief ./gradlew check`.
+- The default output is intentionally short on clean success — that is the tool working, not output going missing.
+- Report-style commands (`tasks`, `help`, `projects`, `dependencies`, `dependencyInsight`) keep their full bodies, so dependency debugging is unaffected.
+- `build-brief ./gradlew --stacktrace ...` when you need Gradle's stack traces. Output-shaping flags (`--quiet`, `--warn`, `--warning-mode`, `--console`) are normalized, and explicit `--daemon` / `--no-daemon` are stripped so daemon reuse still happens.
+- Preserve the raw log path it prints when handing a failure to another tool or agent — that file has everything the brief dropped.
+- `build-brief doctor` is read-only and never runs Gradle; use it to check the setup.
+
+Two things specific to this environment:
+
+- **If the checkout ships its own Gradle launcher, prefer it.** A repo that caps
+  automated builds on a shared host (e.g. `scripts/agent-gradle.sh`) already
+  wraps `build-brief` and adds its own worker/priority limits; it requires
+  `build-brief` on PATH, which is why this environment installs it. Follow that
+  repo's rules for when to take its exclusive/serialized profile (typically
+  `check` and broad render pipelines).
+- **Don't run `build-brief --install` in a checkout.** It rewrites that repo's
+  git-tracked `AGENTS.md`; these rules are installed in the environment instead,
+  so a provisioned working tree stays clean.
+MD
+  printf '%s\n' "$COOEE_BUILD_BRIEF_MARK_END"
 }

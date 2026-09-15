@@ -63,7 +63,7 @@ treats an already-present package as success — so a partial/cold box is
 | Module    | Installs                                  | Needs network access to | Cloud built-in selector |
 | --------- | ----------------------------------------- | ----------------------- | ----------------------- |
 | `base`    | Nix (Determinate, daemonless)             | `install.determinate.systems`, `cache.nixos.org`, `channels.nixos.org`, `github.com`, `objects.githubusercontent.com` | — |
-| `java`    | Temurin JDK, `JAVA_HOME`; bare `java` uses the JDK the project pins for Gradle (`toolchainVersion` in `gradle/gradle-daemon-jvm.properties`), else 21 (17 + 21 with `android`); `java[17,21]` to choose | `cache.nixos.org` | base-image JDK |
+| `java`    | Temurin JDK, `JAVA_HOME`; bare `java` uses the JDK the project pins for Gradle (`toolchainVersion` in `gradle/gradle-daemon-jvm.properties`), else 21 (17 + 21 with `android`); `java[17,21]` to choose. When the request is **for Gradle**, also installs [`build-brief`](#gradle-output-build-brief) (the Gradle output reducer) and writes its usage guide | `cache.nixos.org`; `github.com` + its release-asset CDN for `build-brief` (`bb.staticvar.dev` as fallback) | base-image JDK |
 | `android` | Full SDK via `androidenv`: `platform-tools` (adb), `cmdline-tools`, the requested platform(s) + `build-tools`, `ANDROID_HOME`; `android[30,36,wear-33]` picks the platform API levels; **implies `android-cli`** (the Android CLI rides along) | `cache.nixos.org`, `dl.google.com`, `maven.google.com` | — |
 | `android-cli` _(hidden)_ | [Google's Android CLI](https://developer.android.com/tools/agents/android-cli) — the agent-first `android` command (scaffold projects, manage AVDs, run Journeys). Downloads the prebuilt binary to `~/.local/bin`, puts it on PATH, and runs `android init` to register its agent skill (opt out with `COOEE_ANDROID_CLI_INIT=0`). Rides along with `android` (which implies it) or installs via its own `/android-cli` one-liner; **not shown in the picker** (it does not pull the Nix SDK back) | `dl.google.com` | — |
 | `android-emulator` | Adds `emulator` + `system-images` to the SDK (via the implied `android` build) and configures `/dev/kvm` access (GitHub `99-kvm4all.rules`); `android-emulator[36,wear-33]` picks the image levels; **implies `android`** | `cache.nixos.org`, `dl.google.com` | — |
@@ -704,6 +704,60 @@ exercises this end-to-end: the [`prefetch`](.github/workflows/prefetch.yml)
 workflow renders the `java` module, runs it against the sample, and asserts the
 dependency JAR is downloaded into the Gradle cache (and that `COOEE_NO_DEPS=1`
 skips it).
+
+## Gradle output: `build-brief`
+
+An agent session runs `check` and full render pipelines in-session, and those
+bury their one real line in thousands. So when the `java` module is provisioning
+**for Gradle**, it also installs
+[`build-brief`](https://bb.staticvar.dev) ([`static-var/build-brief`](https://github.com/static-var/build-brief),
+MIT, a single Go binary with no runtime deps): it keeps the full log on disk and
+prints only what decides the next move — failed tasks, failed tests, warnings,
+build scan URLs, artifact paths — and passes Gradle's exit code through
+unchanged, so it is safe anywhere a bare `./gradlew` was.
+
+**"For Gradle"** means one of: a Gradle wrapper in one of the side-by-side
+checkouts (the same scan that seeds the wrapper distribution — so the two can
+never disagree), `gradle` already on PATH, or `tools[gradle]` in the request. A
+Maven-only or plain-JDK request installs nothing, since the reducer only reduces
+Gradle.
+
+The binary comes from the GitHub release (checksum-verified against the
+release's `SHA256SUMS`; a mismatch refuses the install), falling back to
+upstream's `bb.staticvar.dev/install.sh` when that download is blocked. Like the
+dependency prefetch, the whole step is **best-effort**: Gradle still builds
+without the reducer, so a blocked CDN warns and provisioning continues.
+
+It also installs the part that makes the tool actually get used: a **usage
+guide**, written as a managed block in the global Claude config's `CLAUDE.md`
+(`$CLAUDE_CONFIG_DIR/CLAUDE.md`, default `~/.claude/CLAUDE.md`) — which every
+session in the container loads, whichever checkout it opens. The block is
+delimited by markers and rewritten in place, so re-provisioning updates it
+rather than stacking copies, and surrounding content is preserved. It carries
+build-brief's own per-command rules plus two environment-specific ones: prefer a
+repo's own Gradle launcher when it ships one (a shared-host wrapper like
+compose-ai-tools' `scripts/agent-gradle.sh` wraps `build-brief` and *requires* it
+on PATH — which is the other reason to provision it here), and don't run
+`build-brief --install` in a checkout, because that rewrites the repo's
+git-tracked `AGENTS.md`. Dirtying provisioned working trees is what this project
+avoids everywhere else (see [Auto-activation](#auto-activation)), so the rules
+live in the environment instead.
+
+The step also runs on the **already-provisioned fast path**. The stamp only
+proves each module's tool is on PATH, and the SessionStart hook re-runs the
+one-liner every session — so on a box provisioned before this existed, the fast
+path is the common case and `build-brief` would otherwise never arrive. It is a
+`command -v` when there is nothing to do.
+
+`Bash(build-brief:*)` is pre-approved along with the rest of the JVM toolchain.
+
+| Variable | Effect |
+| -------- | ------ |
+| `COOEE_NO_BUILD_BRIEF=1` | Skip the whole step |
+| `COOEE_BUILD_BRIEF=1` | Install even when no Gradle build was detected |
+| `COOEE_BUILD_BRIEF_VERSION=x.y.z` | Pin a release (default: latest); a different version already on PATH is replaced rather than adopted |
+| `COOEE_BUILD_BRIEF_BIN_DIR=dir` | Install location (default `~/.local/bin`) |
+| `COOEE_NO_BUILD_BRIEF_GUIDE=1` | Install the binary but write no guide |
 
 ## Auto-activation
 
