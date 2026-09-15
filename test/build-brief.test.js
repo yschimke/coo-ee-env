@@ -26,13 +26,16 @@ function evalRendered(seg, snippet, env = {}) {
   }).trim();
 }
 
-// A PATH with no Gradle on it. `gradle` on PATH is a legitimate "Gradle is
-// selected" signal, and CI runners ship one — so the negative cases have to
-// state the absence rather than inherit the machine's PATH.
-const NO_GRADLE_PATH = (process.env.PATH || "")
-  .split(path.delimiter)
-  .filter((dir) => dir && !fs.existsSync(path.join(dir, "gradle")))
-  .join(path.delimiter);
+// `gradle` on PATH is a legitimate "Gradle is selected" signal, and CI runners
+// ship one — so a test about its *absence* has to say so. Dropping the PATH
+// entries that carry Gradle would take /usr/bin (and with it bash, find, sed)
+// along with it, so shadow the one lookup the gate makes instead, and forward
+// everything else to the builtin.
+const NO_GRADLE = `
+command() {
+  [ "$1" = -v ] && [ "$2" = gradle ] && return 1
+  builtin command "$@"
+}`;
 
 function tmpdir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -77,35 +80,31 @@ cooee_fetch() {
 // --- the gate ---------------------------------------------------------------
 
 test("gradle is selected when a checkout has a Gradle wrapper", () => {
-  const out = evalRendered("java", "cooee_gradle_selected && echo yes || echo no", {
+  const out = evalRendered("java", `${NO_GRADLE}\ncooee_gradle_selected && echo yes || echo no`, {
     COOEE_CHECKOUTS_DIR: gradleCheckout(),
-    PATH: NO_GRADLE_PATH,
   });
   assert.equal(out, "yes");
 });
 
 test("gradle is selected when the request asks for tools[gradle]", () => {
-  const out = evalRendered("java,tools[gradle]", "cooee_gradle_selected && echo yes || echo no", {
+  const out = evalRendered("java,tools[gradle]", `${NO_GRADLE}\ncooee_gradle_selected && echo yes || echo no`, {
     COOEE_CHECKOUTS_DIR: tmpdir("cooee-empty-"),
-    PATH: NO_GRADLE_PATH,
   });
   assert.equal(out, "yes");
 });
 
 test("gradle is not selected for a JDK-only checkout", () => {
-  const out = evalRendered("java", "cooee_gradle_selected && echo yes || echo no", {
+  const out = evalRendered("java", `${NO_GRADLE}\ncooee_gradle_selected && echo yes || echo no`, {
     COOEE_CHECKOUTS_DIR: tmpdir("cooee-empty-"),
-    PATH: NO_GRADLE_PATH,
   });
   assert.equal(out, "no");
 });
 
 test("setup is a no-op without Gradle, and under COOEE_NO_BUILD_BRIEF=1", () => {
   const home = tmpdir("cooee-home-");
-  const noGradle = evalRendered("java", "cooee_build_brief_setup", {
+  const noGradle = evalRendered("java", `${NO_GRADLE}\ncooee_build_brief_setup`, {
     COOEE_CHECKOUTS_DIR: tmpdir("cooee-empty-"),
     HOME: home,
-    PATH: NO_GRADLE_PATH,
   });
   assert.match(noGradle, /no Gradle build selected/);
   const optedOut = evalRendered("java", "cooee_build_brief_setup", {
