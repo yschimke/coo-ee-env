@@ -743,13 +743,19 @@ git-tracked `AGENTS.md`. Dirtying provisioned working trees is what this project
 avoids everywhere else (see [Auto-activation](#auto-activation)), so the rules
 live in the environment instead.
 
+The step also runs on the **already-provisioned fast path**. The stamp only
+proves each module's tool is on PATH, and the SessionStart hook re-runs the
+one-liner every session — so on a box provisioned before this existed, the fast
+path is the common case and `build-brief` would otherwise never arrive. It is a
+`command -v` when there is nothing to do.
+
 `Bash(build-brief:*)` is pre-approved along with the rest of the JVM toolchain.
 
 | Variable | Effect |
 | -------- | ------ |
 | `COOEE_NO_BUILD_BRIEF=1` | Skip the whole step |
 | `COOEE_BUILD_BRIEF=1` | Install even when no Gradle build was detected |
-| `COOEE_BUILD_BRIEF_VERSION=x.y.z` | Pin a release (default: latest) |
+| `COOEE_BUILD_BRIEF_VERSION=x.y.z` | Pin a release (default: latest); a different version already on PATH is replaced rather than adopted |
 | `COOEE_BUILD_BRIEF_BIN_DIR=dir` | Install location (default `~/.local/bin`) |
 | `COOEE_NO_BUILD_BRIEF_GUIDE=1` | Install the binary but write no guide |
 

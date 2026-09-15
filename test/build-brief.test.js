@@ -155,6 +155,78 @@ test("a checksum mismatch refuses the install rather than trusting the bytes", (
   assert.equal(fs.existsSync(path.join(home, ".local/bin/build-brief")), false);
 });
 
+test("a pinned version replaces a different one already on PATH", () => {
+  const { dir } = fakeRelease();
+  const home = tmpdir("cooee-home-");
+  // An older build-brief earlier on PATH: adopting it would silently ignore the pin.
+  const old = tmpdir("cooee-oldbb-");
+  fs.writeFileSync(path.join(old, "build-brief"), '#!/bin/sh\necho "build-brief 0.0.1"\n');
+  fs.chmodSync(path.join(old, "build-brief"), 0o755);
+  const out = evalRendered(
+    "java",
+    `${stubFetch(dir)}
+     cooee_build_brief_setup
+     command -v build-brief
+     build-brief --version`,
+    {
+      COOEE_CHECKOUTS_DIR: gradleCheckout(),
+      HOME: home,
+      PATH: `${old}${path.delimiter}${process.env.PATH}`,
+      COOEE_BUILD_BRIEF_VERSION: "9.9.9",
+    },
+  );
+  const lines = out.split("\n");
+  assert.equal(lines.at(-2), path.join(home, ".local/bin/build-brief"));
+  assert.match(lines.at(-1), /9\.9\.9/);
+});
+
+test("without a pin, an existing build-brief is adopted rather than reinstalled", () => {
+  const home = tmpdir("cooee-home-");
+  const old = tmpdir("cooee-oldbb-");
+  fs.writeFileSync(path.join(old, "build-brief"), '#!/bin/sh\necho "build-brief 0.0.1"\n');
+  fs.chmodSync(path.join(old, "build-brief"), 0o755);
+  const out = evalRendered("java", "cooee_build_brief_setup", {
+    COOEE_CHECKOUTS_DIR: gradleCheckout(),
+    HOME: home,
+    PATH: `${old}${path.delimiter}${process.env.PATH}`,
+  });
+  assert.match(out, /adopted existing build-brief/);
+  assert.equal(fs.existsSync(path.join(home, ".local/bin/build-brief")), false);
+});
+
+// --- the fast path ----------------------------------------------------------
+
+// The stamp only proves each module's *tool* is on PATH, and the SessionStart
+// hook re-runs the one-liner every session — so a box provisioned before this
+// step existed takes the fast path forever. build-brief has to arrive anyway.
+test("the already-provisioned fast path still sets build-brief up", () => {
+  const { dir } = fakeRelease();
+  const home = tmpdir("cooee-home-");
+  fs.mkdirSync(path.join(home, ".config", "coo-ee"), { recursive: true });
+  fs.writeFileSync(path.join(home, ".config", "coo-ee", "provisioned"), "base java");
+  // What the fast path checks for: nix (base) and java (java), both present.
+  const bin = tmpdir("cooee-bin-");
+  for (const tool of ["nix", "java"]) {
+    fs.writeFileSync(path.join(bin, tool), `#!/bin/sh\necho ${tool}\n`);
+    fs.chmodSync(path.join(bin, tool), 0o755);
+  }
+  const out = evalRendered(
+    "java",
+    `${stubFetch(dir)}
+     main
+     command -v build-brief`,
+    {
+      COOEE_CHECKOUTS_DIR: gradleCheckout(),
+      HOME: home,
+      PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+      COOEE_BUILD_BRIEF_VERSION: "9.9.9",
+      COOEE_NO_ACTIVATE: "1",
+    },
+  );
+  assert.match(out, /Already provisioned/);
+  assert.equal(out.split("\n").pop(), path.join(home, ".local/bin/build-brief"));
+});
+
 // --- the guide --------------------------------------------------------------
 
 test("the guide is written to the global CLAUDE.md, preserving what is there", () => {

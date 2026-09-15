@@ -606,7 +606,9 @@ GRADLE
 # still builds without the reducer, so this never fails a `java` provision.
 #   COOEE_NO_BUILD_BRIEF=1        skip entirely
 #   COOEE_BUILD_BRIEF=1           install even when no Gradle build was detected
-#   COOEE_BUILD_BRIEF_VERSION=x.y.z   pin a release (default: latest)
+#   COOEE_BUILD_BRIEF_VERSION=x.y.z   pin a release (default: latest); a
+#                                     different version already on PATH is
+#                                     replaced rather than adopted
 #   COOEE_BUILD_BRIEF_BIN_DIR=dir     install location (default ~/.local/bin)
 #   COOEE_NO_BUILD_BRIEF_GUIDE=1  install the binary but write no usage guide
 COOEE_BUILD_BRIEF_REPO="${COOEE_BUILD_BRIEF_REPO:-static-var/build-brief}"
@@ -649,13 +651,18 @@ cooee_build_brief_setup() {
 
   # Adopt an existing install (warm box, or a previous run) — but still make
   # sure its dir is on PATH for later shells and that the guide is in place.
+  # A version pin is the one thing adoption must not paper over: the request
+  # asked for that release, so a different one on PATH falls through to the
+  # install below rather than being accepted as good enough.
   local bin
-  if command -v build-brief >/dev/null 2>&1; then
-    bin="$(command -v build-brief)"
-    cooee_build_brief_path "$(dirname "$bin")"
-    ok "java: adopted existing build-brief ($bin, $("$bin" --version 2>/dev/null | head -1))."
-    cooee_build_brief_guide
-    return 0
+  if bin="$(command -v build-brief 2>/dev/null)" && [[ -n "$bin" ]]; then
+    if cooee_build_brief_pin_satisfied "$bin"; then
+      cooee_build_brief_path "$(dirname "$bin")"
+      ok "java: adopted existing build-brief ($bin, $("$bin" --version 2>/dev/null | head -1))."
+      cooee_build_brief_guide
+      return 0
+    fi
+    log "java: build-brief at $bin is not the pinned ${COOEE_BUILD_BRIEF_VERSION#v}; installing the pinned release."
   fi
 
   if cooee_build_brief_install; then
@@ -672,6 +679,17 @@ cooee_build_brief_path() {  # <dir>
   esac
   add_env PATH "$dir:$PATH"
   export PATH="$dir:$PATH"
+}
+
+# True when an already-present build-brief satisfies the request: either no
+# version was pinned, or the binary reports exactly the pinned one. A binary
+# that won't report a version counts as *not* satisfying a pin — under a pin,
+# "can't tell" has to mean "install the release that was asked for".
+cooee_build_brief_pin_satisfied() {  # <binary>
+  local want="${COOEE_BUILD_BRIEF_VERSION:-}"
+  [[ -n "$want" ]] || return 0
+  local got; got=$("$1" --version 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)+' | head -1)
+  [[ -n "$got" && "$got" == "${want#v}" ]]
 }
 
 # This host's build-brief release asset suffix (<os>_<arch>), mirroring the
@@ -775,6 +793,12 @@ cooee_build_brief_install() {
 
   cooee_build_brief_path "$dir"
   ok "java: build-brief ready ($dir/build-brief, $("$dir/build-brief" --version 2>/dev/null | head -1))."
+  # PATH is only prepended when $dir wasn't on it, so a copy sitting in an
+  # earlier entry still wins. Say so rather than letting a pinned install look
+  # like it took effect.
+  local resolved; resolved="$(command -v build-brief 2>/dev/null)"
+  [[ "$resolved" == "$dir/build-brief" ]] \
+    || warn "java: another build-brief earlier on PATH ($resolved) shadows the one just installed in $dir."
   return 0
 }
 

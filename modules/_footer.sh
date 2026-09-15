@@ -57,6 +57,17 @@ main() {
   if cooee_already_provisioned; then
     ok "Already provisioned (${MODULES[*]:-}); skipping install."
     cooee_forward_persisted_env
+    # Idempotent fixups that must survive the fast path. The stamp only proves
+    # each module's *tool* is on PATH, so anything a module installs beside it
+    # would otherwise never arrive on a box provisioned before that step
+    # existed — and the SessionStart hook re-runs this on every session, so the
+    # fast path is the common case, not the rare one. Each is cheap when there
+    # is nothing to do, and guarded by declare -F because the rendered script
+    # only contains the modules that were requested.
+    # (java: build-brief, which the stamp's `command -v java` says nothing about.)
+    if declare -F cooee_build_brief_setup >/dev/null; then
+      cooee_build_brief_setup
+    fi
     cooee_install_activation   # idempotent: ensure auto-activation is wired up
     log "Re-exported env from ${COOEE_PROFILE} (source it in a fresh shell)."
     log "Force a re-provision with COOEE_FORCE=1."
