@@ -26,6 +26,14 @@ function evalRendered(seg, snippet, env = {}) {
   }).trim();
 }
 
+// A PATH with no Gradle on it. `gradle` on PATH is a legitimate "Gradle is
+// selected" signal, and CI runners ship one — so the negative cases have to
+// state the absence rather than inherit the machine's PATH.
+const NO_GRADLE_PATH = (process.env.PATH || "")
+  .split(path.delimiter)
+  .filter((dir) => dir && !fs.existsSync(path.join(dir, "gradle")))
+  .join(path.delimiter);
+
 function tmpdir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
@@ -71,7 +79,7 @@ cooee_fetch() {
 test("gradle is selected when a checkout has a Gradle wrapper", () => {
   const out = evalRendered("java", "cooee_gradle_selected && echo yes || echo no", {
     COOEE_CHECKOUTS_DIR: gradleCheckout(),
-    PATH: "/usr/bin:/bin",
+    PATH: NO_GRADLE_PATH,
   });
   assert.equal(out, "yes");
 });
@@ -79,7 +87,7 @@ test("gradle is selected when a checkout has a Gradle wrapper", () => {
 test("gradle is selected when the request asks for tools[gradle]", () => {
   const out = evalRendered("java,tools[gradle]", "cooee_gradle_selected && echo yes || echo no", {
     COOEE_CHECKOUTS_DIR: tmpdir("cooee-empty-"),
-    PATH: "/usr/bin:/bin",
+    PATH: NO_GRADLE_PATH,
   });
   assert.equal(out, "yes");
 });
@@ -87,7 +95,7 @@ test("gradle is selected when the request asks for tools[gradle]", () => {
 test("gradle is not selected for a JDK-only checkout", () => {
   const out = evalRendered("java", "cooee_gradle_selected && echo yes || echo no", {
     COOEE_CHECKOUTS_DIR: tmpdir("cooee-empty-"),
-    PATH: "/usr/bin:/bin",
+    PATH: NO_GRADLE_PATH,
   });
   assert.equal(out, "no");
 });
@@ -97,7 +105,7 @@ test("setup is a no-op without Gradle, and under COOEE_NO_BUILD_BRIEF=1", () => 
   const noGradle = evalRendered("java", "cooee_build_brief_setup", {
     COOEE_CHECKOUTS_DIR: tmpdir("cooee-empty-"),
     HOME: home,
-    PATH: "/usr/bin:/bin",
+    PATH: NO_GRADLE_PATH,
   });
   assert.match(noGradle, /no Gradle build selected/);
   const optedOut = evalRendered("java", "cooee_build_brief_setup", {
