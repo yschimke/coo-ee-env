@@ -64,7 +64,7 @@ treats an already-present package as success — so a partial/cold box is
 | --------- | ----------------------------------------- | ----------------------- | ----------------------- |
 | `base`    | Nix (Determinate, daemonless)             | `install.determinate.systems`, `cache.nixos.org`, `channels.nixos.org`, `github.com`, `objects.githubusercontent.com` | — |
 | `java`    | Temurin JDK, `JAVA_HOME`; bare `java` uses the JDK the project pins for Gradle (`toolchainVersion` in `gradle/gradle-daemon-jvm.properties`), else 21 (17 + 21 with `android`); `java[17,21]` to choose. When the request is **for Gradle**, also installs [`build-brief`](#gradle-output-build-brief) (the Gradle output reducer) and writes its usage guide | `cache.nixos.org`; `github.com` + its release-asset CDN for `build-brief` (`bb.staticvar.dev` as fallback) | base-image JDK |
-| `android` | Full SDK via `androidenv`: `platform-tools` (adb), `cmdline-tools`, the requested platform(s) + `build-tools`, `ANDROID_HOME`; `android[30,36,wear-33]` picks the platform API levels; **implies `android-cli`** (the Android CLI rides along) | `cache.nixos.org`, `dl.google.com`, `maven.google.com` | — |
+| `android` | Full SDK via `androidenv`: `platform-tools` (adb), `cmdline-tools`, the requested platform(s) + `build-tools`, `ANDROID_HOME`; `android[30,36,wear-33]` picks the platform API levels (API 37+ ships only minor-versioned, so `android[37.0]`); **implies `android-cli`** (the Android CLI rides along) | `cache.nixos.org`, `dl.google.com`, `maven.google.com` | — |
 | `android-cli` _(hidden)_ | [Google's Android CLI](https://developer.android.com/tools/agents/android-cli) — the agent-first `android` command (scaffold projects, manage AVDs, run Journeys). Downloads the prebuilt binary to `~/.local/bin`, puts it on PATH, and runs `android init` to register its agent skill (opt out with `COOEE_ANDROID_CLI_INIT=0`). Rides along with `android` (which implies it) or installs via its own `/android-cli` one-liner; **not shown in the picker** (it does not pull the Nix SDK back) | `dl.google.com` | — |
 | `android-emulator` | Adds `emulator` + `system-images` to the SDK (via the implied `android` build) and configures `/dev/kvm` access (GitHub `99-kvm4all.rules`); `android-emulator[36,wear-33]` picks the image levels; **implies `android`** | `cache.nixos.org`, `dl.google.com` | — |
 | `node`    | Node.js 22 LTS, npm                       | `cache.nixos.org`, `registry.npmjs.org` | Codex: `CODEX_ENV_NODE_VERSION` |
@@ -307,13 +307,31 @@ an API-34 system image, and a configured `/dev/kvm` — ready for
 
 **Which versions.** The bracketed params pick the platform API levels
 (`android[30,36,wear-33]`); a `wear-NN` level also pulls the `android-wear`
-system image. A bare `android` installs one default platform. Two knobs tune the
-rest (set them in the environment before running):
+system image. A bare `android` installs one default platform.
+
+A level is `NN` **or `NN.M`**, and the minor form is not cosmetic: from API 37
+on, Google publishes platforms *only* under a minor-versioned id, and `androidenv`
+keys them exactly as Google does — `36`, `36.1`, `37.0`, `37.1`, with **no bare
+`37`**. So API 37 is `android[37.0]`; `android[37]` asks for a key that doesn't
+exist and the SDK build fails with *"The version 37 is missing in package
+platforms"* (the module warns first and suggests the `.0` spelling). A param
+that names no level at all is reported rather than dropped — silently installing
+the default is how a container provisions "successfully" with an SDK that can't
+build the project.
+
+**Build-tools follow a newer platform.** `COOEE_ANDROID_BUILD_TOOLS` is a
+*floor*: request a platform newer than it and the revision is raised to that
+platform's major (`android[37.0]` → `build-tools 37.0.0`), because AGP resolves
+a default `buildToolsVersion` from `compileSdk` and fails with *"Failed to find
+Build Tools revision …"* when the SDK carries only an older one. Older platforms
+keep the default, and an explicit `COOEE_ANDROID_BUILD_TOOLS` is honoured exactly.
+
+Three knobs tune the rest (set them in the environment before running):
 
 | Variable | Default | Selects |
 | --- | --- | --- |
-| `COOEE_ANDROID_DEFAULT_PLATFORM` | `36` | platform API level for a param-less `android` |
-| `COOEE_ANDROID_BUILD_TOOLS` | `36.0.0` | the `build-tools` revision to install |
+| `COOEE_ANDROID_DEFAULT_PLATFORM` | `36` | platform API level for a param-less `android` (takes `NN.M` too) |
+| `COOEE_ANDROID_BUILD_TOOLS` | `36.0.0` (floor) | the `build-tools` revision to install; pin it to override the raise above |
 | `COOEE_ANDROID_NCURSES5_STUB` | `1` | on x86_64, stub the legacy 32-bit `ncurses5` androidenv drags in (set `0` only if you need the 32-bit legacy build-tools on a 32-bit-capable host) |
 
 On x86_64 Linux, `androidenv` always pulls in 32-bit (i686) `glibc`/`zlib`/`ncurses5`

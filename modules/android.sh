@@ -16,7 +16,10 @@
 #               or running sdkmanager/avdmanager just work.
 #    params   : android[36] selects the platform API level(s) to install
 #               (e.g. android[30,36,wear-33]); bare `android` installs the
-#               default (API 36).
+#               default (API 36). A level is NN or NN.M — API 37+ ships only
+#               under a minor-versioned id, so it is android[37.0], not
+#               android[37] (nixpkgs androidenv has no bare `37` key). An
+#               unrecognized param is reported, never silently dropped.
 #    hosts    : cache.nixos.org (install), dl.google.com (SDK component sources)
 #             : Google / JetBrains / fonts registries (build, advisory)
 #  Host set mirrors skills/compose-preview/references/agent-cloud.md.
@@ -46,19 +49,66 @@ want_host fonts.gstatic.com      "downloadable font binaries (Compose)"
 # bare `android` is requested, and the build-tools revision to install. Pinning
 # them keeps a param-less install reproducible; override for a different target.
 COOEE_ANDROID_DEFAULT_PLATFORM="${COOEE_ANDROID_DEFAULT_PLATFORM:-36}"
+# Whether the caller pinned the build-tools revision, captured before defaulting:
+# an explicit pin is honored exactly, an unset one may be raised to match a newer
+# platform (see cooee_android_build_tools_for).
+COOEE_ANDROID_BUILD_TOOLS_PINNED="${COOEE_ANDROID_BUILD_TOOLS:+1}"
 COOEE_ANDROID_BUILD_TOOLS="${COOEE_ANDROID_BUILD_TOOLS:-36.0.0}"
 
-# Map request params (e.g. 30, 37, wear-33) to numeric platform API levels,
-# deduped in input order. A `wear-NN` param contributes level NN (the wear
-# system image type is added separately). Anything non-numeric is dropped.
+# Map request params (e.g. 30, 37.0, wear-33) to platform API levels, deduped in
+# input order. A `wear-NN` param contributes level NN (the wear system image type
+# is added separately). Anything that isn't a level is dropped — and reported by
+# cooee_android_unknown_params, because a silently dropped level is how you get a
+# container that provisions "successfully" with the wrong SDK.
+#
+# A level is `NN` or `NN.M`. The minor form is not cosmetic: from API 37 on,
+# Google ships platforms *only* under a minor-versioned id, and nixpkgs
+# androidenv keys them exactly as Google does — `36`, `36.1`, `37.0`, `37.1`,
+# with no bare `37`. So `android[37]` asks androidenv for a key that does not
+# exist (it throws "The version 37 is missing in package platforms") and
+# `android[37.0]` is the spelling that resolves. Levels are passed through
+# verbatim for that reason; the SDK lays each one out at
+# platforms/android-<level> (repo.json's own path), so the probe below matches
+# without translation.
 cooee_android_levels() {  # cooee_android_levels <param>...
   local p lvl seen=" "
   for p in "$@"; do
-    if [[ "$p" =~ ^wear-([0-9]+)$ || "$p" =~ ^([0-9]+)$ ]]; then
-      lvl="${BASH_REMATCH[1]}"
+    if [[ "$p" =~ ^(wear-)?([0-9]+(\.[0-9]+)?)$ ]]; then
+      lvl="${BASH_REMATCH[2]}"
       [[ "$seen" == *" $lvl "* ]] || { printf '%s\n' "$lvl"; seen+="$lvl "; }
     fi
   done
+}
+
+# The params that name no platform level at all — a typo, or a form this module
+# doesn't understand. Echoed one per line, so the caller can say so instead of
+# quietly installing the default and letting the build fail much later.
+cooee_android_unknown_params() {  # cooee_android_unknown_params <param>...
+  local p
+  for p in "$@"; do
+    [[ "$p" =~ ^(wear-)?([0-9]+(\.[0-9]+)?)$ ]] || printf '%s\n' "$p"
+  done
+}
+
+# The build-tools revision to install for a set of platform levels. An explicit
+# COOEE_ANDROID_BUILD_TOOLS is returned untouched. Otherwise the default acts as
+# a *floor*: a platform newer than it raises the revision to that platform's
+# major, because AGP resolves a default buildToolsVersion from compileSdk and
+# fails ("Failed to find Build Tools revision ...") when the SDK carries only an
+# older one — so pinning 36.0.0 next to platform 37.0 installs an SDK that can't
+# build the thing it was requested for. Older platforms keep the default, since
+# a build-tools older than the floor is not what a stale request wants either.
+cooee_android_build_tools_for() {  # cooee_android_build_tools_for <level>...
+  if [[ -n "${COOEE_ANDROID_BUILD_TOOLS_PINNED:-}" ]]; then
+    printf '%s' "$COOEE_ANDROID_BUILD_TOOLS"; return 0
+  fi
+  local floor="${COOEE_ANDROID_BUILD_TOOLS%%.*}" max="${COOEE_ANDROID_BUILD_TOOLS%%.*}" l major
+  for l in "$@"; do
+    major="${l%%.*}"
+    [[ "$major" =~ ^[0-9]+$ ]] || continue
+    (( major > max )) && max="$major"
+  done
+  if (( max > floor )); then printf '%s.0.0' "$max"; else printf '%s' "$COOEE_ANDROID_BUILD_TOOLS"; fi
 }
 
 # True if any requested param names a Wear OS platform (wear-NN).
@@ -258,6 +308,28 @@ module_android() {
   local -a levels=()
   mapfile -t levels < <(cooee_android_levels "${params[@]}")
 
+  # A param that names no level is a request we are about to ignore. Say so:
+  # the alternative is installing the default platform, reporting success, and
+  # letting the build discover the missing SDK much later.
+  local -a unknown=()
+  mapfile -t unknown < <(cooee_android_unknown_params "${params[@]}")
+  if (( ${#unknown[@]} )); then
+    warn "android: ignoring unrecognized platform param(s): ${unknown[*]} — expected an API level like 36, a minor-versioned one like 37.0 (API 37+ ships only as 37.0/37.1), or wear-NN."
+  fi
+
+  # A bare major from API 37 on is almost certainly the wrong spelling: Google
+  # publishes those platforms only as NN.M, and androidenv keys them the same
+  # way, so the request would reach Nix and die there ("The version 37 is
+  # missing in package platforms"). Say it here, where the reader can act on it.
+  # Advisory, not a rejection: androidenv stays the source of truth on which
+  # keys exist, and a future bare key would still go through.
+  local bare
+  for bare in "${levels[@]}"; do
+    [[ "$bare" == *.* ]] && continue
+    (( bare >= 37 )) 2>/dev/null \
+      && warn "android: platform '$bare' has no bare id in androidenv (API 37+ ships as NN.M) — did you mean ${bare}.0? Continuing as asked; the SDK build will say if it doesn't exist."
+  done
+
   # Does the request also include android-emulator? It runs *after* us (canonical
   # order), but it's already registered and its params are already injected, so
   # we build the emulator + system images into the same SDK now. Its image levels
@@ -334,6 +406,11 @@ module_android() {
   _COOEE_ANDROID_LEVELS=("${all_levels[@]}")
   _COOEE_ANDROID_IMG_TYPES=("${img_types[@]}")
   _COOEE_ANDROID_WANT_EMU=$want_emu
+
+  # Raise the build-tools revision when a requested platform outruns the default
+  # (no-op for an explicit COOEE_ANDROID_BUILD_TOOLS). Set before the log line and
+  # the backend, both of which read the variable.
+  COOEE_ANDROID_BUILD_TOOLS=$(cooee_android_build_tools_for "${all_levels[@]}")
 
   log "Installing Android SDK (platforms: ${all_levels[*]}; build-tools ${COOEE_ANDROID_BUILD_TOOLS}$( (( want_emu )) && printf '; emulator + system images' )) ..."
   cooee_backend_android_sdk
