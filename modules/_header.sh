@@ -648,6 +648,9 @@ cooee_collect_perms() {
         local -a want; local t leaf cmd
         IFS=',' read -r -a want <<< "${_MODULE_PARAMS[tools]}"
         for t in "${want[@]}"; do
+          # A version pin changes installation, not the command the package
+          # contributes, so ripgrep@14.1.1 still grants Bash(rg:*).
+          t="${t%@*}"
           [[ "$t" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || continue
           leaf="${t##*.}"
           cmd="${_TOOL_CMD_ALIAS[$t]:-${_TOOL_CMD_ALIAS[$leaf]:-$leaf}}"

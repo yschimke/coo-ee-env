@@ -17,6 +17,63 @@ cooee_backend_setup() { :; }
 # gives each install its own --priority, so multiple JDKs coexist — install all.
 cooee_backend_jdks() { printf '%s\n' "$@"; }
 
+# Hook: install one exact historical package version through nixpkgs-multiverse's
+# zero-evaluation store-path index. The Fast index is intentionally x86_64-linux
+# only; other systems must not silently fall back to fetching/evaluating a full
+# (~378 MB) nixpkgs tree inside an agent bootstrap.
+#
+# Each versioned tool owns a small, separate profile. That lets a later request
+# replace ripgrep@14.1.1 with ripgrep@14.1.0 without conflicting with (or
+# deleting from) the user's default Nix profile. `nix profile remove --all`
+# creates a reversible empty generation in this coo.ee-owned profile.
+cooee_backend_versioned_tool() {  # <nixpkgs-attr> <version> <profile-match>
+  local attr=$1 version=$2 match=$3
+  if [[ "$(uname -s)" != Linux || "$(uname -m)" != x86_64 ]]; then
+    warn "tools: ${attr}@${version} needs Nix Multiverse Fast, which currently supports x86_64-linux only (this host: $(uname -s)/$(uname -m))."
+    return 1
+  fi
+
+  # Pin the resolver itself: the selected package output is already a concrete,
+  # cache.nixos.org-backed store path, and pinning the flake also makes the
+  # version -> store-path lookup reproducible. Override only for testing a newer
+  # Multiverse revision before this project updates its audited default.
+  local multiverse_ref="${COOEE_MULTIVERSE_REF:-github:fzakaria/nixpkgs-multiverse/4745826df4b3d554ea546d8a428767b790dd19da}"
+  local installable="${multiverse_ref}#fast.versions.${attr}.\"${version}\".out"
+  local profiles="${COOEE_MULTIVERSE_PROFILES:-$HOME/.local/state/nix/profiles/coo-ee-tools}"
+  local profile="$profiles/$attr"
+  mkdir -p "$profiles"
+
+  if [[ -e "$profile" ]] && nix profile list --profile "$profile" 2>/dev/null | grep -qiF -- "$match"; then
+    ok "already present (Multiverse Fast): ${attr}@${version}"
+  else
+    # Resolve and substitute before touching an older pin. An unknown/unmatched
+    # version therefore leaves the working profile intact. Installing the
+    # resulting store path afterwards is local and cannot re-resolve to a
+    # different Multiverse revision.
+    log "Resolving ${attr}@${version} through Nix Multiverse Fast..."
+    local store_path
+    store_path=$(nix build --no-link --print-out-paths "$installable" --accept-flake-config) \
+      || { warn "tools: Multiverse Fast could not resolve ${attr}@${version} (unknown version or not built by Hydra)."; return 1; }
+    [[ -n "$store_path" ]] \
+      || { warn "tools: Multiverse Fast returned no store path for ${attr}@${version}."; return 1; }
+
+    if [[ -e "$profile" ]]; then
+      log "tools: replacing the previous coo.ee-managed $attr pin..."
+      nix profile remove --profile "$profile" --all >/dev/null \
+        || { warn "tools: could not clear the previous $attr pin from $profile."; return 1; }
+    fi
+    log "Installing ${attr}@${version} via Nix Multiverse Fast..."
+    nix profile install --profile "$profile" "$store_path" --accept-flake-config \
+      || { warn "tools: could not install the resolved store path for ${attr}@${version}."; return 1; }
+    ok "installed (Multiverse Fast): ${attr}@${version}"
+  fi
+
+  local bin="$profile/bin" path="$PATH"
+  [[ -d "$bin" ]] || { warn "tools: Multiverse profile has no bin directory: $bin"; return 1; }
+  case ":$path:" in *":$bin:"*) : ;; *) path="$bin:$path" ;; esac
+  add_env PATH "$path"
+}
+
 # Hook: build a complete Android SDK from the request the android module assembled
 # in the _COOEE_ANDROID_* globals, and set COOEE_ANDROID_SDK_DIR to its SDK dir
 # (…/libexec/android-sdk). The nix backend builds an androidenv expression
