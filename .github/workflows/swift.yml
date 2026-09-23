@@ -1,0 +1,102 @@
+name: swift
+
+# Integration check for the `swift` module, on both install sources: the
+# official swift.org toolchain via swiftly (the default) and nixpkgs'
+# (swift[nix]). The unit tests drive the module against a stub swiftly; this
+# runs the real thing on a runner with open egress, then builds, runs and (for
+# the official toolchain) tests a SwiftPM package with a GitHub dependency
+# from a fresh shell.
+#
+# COOEE_FORCE=1 on the install is deliberate: GitHub's ubuntu runners ship a
+# Swift toolchain, which the module would otherwise adopt, skipping the install.
+
+on:
+  pull_request:
+    paths:
+      - modules/swift.sh
+      - modules/_header.sh
+      - modules/_footer.sh
+      - modules/base.sh
+      - .github/workflows/swift.yml
+  push:
+    branches: [main]
+    paths:
+      - modules/swift.sh
+      - .github/workflows/swift.yml
+  workflow_dispatch:
+
+jobs:
+  swift:
+    strategy:
+      fail-fast: false
+      matrix:
+        request: ["swift", "swift[nix]"]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Render ${{ matrix.request }}
+        run: |
+          node -e "process.stdout.write(require('./api/env/render').render(process.argv[1]).body)" '${{ matrix.request }}' > /tmp/swift.sh
+          bash -n /tmp/swift.sh
+
+      - name: Run the installer
+        run: COOEE_FORCE=1 bash /tmp/swift.sh
+
+      - name: Build, run and test a package from a fresh shell
+        run: |
+          set -euo pipefail
+          # A clean PATH, so the runner's own Swift can't answer for ours.
+          env -i HOME="$HOME" PATH=/usr/bin:/bin bash -euo pipefail -c '
+            source ~/.config/coo-ee/env.sh
+            command -v swift
+            swift --version
+            [[ -z "${LD_LIBRARY_PATH:-}" ]] || { echo "FAIL: LD_LIBRARY_PATH leaked into the session: $LD_LIBRARY_PATH"; exit 1; }
+
+            pkg=$(mktemp -d); cd "$pkg"
+            mkdir -p Sources/hello Tests/helloTests
+            cat > Package.swift <<EOF
+          // swift-tools-version:5.9
+          import PackageDescription
+          let package = Package(
+            name: "hello",
+            dependencies: [.package(url: "https://github.com/apple/swift-argument-parser", from: "1.3.0")],
+            targets: [
+              .executableTarget(name: "hello", dependencies: [.product(name: "ArgumentParser", package: "swift-argument-parser")]),
+              .testTarget(name: "helloTests"),
+            ]
+          )
+          EOF
+            cat > Sources/hello/main.swift <<EOF
+          import ArgumentParser
+          import Foundation
+          struct Hello: ParsableCommand {
+            @Option var name = "swift"
+            func run() { print("hello \(name)") }
+          }
+          Hello.main()
+          EOF
+            cat > Tests/helloTests/HelloTests.swift <<EOF
+          import XCTest
+          final class HelloTests: XCTestCase { func testArithmetic() { XCTAssertEqual(1 + 1, 2) } }
+          EOF
+            swift build
+            swift run hello --name ci | grep -qx "hello ci"
+            if [[ "${{ matrix.request }}" == "swift[nix]" ]]; then
+              echo "swift[nix]: skipping swift test (nixpkgs ships no libIndexStore)"
+            else
+              swift test
+            fi
+          '
+
+      - name: Verify idempotency — second run short-circuits
+        run: |
+          set -euo pipefail
+          out=$(env -i HOME="$HOME" PATH=/usr/bin:/bin bash -c 'source ~/.config/coo-ee/env.sh; bash /tmp/swift.sh' 2>&1) || { echo "$out"; exit 1; }
+          echo "$out"
+          echo "$out" | grep -qi "already provisioned" \
+            || { echo "FAIL: second run did not short-circuit"; exit 1; }

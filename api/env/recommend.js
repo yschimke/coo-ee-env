@@ -55,6 +55,9 @@ const RULES = {
   ruby: [
     { tools: ["rubocop", "solargraph"], weight: 4, reason: "RuboCop (lint/format) and Solargraph (language server) are the Ruby staples." },
   ],
+  swift: [
+    { tools: ["swiftlint", "swiftformat"], weight: 4, reason: "SwiftLint and SwiftFormat are the usual Swift lint/format pair (both build on Linux)." },
+  ],
   skills: [
     { tools: ["gh"], weight: 2, reason: "Agent workflows lean on the GitHub CLI." },
   ],
