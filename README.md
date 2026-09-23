@@ -73,6 +73,7 @@ treats an already-present package as success — so a partial/cold box is
 | `go`      | Go toolchain, `GOPATH`                    | `cache.nixos.org`, `proxy.golang.org`, `sum.golang.org` | Codex: `CODEX_ENV_GO_VERSION` |
 | `rust`    | `rustc` + `cargo`                         | `cache.nixos.org`, `static.crates.io`, `index.crates.io` | Codex: `CODEX_ENV_RUST_VERSION` |
 | `ruby`    | Ruby + RubyGems (default 3; `ruby[3.4.9]` to pin) | `cache.nixos.org`, `rubygems.org`, `index.rubygems.org` | Codex: `CODEX_ENV_RUBY_VERSION` |
+| `swift`   | The official swift.org toolchain (`swift`, `swiftc`, SwiftPM, `swift-format`, `sourcekit-lsp`) via [swiftly](https://github.com/swiftlang/swiftly), plus the distro packages it links against; the version comes from `swift[6.3]`, else the project's `.swift-version`, else the latest release. `swift[nix]` installs nixpkgs' much older Swift 5.10.1 instead (build/run only, see [Swift](#swift-what-swift-installs)) | `www.swift.org`, `download.swift.org` (`cache.nixos.org` for `swift[nix]`); builds: `github.com` | Codex: `CODEX_ENV_SWIFT_VERSION` |
 | `compose` | Jetpack Compose `@Preview` rendering: installs the `compose-preview` agent skill (renders previews to PNG, no emulator), pulls in a JDK + the Android SDK, and provisions the native GL libs (`libGL`/`libX11`/`fontconfig`/`libstdc++`) Compose **Desktop** (skiko/Skia) loads at render time, baked into a wrapper JDK (plus a Gradle init script that retunes each fork's `LD_LIBRARY_PATH` per JDK) rather than the session environment; **implies `java`, `android`** | `github.com`, `cache.nixos.org` (git + the GL libs) | `COOEE_NO_DESKTOP_GL=1` to skip GL; `COOEE_DESKTOP_GL_PACKAGES` to adjust the set; `COOEE_NO_GRADLE_INIT=1` to skip the init script |
 | `dotfiles` | A config repo cloned and applied to `$HOME`; `dotfiles[owner/repo]` (optionally `@ref`) — **required**, there is no default repo. Applies by linking the top-level dotfiles (backing up anything it would clobber to `*.cooee.bak`), or via GNU Stow when that's already installed and the repo is a package tree. A repo-provided `install.sh` is **not** run unless `COOEE_DOTFILES_RUN_INSTALL=1` | `github.com` (`cache.nixos.org` if `git` is absent) | `COOEE_DOTFILES_RUN_INSTALL=1` to allow the repo's installer |
 | `skills`  | Claude Code agent skills, linked into `~/.claude/skills/`; `skills[owner/repo]` links every skill in a repo, `skills[owner/repo/<skill>]` links just one | `github.com` (`cache.nixos.org` if `git` is absent) | — |
@@ -342,6 +343,66 @@ Nix *builds* it — and any i686 build runs a 32-bit builder, which fails with
 containers). By default the module swaps in a native empty stub so the SDK build
 never needs a 32-bit builder; `COOEE_ANDROID_NCURSES5_STUB=0` restores the real lib.
 
+### Swift: what `swift` installs
+
+Swift has two install sources, and neither one covers every case:
+
+| | official toolchain (default) | `swift[nix]` |
+| --- | --- | --- |
+| Version | current: whatever swift.org ships (6.4.0 as of 2026-09), or `swift[6.3]` / `.swift-version` | **5.10.1**, which is all nixpkgs has; no Swift 6 language mode and no Swift Testing |
+| Install hosts | `www.swift.org` (release list, signing keys), `download.swift.org` (swiftly + toolchain) | `cache.nixos.org` only |
+| System packages | yes: the toolchain links against the distro's `libcurl`, `libxml2`, `libz3`, `libedit`, `libpython3`, … | none |
+| `swift build` / `swift run` | ✓ | ✓ |
+| `swift test` | ✓ | ✗: nixpkgs ships no `libIndexStore`, so SwiftPM can't discover tests |
+
+**Default: [swiftly](https://github.com/swiftlang/swiftly)**, swift.org's own
+toolchain manager and its documented Linux install path. The module downloads
+swiftly, runs `swiftly init --skip-install --no-modify-profile`, then
+`swiftly install <version> --use`. With no bracket parameter it reads the
+project's `.swift-version`, the same file swiftly uses to pick a toolchain;
+otherwise it installs `latest`. `SWIFTLY_HOME_DIR`, `SWIFTLY_BIN_DIR` and
+`PATH` go into the env profile. swiftly checks toolchain signatures with `gpg`
+and falls back to `--no-verify` if `gpg` isn't installed.
+
+The toolchain is a prebuilt tarball, not a Nix closure, so it needs the
+distro's shared libraries. swiftly writes the exact `apt-get`/`dnf`/`yum`
+command for this distro to a post-install file. The module runs that file as
+root (directly, or through `sudo`). This also means the distro mirror must be
+reachable (e.g. `archive.ubuntu.com`). If it can't run the file, it prints the
+command and carries on. Set `COOEE_SWIFT_SYSTEM_DEPS=0` to only print it.
+
+**`download.swift.org` is not on the default allowlists** of the cloud sandboxes
+(`www.swift.org` often is), so on a locked-down network the preflight stops
+here and names that host. Either allow it, or request `swift[nix]`.
+
+**`swift[nix]`** is the fallback for Swift 5 packages on a network that only
+reaches the Nix cache. nixpkgs' Swift is built to run *inside a Nix build*:
+its compiler wrapper gets the Foundation/Dispatch/XCTest include and link flags
+from the `NIX_*` variables that stdenv setup hooks export. SwiftPM's compiled
+manifest also finds `libdispatch.so` only through the library path. If you
+install it plainly into a profile, `swift build` fails at the manifest
+(`libdispatch.so: cannot open shared object file`) and then again at
+`import Foundation`. So the module:
+
+1. builds the toolchain as one `buildEnv` behind a GC root
+   (`~/.local/share/coo-ee/swift-nix/toolchain`);
+2. captures the flags a swift-stdenv `mkShell` would export
+   (`nix print-dev-env`) once, into `swift-nix/env.sh`;
+3. puts a shim in front of every toolchain binary (`swift-nix/bin/`). Each shim
+   sources that file and then `exec`s the real binary.
+
+The flags and the store `LD_LIBRARY_PATH` stay inside Swift's own processes.
+They never reach the session environment, where a store library breaks any
+system binary that loads it (the [`compose`](#module-implications) lesson).
+Binaries built this way run without either.
+
+For Package dependencies SwiftPM `git clone`s each one, usually from
+`github.com`, so that is the build host to allow. Codex's base image selects
+Swift with `CODEX_ENV_SWIFT_VERSION`, and an existing `swift` that matches the
+request is adopted as-is. A Swift 5 image does *not* satisfy `swift[6.4]`. The
+recommender suggests `tools[swiftlint,swiftformat]`; both build on Linux from
+the Nix cache.
+
 ### Which nixpkgs
 
 Every Nix-building module resolves `nixpkgs` through the flake registry, which on a
@@ -496,6 +557,7 @@ Knobs:
 | `COOEE_GRADLE_DEPS_TASK` | Run a specific Gradle task for the prefetch (e.g. `assemble -x test`) instead of the default whole-graph artifact resolution. |
 | `COOEE_NO_GRADLE_INIT=1` | Don't write `$GRADLE_USER_HOME/init.d/cooee-desktop-gl.init.gradle`, the init script that gives the Compose Desktop GL libs to each forked JVM that can load them and withholds them from each one that cannot — see [the `compose` module](#curated-targets). Implied by `COOEE_NO_GRADLE_PROPS=1`. |
 | `COOEE_NO_GRADLE_PROPS=1` | Don't pin the cloud JVM flags on `org.gradle.jvmargs` in the user-dir `gradle.properties` (`$GRADLE_USER_HOME/gradle.properties`). The `java` module writes them there (merge-safe, never overriding a property you set yourself): the proxy host/port + `nonProxyHosts`, the extra-CA truststore, and `-Dfile.encoding=UTF-8`. This is the **primary** channel for those flags — see [JVM flags and `JAVA_TOOL_OPTIONS`](#jvm-flags-and-java_tool_options). |
+| `COOEE_SWIFT_SYSTEM_DEPS=0` | `swift`: print the distro packages the official toolchain links against instead of installing them as root. |
 | `COOEE_BASE_URL` | Service base URL baked into the installed SessionStart hook (default `https://env.coo.ee`). |
 
 The [devenv.sh backend](#devenvsh-backend) is selected per request with the

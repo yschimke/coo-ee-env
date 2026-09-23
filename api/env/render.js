@@ -46,8 +46,11 @@ function readFragment(name) {
 // The host may be bare or double-quoted (wildcards like "*.jetbrains.com" are
 // quoted in shell); the reason is always double-quoted. Parsing the actual
 // calls — rather than the `# hosts :` header comment — keeps the catalog in
-// lockstep with what the rendered script will probe and print.
-const HOST_RE = /^(need|want)_host[ \t]+(?:"([^"]+)"|(\S+))[ \t]+"([^"]*)"/gm;
+// lockstep with what the rendered script will probe and print. A call may be
+// indented: a module whose hosts depend on its params (swift[nix] vs the
+// official toolchain) declares each set inside an `if`, and the catalog lists
+// every host the module can need.
+const HOST_RE = /^[ \t]*(need|want)_host[ \t]+(?:"([^"]+)"|(\S+))[ \t]+"([^"]*)"/gm;
 
 function moduleHosts(name) {
   const need = [];
