@@ -47,6 +47,11 @@ jobs:
       - name: Run the installer
         run: COOEE_FORCE=1 bash /tmp/swift.sh
 
+      - name: The installer left the project checkout untouched
+        run: |
+          # swiftly's `install --use` writes .swift-version at the git root.
+          test -z "$(git status --porcelain)" || { git status --porcelain; echo "FAIL: installer modified the checkout"; exit 1; }
+
       - name: Build, run and test a package from a fresh shell
         run: |
           set -euo pipefail

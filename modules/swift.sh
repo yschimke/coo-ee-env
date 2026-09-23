@@ -65,10 +65,19 @@ cooee_swift_version_of() {  # cooee_swift_version_of <swift binary>
   "$1" --version 2>/dev/null | sed -nE 's/.*Swift version ([0-9]+(\.[0-9]+)*).*/\1/p' | head -1
 }
 
-# A requested version is satisfied by an installed one when it is a prefix at a
-# dot boundary: 6.4 is satisfied by 6.4.0, 6 by anything 6.x.
+# A requested version is satisfied by an installed one when every component it
+# names matches: 6 by anything 6.x, 6.4 by 6.4.x. `swift --version` drops a zero
+# patch ("Swift version 6.4" for 6.4.0), so a component the installed version
+# leaves out counts as 0 — 6.4.0 is satisfied by 6.4, 6.0 is not by 6.4.
 cooee_swift_version_matches() {  # <requested> <installed>
-  [[ -z "$1" || "$2" == "$1" || "$2" == "$1".* ]]
+  [[ -z "$1" ]] && return 0
+  local -a want have
+  IFS=. read -r -a want <<< "$1"
+  IFS=. read -r -a have <<< "$2"
+  local i
+  for i in "${!want[@]}"; do
+    [[ "${want[$i]}" == "${have[$i]:-0}" ]] || return 1
+  done
 }
 
 # Present = a swift on PATH that satisfies the request (so a Swift 5 image does
@@ -230,9 +239,14 @@ module_swift() {
 
   local post; post="$(mktemp)"
   log "swift: installing Swift ${want:-(latest release)} with swiftly..."
-  "$swiftly" install "${want:-latest}" --use --assume-yes "${verify[@]}" \
+  # Not `install --use`: inside a git checkout that writes a .swift-version at
+  # the repo root, i.e. into the user's project. Select it as the global default
+  # instead; a project's own .swift-version still wins per directory.
+  "$swiftly" install "${want:-latest}" --assume-yes "${verify[@]}" \
       --post-install-file "$post" </dev/null >&2 \
     || die "swift: 'swiftly install ${want:-latest}' failed."
+  "$swiftly" use --global-default --assume-yes "${want:-latest}" </dev/null >&2 \
+    || die "swift: 'swiftly use --global-default ${want:-latest}' failed."
   cooee_swift_system_deps "$post"
   rm -f "$post"
 

@@ -67,6 +67,10 @@ test("a requested version matches at a dot boundary", () => {
   assert.equal(m("6", "6.4.0"), "y");
   assert.equal(m("6.4", "6.40.1"), "n");
   assert.equal(m("6.4", "5.10.1"), "n");
+  // swift --version prints "6.4" for 6.4.0.
+  assert.equal(m("6.4.0", "6.4"), "y");
+  assert.equal(m("6.0", "6.4"), "n");
+  assert.equal(m("6.4.1", "6.4"), "n");
 });
 
 // A fake swiftly that records its arguments and, on install, drops a `swift`
@@ -99,7 +103,10 @@ test("swiftly installs the requested version and puts its bin dir on PATH", () =
     COOEE_FORCE: "1",
   });
   const args = fs.readFileSync(log, "utf8");
-  assert.match(args, /^install 6\.4 --use --assume-yes .*--post-install-file /m);
+  assert.match(args, /^install 6\.4 --assume-yes .*--post-install-file /m);
+  // Never `install --use`: in a git checkout that writes .swift-version into the project.
+  assert.doesNotMatch(args, /--use\b/);
+  assert.match(args, /^use --global-default --assume-yes 6\.4$/m);
   assert.match(out, /swift ready: Swift 6\.4\.0/);
   assert.match(out, /system libraries already present/);
   assert.ok(out.endsWith(path.join(home, ".local/share/swiftly/bin/swift")));
@@ -116,7 +123,7 @@ test("bare swift installs .swift-version's toolchain, or latest", () => {
   run("swift", "module_swift", env);
   fs.writeFileSync(path.join(proj, ".swift-version"), "6.3\n");
   run("swift", "module_swift", env);
-  const lines = fs.readFileSync(log, "utf8").trim().split("\n");
+  const lines = fs.readFileSync(log, "utf8").trim().split("\n").filter((l) => l.startsWith("install "));
   assert.match(lines[0], /^install latest /);
   assert.match(lines[1], /^install 6\.3 /);
 });
