@@ -22,9 +22,12 @@ function run(seg, snippet, env = {}) {
   const body = render(seg).body.replace(/^main "\$@"$/m, ":");
   const file = path.join(scratch("swift"), "reg.sh");
   fs.writeFileSync(file, `${body}\n${snippet}\n`);
+  // A machine with swiftly set up exports SWIFTLY_*; inheriting those would
+  // point the module at the real swiftly instead of the stub under HOME.
+  const inherited = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("SWIFTLY_")));
   return execFileSync("bash", ["-c", `bash "${file}" 2>&1`], {
     encoding: "utf8",
-    env: { ...process.env, ...env },
+    env: { ...inherited, ...env },
   }).trim();
 }
 
@@ -57,6 +60,17 @@ test("version: request param, else .swift-version, else latest", () => {
   fs.writeFileSync(path.join(proj, ".swift-version"), "6.2.1\n");
   assert.equal(run("swift", "cooee_swift_requested_version", env), "6.2.1");
   assert.equal(run("swift", "cooee_swift_requested_version 6.4", env), "6.4", "param beats the marker");
+});
+
+test("an empty or invalid .swift-version falls back to latest instead of aborting", () => {
+  for (const marker of ["", "\n", "not/a version!\n"]) {
+    const proj = scratch("proj");
+    fs.writeFileSync(path.join(proj, ".swift-version"), marker);
+    // Captured under the script's own `set -e`, exactly as module_swift does.
+    const out = run("swift", 'want="$(cooee_swift_requested_version)"; echo "reached [$want]"', { CLAUDE_PROJECT_DIR: proj });
+    assert.match(out, /reached \[\]$/, `marker ${JSON.stringify(marker)}`);
+    assert.match(out, /ignoring .*\.swift-version/);
+  }
 });
 
 test("a requested version matches at a dot boundary", () => {

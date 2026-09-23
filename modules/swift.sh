@@ -49,7 +49,14 @@ cooee_swift_marker_version() {
   local f; f="$(cooee_project_dir)/.swift-version"
   [[ -f "$f" ]] || return 0
   local v; v="$(tr -d '[:space:]' < "$f")"
-  [[ "$v" =~ ^[A-Za-z0-9._-]+$ ]] && printf '%s' "$v"
+  # Always succeed: callers capture this under `set -e`, where a bare failing
+  # test here would end the installer silently. An unusable marker is reported
+  # and falls back to the latest release.
+  if [[ "$v" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    printf '%s' "$v"
+  else
+    warn "swift: ignoring ${f/#$HOME/\~} (empty or not a version); using the latest release."
+  fi
 }
 
 # Requested toolchain: the first non-`nix` param, else the marker, else empty
