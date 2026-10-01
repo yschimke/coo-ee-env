@@ -229,6 +229,77 @@ cooee_request_segment() {
   local IFS=,; printf '%s' "${seg[*]}"
 }
 
+# ---- cumulative requests ---------------------------------------------------
+# A box is usually provisioned more than once with *different* requests: the
+# environment's setup asked for `java,android`, then a Ruby project asks for
+# `ruby,postgres`. Each request used to behave as if it were the whole box — it
+# truncated the persisted env (fresh shells lost JAVA_HOME), wrote a stamp naming
+# only itself, and added a second SessionStart hook beside the first — after
+# which the two hooks invalidated each other's stamp on every session, so
+# neither ever took the fast path. So the box's request is cumulative: a new
+# request is merged with the previous one (per module, the newer request's
+# params win), the merged request is what the stamp and the one SessionStart
+# hook carry, and the env the previous modules persisted is kept. COOEE_REPLACE=1
+# makes a request replace the previous one instead (to drop modules).
+COOEE_REQUEST_FILE="${COOEE_REQUEST_FILE:-$HOME/.config/coo-ee/request}"
+
+# The previous request segment: the one recorded by the last full run, else the
+# one an older run baked into the global SessionStart hook. Empty on a fresh box
+# or with COOEE_REPLACE=1.
+cooee_previous_segment() {
+  [[ "${COOEE_REPLACE:-0}" == 1 ]] && return 0
+  if [[ -s "$COOEE_REQUEST_FILE" ]]; then
+    head -1 "$COOEE_REQUEST_FILE"; return 0
+  fi
+  local settings; settings="$(cooee_global_claude_dir)/settings.json"
+  [[ -f "$settings" ]] || return 0
+  local pfx="curl -fsSL ${COOEE_BASE_URL}/" line seg
+  while IFS= read -r line || [[ -n "$line" ]]; do   # a last line may lack its newline
+    [[ "$line" == *"$pfx"* ]] || continue
+    seg=${line#*"$pfx"}; seg=${seg%%[ \\\"?|]*}
+    [[ -n "$seg" ]] && { printf '%s' "$seg"; return 0; }
+  done < "$settings"
+  return 0
+}
+
+# Split a segment on its top-level commas: "java[17,21],node" -> java[17,21] / node.
+cooee_segment_tokens() {  # cooee_segment_tokens <segment>  (one token per line)
+  local seg=$1 tok="" depth=0 i c
+  for (( i = 0; i < ${#seg}; i++ )); do
+    c=${seg:i:1}
+    case "$c" in
+      "[") depth=$((depth + 1)); tok+=$c ;;
+      "]") depth=$((depth - 1)); tok+=$c ;;
+      ",") if (( depth == 0 )); then [[ -n "$tok" ]] && printf '%s\n' "$tok"; tok=""; else tok+=$c; fi ;;
+      *)   tok+=$c ;;
+    esac
+  done
+  [[ -n "$tok" ]] && printf '%s\n' "$tok"
+  return 0
+}
+
+# Union two segments by module name, the newer one's token winning for a module
+# both name; sorted by name, `base` dropped (it is always implied).
+cooee_merge_segments() {  # cooee_merge_segments <older> <newer>
+  declare -A tokens=()
+  local tok name
+  while IFS= read -r tok; do
+    [[ -n "$tok" ]] || continue
+    name=${tok%%\[*}; [[ "$name" == base ]] && continue
+    tokens[$name]=$tok
+  done < <(cooee_segment_tokens "$1"; cooee_segment_tokens "$2")
+  local out="" n
+  for n in $(printf '%s\n' "${!tokens[@]}" | LC_ALL=C sort); do out+="${out:+,}${tokens[$n]}"; done
+  printf '%s' "$out"
+}
+
+# The segment the SessionStart hook re-runs: the merged request once main has
+# worked it out (COOEE_HOOK_SEGMENT), else this run's own.
+cooee_hook_segment() {
+  if [[ -n "${COOEE_HOOK_SEGMENT:-}" ]]; then printf '%s' "$COOEE_HOOK_SEGMENT"
+  else cooee_request_segment; fi
+}
+
 # Append a guarded activation block to the usual shell rc files. Idempotent via
 # marker lines; touches ~/.zshrc only when zsh is actually in play.
 cooee_install_shell_rc() {
@@ -279,7 +350,7 @@ cooee_install_session_hook() {
 cooee_install_session_hook_one() {
   local claude_dir="$1"
   local seg cmd settings="$claude_dir/settings.json" perms_json
-  seg="$(cooee_request_segment)"
+  seg="$(cooee_hook_segment)"
   perms_json="$(cooee_perms_json)"
   # Degrade gracefully: if a future session can't reach the service (offline, or
   # env.coo.ee not on that environment's allowlist), the hook logs and continues
@@ -291,7 +362,12 @@ cooee_install_session_hook_one() {
   # Nothing to do if the hook is already wired and every permission rule we'd
   # add is already listed. Checking the raw rule strings keeps this cheap and
   # tool-free (the merge itself dedupes, so a false "missing" only re-merges).
-  if [[ -f "$settings" ]] && grep -qF "$cmd" "$settings" 2>/dev/null; then
+  # A box has exactly one coo.ee hook — the cumulative request — so the hook is
+  # only "already wired" when it is the only one; an older request's hook beside
+  # it is replaced below.
+  local pfx="curl -fsSL ${COOEE_BASE_URL}/"
+  if [[ -f "$settings" ]] && grep -qF "$cmd" "$settings" 2>/dev/null \
+     && [[ "$(grep -oF "$pfx" "$settings" 2>/dev/null | wc -l)" -eq 1 ]]; then
     local rule missing=0
     while IFS= read -r rule; do
       [[ -z "$rule" ]] && continue
@@ -321,15 +397,16 @@ JSON
     return 0
   fi
 
-  # Merge into the existing settings without clobbering other keys: add the hook
-  # only if it isn't already there, and union the permission rules (dedup).
+  # Merge into the existing settings without clobbering other keys: drop any
+  # coo.ee hook (an earlier, narrower request's) in favour of this one, leave
+  # every other SessionStart hook alone, and union the permission rules (dedup).
   local add_hook=1
-  grep -qF "$cmd" "$settings" 2>/dev/null && add_hook=0
   local tmp; tmp="$(mktemp)"
   if command -v jq >/dev/null 2>&1; then
-    if jq --arg c "$cmd" --argjson add_hook "$add_hook" --argjson perms "$perms_json" '
+    if jq --arg c "$cmd" --arg pfx "$pfx" --argjson add_hook "$add_hook" --argjson perms "$perms_json" '
         (if $add_hook == 1 then
            .hooks //= {} | .hooks.SessionStart //= []
+           | .hooks.SessionStart |= map(select([.hooks[]?.command // "" | startswith($pfx)] | any | not))
            | .hooks.SessionStart += [ { hooks: [ { type: "command", command: $c } ] } ]
          else . end)
         | (if ($perms | length) > 0 then
@@ -340,12 +417,14 @@ JSON
       ok "activation: merged SessionStart hook + permissions into ${settings/#$HOME/\~} (jq)."; return 0
     fi
   elif command -v python3 >/dev/null 2>&1; then
-    if python3 - "$settings" "$cmd" "$add_hook" "$perms_json" <<'PY' 2>/dev/null
+    if python3 - "$settings" "$cmd" "$add_hook" "$perms_json" "$pfx" <<'PY' 2>/dev/null
 import json, sys
-path, cmd, add_hook, perms = sys.argv[1], sys.argv[2], sys.argv[3], json.loads(sys.argv[4])
+path, cmd, add_hook, perms, pfx = sys.argv[1], sys.argv[2], sys.argv[3], json.loads(sys.argv[4]), sys.argv[5]
 with open(path) as f: data = json.load(f)
 if add_hook == "1":
     hooks = data.setdefault("hooks", {}).setdefault("SessionStart", [])
+    hooks[:] = [e for e in hooks
+                if not any(str(h.get("command", "")).startswith(pfx) for h in e.get("hooks", []))]
     hooks.append({"hooks": [{"type": "command", "command": cmd}]})
 if perms:
     allow = data.setdefault("permissions", {}).setdefault("allow", [])
@@ -356,10 +435,12 @@ PY
     then ok "activation: merged SessionStart hook + permissions into ${settings/#$HOME/\~} (python3)."; return 0; fi
   elif command -v node >/dev/null 2>&1; then
     if node -e '
-        const fs = require("fs"), [p, c, addHook, permsRaw] = process.argv.slice(1);
+        const fs = require("fs"), [p, c, addHook, permsRaw, pfx] = process.argv.slice(1);
         const d = JSON.parse(fs.readFileSync(p, "utf8")), perms = JSON.parse(permsRaw);
         if (addHook === "1") {
           (d.hooks ||= {}).SessionStart ||= [];
+          d.hooks.SessionStart = d.hooks.SessionStart.filter((e) =>
+            !(e.hooks || []).some((h) => String(h.command || "").startsWith(pfx)));
           d.hooks.SessionStart.push({ hooks: [{ type: "command", command: c }] });
         }
         if (perms.length) {
@@ -367,7 +448,7 @@ PY
           d.permissions.allow = [...new Set([...d.permissions.allow, ...perms])].sort();
         }
         fs.writeFileSync(p, JSON.stringify(d, null, 2) + "\n");
-      ' "$settings" "$cmd" "$add_hook" "$perms_json" 2>/dev/null; then
+      ' "$settings" "$cmd" "$add_hook" "$perms_json" "$pfx" 2>/dev/null; then
       ok "activation: merged SessionStart hook + permissions into ${settings/#$HOME/\~} (node)."; return 0; fi
   fi
   rm -f "$tmp"

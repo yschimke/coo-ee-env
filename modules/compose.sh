@@ -480,6 +480,17 @@ cooee_compose_wrap_render_jdk() {
   ok "compose: render JDK $major wraps $real and carries $COOEE_DESKTOP_GL_LIB (only this JDK sees the store libs; LD_LIBRARY_PATH is left alone, and Gradle picks the daemon JVM itself)."
 }
 
+# Presence for the framework (fast path / adopt pass). compose installs no tool
+# on PATH, so without this it was never "present" — and every box with compose
+# in its request redid the whole provisioning on every session instead of taking
+# the fast path. It's present when the skill is linked and, unless opted out, the
+# desktop GL libs are built (the wrapper JDK is replayed from the persisted env).
+# A fast-path session doesn't re-pull the skill repo; COOEE_FORCE=1 does.
+cooee_present_compose() {
+  [[ -f "$HOME/.claude/skills/$COOEE_COMPOSE_SKILL/SKILL.md" ]] || return 1
+  [[ "${COOEE_NO_DESKTOP_GL:-0}" == 1 || -d "$HOME/.cache/coo-ee/desktop-gl/lib" ]]
+}
+
 module_compose() {
   # Compose Desktop (skiko/Skia) render libs, so the Nix render JVM can load the
   # native renderer. Runs first + independently of the skill link so a skill

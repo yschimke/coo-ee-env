@@ -68,11 +68,12 @@ treats an already-present package as success — so a partial/cold box is
 | `android-cli` _(hidden)_ | [Google's Android CLI](https://developer.android.com/tools/agents/android-cli) — the agent-first `android` command (scaffold projects, manage AVDs, run Journeys). Downloads the prebuilt binary to `~/.local/bin`, puts it on PATH, and runs `android init` to register its agent skill (opt out with `COOEE_ANDROID_CLI_INIT=0`). Rides along with `android` (which implies it) or installs via its own `/android-cli` one-liner; **not shown in the picker** (it does not pull the Nix SDK back) | `dl.google.com` | — |
 | `android-emulator` | Adds `emulator` + `system-images` to the SDK (via the implied `android` build) and configures `/dev/kvm` access (GitHub `99-kvm4all.rules`); `android-emulator[36,wear-33]` picks the image levels; **implies `android`** | `cache.nixos.org`, `dl.google.com` | — |
 | `node`    | Node.js 22 LTS, npm                       | `cache.nixos.org`, `registry.npmjs.org` | Codex: `CODEX_ENV_NODE_VERSION` |
-| `playwright` | [Playwright agent CLI](https://playwright.dev/agent-cli/introduction) (`@playwright/cli`, the `playwright-cli` binary) via npm + the Playwright browsers from Nix; `playwright[0.1.13]` pins the CLI version; **implies `node`** | `cache.nixos.org`, `registry.npmjs.org` (`cdn.playwright.dev` only with `COOEE_PLAYWRIGHT_DOWNLOAD_BROWSERS=1`) | — |
+| `playwright` | [Playwright agent CLI](https://playwright.dev/agent-cli/introduction) (`@playwright/cli`, the `playwright-cli` binary) via npm + browsers: the box's own (Claude Code's `/opt/pw-browsers`) when present, else from Nix; serves the browser revision the **project's pinned Playwright** expects (downloaded, else aliased — see [Playwright](#playwright)); `playwright[0.1.13]` pins the CLI version; **implies `node`** | `cache.nixos.org` (only without box browsers), `registry.npmjs.org`; `cdn.playwright.dev` advisory (exact builds for a pinned Playwright) | `COOEE_PLAYWRIGHT_ALIAS=0` to never alias |
 | `python`  | CPython 3 + pip                           | `cache.nixos.org`, `pypi.org`, `files.pythonhosted.org` | Codex: `CODEX_ENV_PYTHON_VERSION` |
 | `go`      | Go toolchain, `GOPATH`                    | `cache.nixos.org`, `proxy.golang.org`, `sum.golang.org` | Codex: `CODEX_ENV_GO_VERSION` |
 | `rust`    | `rustc` + `cargo`                         | `cache.nixos.org`, `static.crates.io`, `index.crates.io` | Codex: `CODEX_ENV_RUST_VERSION` |
-| `ruby`    | Ruby + RubyGems (default 3; `ruby[3.4.9]` to pin) | `cache.nixos.org`, `rubygems.org`, `index.rubygems.org` | Codex: `CODEX_ENV_RUBY_VERSION` |
+| `ruby`    | Ruby + RubyGems + the project's gems (`bundle install`); the version from `ruby[3.4]`, else the project's `.ruby-version` / `.tool-versions` / Gemfile `ruby`, else 3 — adopting a matching Ruby on PATH or in the image's rbenv before installing from Nix; apt-installs headers for native gems (`pg` → `libpq-dev`, `mysql2`, `psych`) — see [Ruby](#ruby-what-ruby-installs) | `cache.nixos.org` (only without a matching Ruby), `rubygems.org`, `index.rubygems.org` | Codex: `CODEX_ENV_RUBY_VERSION` |
+| `postgres` | A **running** local PostgreSQL dev server: adopts the box's server binaries (Debian's `/usr/lib/postgresql/<major>/bin`, off PATH) or installs from Nix; owns a trust-auth cluster on localhost with superuser roles for you and `postgres`; restarted every session; exports `PGHOST`/`PGPORT`; `postgres[16]` picks the major — see [PostgreSQL](#postgresql-what-postgres-runs) | `cache.nixos.org` (only when the box has no PostgreSQL) | `COOEE_PG_PORT`, `COOEE_PG_BASE` |
 | `swift`   | The official swift.org toolchain (`swift`, `swiftc`, SwiftPM, `swift-format`, `sourcekit-lsp`) via [swiftly](https://github.com/swiftlang/swiftly), plus the distro packages it links against; the version comes from `swift[6.3]`, else the project's `.swift-version`, else the latest release. `swift[nix]` installs nixpkgs' much older Swift 5.10.1 instead (build/run only, see [Swift](#swift-what-swift-installs)) | `www.swift.org`, `download.swift.org` (`cache.nixos.org` for `swift[nix]`); builds: `github.com` | Codex: `CODEX_ENV_SWIFT_VERSION` |
 | `compose` | Jetpack Compose `@Preview` rendering: installs the `compose-preview` agent skill (renders previews to PNG, no emulator), pulls in a JDK + the Android SDK, and provisions the native GL libs (`libGL`/`libX11`/`fontconfig`/`libstdc++`) Compose **Desktop** (skiko/Skia) loads at render time, baked into a wrapper JDK (plus a Gradle init script that retunes each fork's `LD_LIBRARY_PATH` per JDK) rather than the session environment; **implies `java`, `android`** | `github.com`, `cache.nixos.org` (git + the GL libs) | `COOEE_NO_DESKTOP_GL=1` to skip GL; `COOEE_DESKTOP_GL_PACKAGES` to adjust the set; `COOEE_NO_GRADLE_INIT=1` to skip the init script |
 | `dotfiles` | A config repo cloned and applied to `$HOME`; `dotfiles[owner/repo]` (optionally `@ref`) — **required**, there is no default repo. Applies by linking the top-level dotfiles (backing up anything it would clobber to `*.cooee.bak`), or via GNU Stow when that's already installed and the repo is a package tree. A repo-provided `install.sh` is **not** run unless `COOEE_DOTFILES_RUN_INSTALL=1` | `github.com` (`cache.nixos.org` if `git` is absent) | `COOEE_DOTFILES_RUN_INSTALL=1` to allow the repo's installer |
@@ -460,6 +461,70 @@ and download hosts (`api.foojay.io`, `api.adoptium.net`, `api.github.com`,
 The build-time registries are advisory: the script never probes them and never
 fails on them, it just reminds you to allow them before `./gradlew build`.
 
+### Ruby: what `ruby` installs
+
+```bash
+curl -fsSL https://env.coo.ee/ruby,postgres,playwright | bash   # a typical Rails app
+```
+
+**Which Ruby.** `ruby[3.4]` when given; otherwise what the project pins, read the
+way rbenv/asdf/Bundler do: `.ruby-version` (a `ruby-` prefix is dropped), then a
+`.tool-versions` `ruby` line, then the Gemfile's `ruby "x.y.z"`; otherwise any
+Ruby 3. A Ruby matches on major.minor: a patch-level difference changes neither
+the ABI nor the gems, and nixpkgs can't pin patch levels anyway (when the Gemfile
+pins the patch, Bundler enforces it, so the module warns).
+
+**Where it comes from**, cheapest first:
+
+1. the Ruby already on `PATH`, if it matches;
+2. a matching Ruby from the image's **rbenv** (`$RBENV_ROOT`, default
+   `/opt/rbenv`): Claude Code's image ships several (3.1, 3.2, 3.3), but
+   `ruby-build` can't fetch more there because `cache.ruby-lang.org` is not
+   allowlisted. Selecting one is a `PATH` entry: free and offline;
+3. Nix (`nixpkgs#ruby_<major>_<minor>`).
+
+Whichever Ruby wins, if its gem dir isn't writable (a Nix-store Ruby, or a
+distro Ruby for a non-root user), gems go to a `GEM_HOME` under
+`~/.local/share/gem/`.
+
+**Gems.** With a Gemfile in the project, the module runs `bundle install`
+(best-effort, like the npm prefetch, `COOEE_NO_DEPS=1` to skip; options via
+`BUNDLE_*` env vars, never `bundle config --local` into the checkout). Before
+that it installs the system headers the bundle's native extensions compile
+against, so `pg` doesn't die with *"Can't find the 'libpq-fe.h' header"*:
+`pg` → `libpq-dev`, `mysql2` → `default-libmysqlclient-dev`, `psych` →
+`libyaml-dev`, via apt as root (or sudo). A gem the lockfile resolves to a
+precompiled build for this platform (`pg` 1.6+, `nokogiri`) needs nothing.
+
+### PostgreSQL: what `postgres` runs
+
+The binaries are rarely the problem. Claude Code's image ships `postgresql-16`,
+but the server binaries sit in `/usr/lib/postgresql/16/bin`, off `PATH`; the
+cluster is stopped; nothing runs it on session start; and the server refuses to
+run as root, which is the user in the sandbox. So `postgres`:
+
+- **adopts** the box's server binaries (newest major, or `postgres[16]`) and puts
+  them on `PATH`, or installs `nixpkgs#postgresql[_<major>]`;
+- **owns a dev cluster**: `initdb`'d once under `/var/lib/coo-ee/postgres/<major>`
+  (as root; `~/.local/share/coo-ee/postgres` otherwise), run by the `postgres` OS
+  user when you're root, listening on **localhost only** with **trust** auth,
+  with superuser roles **and** databases for both you and `postgres`. A bare
+  `psql`, `createdb`, `bin/rails db:prepare`, and a `database.yml` with or
+  without `username: postgres` all work without passwords;
+- **starts it on every run, including the already-provisioned fast path**,
+  because no server process survives a fresh container. A stale
+  `postmaster.pid` from the previous container (its PID possibly reused) is
+  cleared first;
+- exports **`PGHOST`** (the socket dir) and **`PGPORT`**, which libpq clients use
+  when the config names no host: `psql`, the `pg` gem, Rails. It deliberately
+  does **not** set `DATABASE_URL`, because Rails merges it into whichever
+  environment is running, so `bin/rails test` would hit the development database.
+
+| Variable | Effect |
+| --- | --- |
+| `COOEE_PG_PORT` | Port for the dev server (default `5432`). |
+| `COOEE_PG_BASE` | Where clusters live (default `/var/lib/coo-ee/postgres` as root, else `~/.local/share/coo-ee/postgres`). |
+
 ## Playwright
 
 The [`playwright`](https://playwright.dev/agent-cli/introduction) module installs
@@ -472,7 +537,8 @@ curl -fsSL https://env.coo.ee/playwright | bash      # @latest
 curl -fsSL -g 'https://env.coo.ee/playwright[0.1.13]' | bash   # pin the CLI version
 ```
 
-**Is it on Nix?** Two halves, two answers:
+**Is it on Nix?** Two halves, two answers (and a third case: browsers the box
+already has):
 
 - **The CLI is not.** `@playwright/cli` is a young (0.1.x) npm package and isn't
   in nixpkgs, so it can only come from **npm**. That's why the module *implies
@@ -501,6 +567,44 @@ This split is deliberate: the npm CLI tracks upstream releases, while the heavy,
 OS-coupled browser binaries come from Nix where their dependencies are pinned and
 cached.
 
+**Browsers the box already has win.** When `PLAYWRIGHT_BROWSERS_PATH` already
+names a directory with a complete Chromium — Claude Code's image ships
+`/opt/pw-browsers` — the module adopts it: no Nix build, no download. Only
+`PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS` is reserved for the Nix browsers
+(whose libraries live in their closure), so adopted browsers don't print a
+"skipping validation" notice on every launch.
+
+**The project's pinned Playwright gets its browser.** Every Playwright release
+looks for exactly one build per browser (`chromium-1223`, …) and refuses to
+launch when it's missing, even though an adjacent Chromium drives it fine. A
+sandbox has one fixed revision (the image's, or nixpkgs'), and the Playwright CDN
+is often not allowlisted — so on Claude Code's image a project pinning
+`@playwright/test@1.60` (wants `chromium-1223`; the image has `chromium-1194`)
+fails every browser test with *"Executable doesn't exist"*. So
+`PLAYWRIGHT_BROWSERS_PATH` points at a **view**
+(`~/.cache/coo-ee/playwright-browsers-view`): symlinks to every browser in the
+real source dir, plus, for each Playwright on the box (the project's
+`node_modules/playwright-core` and the agent CLI's own), the revision it wants:
+
+1. **downloaded** with that Playwright's own installer when `cdn.playwright.dev`
+   is reachable (into `~/.cache/coo-ee/playwright-browsers-downloads`, beside the
+   view, because `playwright install` garbage-collects browser dirs it doesn't
+   know, and in the view those are the links to the source browsers), else
+2. **aliased** to the newest Chromium / headless shell on the box, both
+   executable layouts included, with a warning naming both versions. Opt out with
+   `COOEE_PLAYWRIGHT_ALIAS=0`.
+
+The source dir (an image's `/opt/pw-browsers`, a Nix store path) is never written
+to. Alignment re-runs on the already-provisioned fast path, so a lockfile bump
+between sessions is picked up, and a real download later replaces an alias.
+
+Two more defaults for tools that drive that Chromium: the agent CLI defaults to
+the branded Google Chrome channel (`/opt/google/chrome`), which neither images nor
+Nix ship, so `PLAYWRIGHT_MCP_BROWSER=chromium` is set when there is no Google
+Chrome; and with `ruby` in the request, `BROWSER_PATH` (read by Ferrum / Cuprite
+for Rails system tests) points at `~/…/playwright-browsers-view/.cooee-chrome`, a
+link to the newest real Chromium.
+
 **The version-drift escape hatch.** Playwright expects the browser revisions that
 match its bundled core; if the nixpkgs `playwright-driver` revision ever drifts
 from the CLI's, set `COOEE_PLAYWRIGHT_DOWNLOAD_BROWSERS=1` to skip the Nix
@@ -511,7 +615,8 @@ automatically if the Nix browser build fails.
 
 | Variable | Effect |
 | --- | --- |
-| `COOEE_PLAYWRIGHT_DOWNLOAD_BROWSERS=1` | Skip the Nix browsers; let `playwright-cli install-browser` download them (needs `cdn.playwright.dev` + OS libraries). |
+| `COOEE_PLAYWRIGHT_DOWNLOAD_BROWSERS=1` | Skip the box's / Nix browsers; let `playwright-cli install-browser` download them (needs `cdn.playwright.dev` + OS libraries). |
+| `COOEE_PLAYWRIGHT_ALIAS=0` | Never alias a nearby Chromium for a pinned Playwright whose exact build can't be downloaded; its browser tests then fail to launch. |
 
 **Version selection.** The CLI is a *tool an agent runs*, not a dependency a
 project locks (that role belongs to `@playwright/test` in the repo's own
@@ -520,13 +625,9 @@ explicit **`playwright[0.1.13]`** pin overrides it, for reproducible installs an
 as a second escape hatch when `@latest` ships a core whose browser revision the
 nixpkgs driver lacks. The precedence is simply `explicit param > latest`.
 
-> **Lockfile awareness — later.** A third tier — *detect the project's Playwright
-> version and align the CLI + browsers to it* — would give CLI↔test parity, but
-> it only pays off paired with `COOEE_PLAYWRIGHT_DOWNLOAD_BROWSERS=1`: the pinned
-> nixpkgs browser closure can't serve an arbitrary project-pinned revision, so
-> matching a lockfile means downloading that revision from the CDN. That's a
-> distinct install mode with its own host/OS-dep story, so it's deferred until a
-> concrete need rather than built speculatively.
+The project's own Playwright version is not chosen here; it's whatever its
+lockfile pins. The view above is what makes that pin work against the browsers
+the box has.
 
 **Agent skills.** The CLI ships optional skills for coding agents
 (`playwright-cli install --skills`). Those are per-project, so the module doesn't
@@ -560,6 +661,7 @@ Knobs:
 | `COOEE_NO_CHECKOUT_PERMS=1` | Don't merge the side-by-side project checkouts' `permissions.allow` into the global Claude config (see [activation](#auto-activation)). |
 | `COOEE_CHECKOUTS_DIR` | Workspace root holding the side-by-side checkouts to seed Gradle wrappers from, pin `sdk.dir` in (android), and scan for `permissions.allow` (default: the project dir's parent). |
 | `CLAUDE_CONFIG_DIR` | Override the global Claude config dir the SessionStart hook is written into (default `~/.claude`). |
+| `COOEE_REPLACE=1` | Make this request replace the box's previous one instead of [adding to it](#auto-activation) (the hook, stamp and persisted env then carry only this request). |
 | `COOEE_NO_DEPS=1` | Skip [build-dependency prefetch](#build-dependency-prefetch) — install the toolchain only, don't resolve the project's dependencies. |
 | `COOEE_GRADLE_DEPS_TASK` | Run a specific Gradle task for the prefetch (e.g. `assemble -x test`) instead of the default whole-graph artifact resolution. |
 | `COOEE_NO_GRADLE_INIT=1` | Don't write `$GRADLE_USER_HOME/init.d/cooee-desktop-gl.init.gradle`, the init script that gives the Compose Desktop GL libs to each forked JVM that can load them and withholds them from each one that cannot — see [the `compose` module](#curated-targets). Implied by `COOEE_NO_GRADLE_PROPS=1`. |
@@ -780,9 +882,11 @@ build cache** while the registries are still reachable:
   (e.g. `assemble -x test`).
 - **`node`** runs `npm ci` when there's a clean lockfile (falling back to
   `npm install`), otherwise `npm install`.
+- **`ruby`** apt-installs the headers the bundle's native gems need, then runs
+  `bundle install` (see [Ruby](#ruby-what-ruby-installs)).
 
 The step targets the consuming project (`$CLAUDE_PROJECT_DIR`, else the current
-directory) and is a no-op when there's no Gradle build / `package.json` there.
+directory) and is a no-op when there's no Gradle build / `package.json` / `Gemfile` there.
 It is **best-effort**: a failure (e.g. a registry host that isn't allowlisted)
 warns but never fails provisioning, since the toolchain itself is already in
 place. Opt out entirely with `COOEE_NO_DEPS=1`.
@@ -902,6 +1006,27 @@ manual `source`, no per-project boilerplate:
     hold no matter which sibling the session opens, still without writing into
     any tracked tree. Opt out with `COOEE_NO_CHECKOUT_PERMS=1`; point the scan
     at a specific workspace root with `COOEE_CHECKOUTS_DIR`.
+
+**Requests are cumulative.** A box is usually provisioned more than once with
+different requests: the environment's setup asked for `java,android`, then a
+Ruby project runs `ruby,postgres,playwright`. The second request **adds to** the
+first instead of replacing it:
+
+- the previous request (recorded in `~/.config/coo-ee/request`, or read back from
+  an older run's hook) is merged with this one by module, with this request's
+  params winning for a module both name;
+- the global config keeps **one** coo.ee SessionStart hook, for the merged
+  request (`…/android,java,postgres,ruby,…`). An earlier request's hook is
+  replaced, and hooks that aren't coo.ee's are left alone;
+- the earlier modules' persisted env (`JAVA_HOME`, their `PATH` entries) is
+  kept, and the stamp names every module, so the next session's merged hook
+  takes the fast path.
+
+Before this, the second request truncated the persisted env (fresh shells lost
+`JAVA_HOME`) and added a second hook. The two hooks then overwrote each other's
+stamp on every session, so neither ever took the fast path. Set
+`COOEE_REPLACE=1` to make a request replace the previous one, e.g. to drop
+modules.
 
 This is generic plumbing baked into the bootstrapper, so **any** project that
 pulls in coo.ee/env gets it — nothing is specific to one repo. GitHub Actions
