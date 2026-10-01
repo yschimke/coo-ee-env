@@ -68,6 +68,16 @@ main() {
     if declare -F cooee_build_brief_setup >/dev/null; then
       cooee_build_brief_setup
     fi
+    # (postgres: no server process survives a fresh container, and the stamp
+    # only proves pg_ctl is installed — start the dev cluster every session.)
+    if declare -F cooee_postgres_start >/dev/null; then
+      cooee_postgres_start || warn "postgres: dev server not running; re-run with COOEE_FORCE=1 to repair."
+    fi
+    # (playwright: a project's lockfile can move to a new browser revision
+    # between sessions — re-check the project's Playwright against the browsers.)
+    if declare -F cooee_playwright_align >/dev/null; then
+      cooee_playwright_align
+    fi
     cooee_trust_cas_in_nss     # idempotent: browsers trust the proxy CA (see _header.sh)
     cooee_install_activation   # idempotent: ensure auto-activation is wired up
     log "Re-exported env from ${COOEE_PROFILE} (source it in a fresh shell)."

@@ -54,6 +54,11 @@ const RULES = {
   ],
   ruby: [
     { tools: ["rubocop", "solargraph"], weight: 4, reason: "RuboCop (lint/format) and Solargraph (language server) are the Ruby staples." },
+    { module: "postgres", weight: 3, reason: "Rails apps mostly run on PostgreSQL; this starts a local dev server the pg gem finds via PGHOST." },
+    { module: "node", weight: 2, reason: "Rails front ends (jsbundling, Tailwind, Playwright system tests) build with npm." },
+  ],
+  postgres: [
+    { module: "ruby", weight: 2, reason: "The usual app stack on top of PostgreSQL (the pg gem's headers come with it)." },
   ],
   swift: [
     { tools: ["swiftlint", "swiftformat"], weight: 4, reason: "SwiftLint and SwiftFormat are the usual Swift lint/format pair (both build on Linux)." },
