@@ -490,6 +490,13 @@ curl -fsSL -g 'https://env.coo.ee/playwright[0.1.13]' | bash   # pin the CLI ver
   step and nothing fetched from the Playwright CDN** — the only install hosts are
   `cache.nixos.org` (browsers) and `registry.npmjs.org` (the CLI).
 
+**Behind a sandbox proxy** (Claude Code on the web), Chromium trusts only its
+built-in roots plus `~/.pki/nssdb`, not the CA env vars every other tool reads.
+The script imports the extra/proxy CAs there on every run, whichever module
+brought the browser — see `COOEE_NO_NSS_CA` under
+[Cloud built-ins](#cloud-built-ins--short-circuit). Launch with
+`proxy: { server: process.env.HTTPS_PROXY }`; never `ignoreHTTPSErrors`.
+
 This split is deliberate: the npm CLI tracks upstream releases, while the heavy,
 OS-coupled browser binaries come from Nix where their dependencies are pinned and
 cached.
@@ -557,6 +564,7 @@ Knobs:
 | `COOEE_GRADLE_DEPS_TASK` | Run a specific Gradle task for the prefetch (e.g. `assemble -x test`) instead of the default whole-graph artifact resolution. |
 | `COOEE_NO_GRADLE_INIT=1` | Don't write `$GRADLE_USER_HOME/init.d/cooee-desktop-gl.init.gradle`, the init script that gives the Compose Desktop GL libs to each forked JVM that can load them and withholds them from each one that cannot — see [the `compose` module](#curated-targets). Implied by `COOEE_NO_GRADLE_PROPS=1`. |
 | `COOEE_NO_GRADLE_PROPS=1` | Don't pin the cloud JVM flags on `org.gradle.jvmargs` in the user-dir `gradle.properties` (`$GRADLE_USER_HOME/gradle.properties`). The `java` module writes them there (merge-safe, never overriding a property you set yourself): the proxy host/port + `nonProxyHosts`, the extra-CA truststore, and `-Dfile.encoding=UTF-8`. This is the **primary** channel for those flags — see [JVM flags and `JAVA_TOOL_OPTIONS`](#jvm-flags-and-java_tool_options). |
+| `COOEE_NO_NSS_CA=1` | Don't import the extra/proxy CAs into the browser NSS database at `~/.pki/nssdb`. By default every run (fast path included) does, whenever extra CAs exist: Chromium on Linux — Playwright's, or one the provider's image ships — ignores `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS` and the system store, so behind a TLS-terminating sandbox proxy every HTTPS page fails with `net::ERR_CERT_AUTHORITY_INVALID` without it. `certutil` comes from `nixpkgs#nss.tools` when it isn't on `PATH`. |
 | `COOEE_SWIFT_SYSTEM_DEPS=0` | `swift`: print the distro packages the official toolchain links against instead of installing them as root. |
 | `COOEE_BASE_URL` | Service base URL baked into the installed SessionStart hook (default `https://env.coo.ee`). |
 
