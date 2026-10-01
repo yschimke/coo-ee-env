@@ -455,6 +455,79 @@ cooee_trust_cas_in_jdk() {  # cooee_trust_cas_in_jdk <java_home>
   ok "JDK now trusts ${#extra[@]} extra CA(s) (JAVA_TOOL_OPTIONS + org.gradle.jvmargs)."
 }
 
+# Cloud fix, the browser half of the one above: Chromium on Linux (Playwright's,
+# the image's /opt/pw-browsers, a Nix one) ignores SSL_CERT_FILE,
+# NODE_EXTRA_CA_CERTS and the system store alike and trusts only its built-in
+# roots plus the user NSS database at ~/.pki/nssdb. Nothing else puts the proxy
+# CA there (the directory does not even exist until Chromium's first launch), so
+# every HTTPS navigation through the sandbox proxy dies with
+# net::ERR_CERT_AUTHORITY_INVALID while curl to the same URL works. Fix: import
+# each extra CA into that database. A CA file may be a bundle (NODE_EXTRA_CA_CERTS
+# in Claude Code is the whole 100+-cert system bundle) and certutil reads only the
+# first certificate of a file, so split bundles and import every certificate.
+# certutil comes from nixpkgs#nss.tools when it is not on PATH, built without a
+# profile entry since only this function needs it. No-op with no extra CAs; opt
+# out with COOEE_NO_NSS_CA=1.
+cooee_trust_cas_in_nss() {
+  [[ "${COOEE_NO_NSS_CA:-0}" == 1 ]] && { log "COOEE_NO_NSS_CA=1: leaving the browser NSS store alone."; return 0; }
+  local -a extra
+  mapfile -t extra < <(cooee_extra_ca_files | sort -u)
+  (( ${#extra[@]} == 0 )) && return 0
+
+  local certutil
+  if ! certutil=$(command -v certutil 2>/dev/null); then
+    local nss
+    if command -v nix >/dev/null 2>&1 \
+        && nss=$(nix build --print-out-paths --no-link "$(cooee_nixpkgs_ref)#nss.tools" --accept-flake-config 2>/dev/null) \
+        && [[ -x "${nss%%$'\n'*}/bin/certutil" ]]; then
+      certutil="${nss%%$'\n'*}/bin/certutil"
+    else
+      warn "certutil unavailable (no nixpkgs#nss.tools); Chromium will not trust the proxy CA."
+      return 0
+    fi
+  fi
+
+  local db="$HOME/.pki/nssdb"
+  mkdir -p "$db" && chmod 700 "$HOME/.pki" "$db" \
+    || { warn "could not create $db; skipping browser CA fix."; return 0; }
+  if [[ ! -f "$db/cert9.db" ]]; then
+    "$certutil" -d "sql:$db" -N --empty-password >/dev/null 2>&1 \
+      || { warn "could not create the NSS database at $db; skipping browser CA fix."; return 0; }
+  fi
+
+  local split; split=$(mktemp -d "${TMPDIR:-/tmp}/cooee-nss.XXXXXX") || return 0
+  local crt i=0
+  for crt in "${extra[@]}"; do
+    i=$((i+1))
+    awk -v pre="$split/$i-" '
+      /-----BEGIN CERTIFICATE-----/ { n++; f = pre n ".pem"; inside = 1 }
+      inside { print > f }
+      /-----END CERTIFICATE-----/ && inside { inside = 0; close(f) }' "$crt"
+  done
+  # Named by a hash of the base64 body, so a certificate that appears in two of
+  # the inputs (a local anchor that is also in the bundle) is imported once, and
+  # a re-run finds it already listed.
+  local known; known=$("$certutil" -d "sql:$db" -L 2>/dev/null)
+  local -A seen=()
+  local f h nick n=0 total=0
+  for f in "$split"/*.pem; do
+    [[ -f "$f" ]] || continue
+    h=$(sed '/-----/d' "$f" | tr -d '[:space:]' | sha256sum | cut -c1-16)
+    [[ -n "${seen[$h]:-}" ]] && continue
+    seen[$h]=1
+    total=$((total+1))
+    nick="cooee-$h"
+    grep -qF "$nick " <<<"$known" && continue
+    if "$certutil" -d "sql:$db" -A -t "C,," -n "$nick" -i "$f" >/dev/null 2>&1; then
+      n=$((n+1))
+    else
+      warn "could not import CA $nick into $db"
+    fi
+  done
+  rm -rf "$split"
+  ok "browser NSS store ($db) trusts the extra CA(s): $n new, $total total."
+}
+
 # Cloud fix: the JVM ignores the http(s)_proxy env vars that curl honors, so in
 # a sandbox where ALL egress is forced through a proxy (Claude Code on the web),
 # the Gradle wrapper + daemon die with "UnknownHostException: services.gradle.org"

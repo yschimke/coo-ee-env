@@ -68,6 +68,7 @@ main() {
     if declare -F cooee_build_brief_setup >/dev/null; then
       cooee_build_brief_setup
     fi
+    cooee_trust_cas_in_nss     # idempotent: browsers trust the proxy CA (see _header.sh)
     cooee_install_activation   # idempotent: ensure auto-activation is wired up
     log "Re-exported env from ${COOEE_PROFILE} (source it in a fresh shell)."
     log "Force a re-provision with COOEE_FORCE=1."
@@ -129,6 +130,9 @@ main() {
   if declare -F cooee_compose_wrap_render_jdk >/dev/null; then
     cooee_compose_wrap_render_jdk
   fi
+  # Not tied to any module: whichever one brought a browser (playwright, or the
+  # provider's image), Chromium reads the proxy CA from ~/.pki/nssdb only.
+  cooee_trust_cas_in_nss
 
   printf '%s' "${MODULES[*]:-}" > "$COOEE_STAMP"
 
