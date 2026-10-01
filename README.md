@@ -661,6 +661,7 @@ Knobs:
 | `COOEE_NO_CHECKOUT_PERMS=1` | Don't merge the side-by-side project checkouts' `permissions.allow` into the global Claude config (see [activation](#auto-activation)). |
 | `COOEE_CHECKOUTS_DIR` | Workspace root holding the side-by-side checkouts to seed Gradle wrappers from, pin `sdk.dir` in (android), and scan for `permissions.allow` (default: the project dir's parent). |
 | `CLAUDE_CONFIG_DIR` | Override the global Claude config dir the SessionStart hook is written into (default `~/.claude`). |
+| `COOEE_REPLACE=1` | Make this request replace the box's previous one instead of [adding to it](#auto-activation) (the hook, stamp and persisted env then carry only this request). |
 | `COOEE_NO_DEPS=1` | Skip [build-dependency prefetch](#build-dependency-prefetch) — install the toolchain only, don't resolve the project's dependencies. |
 | `COOEE_GRADLE_DEPS_TASK` | Run a specific Gradle task for the prefetch (e.g. `assemble -x test`) instead of the default whole-graph artifact resolution. |
 | `COOEE_NO_GRADLE_INIT=1` | Don't write `$GRADLE_USER_HOME/init.d/cooee-desktop-gl.init.gradle`, the init script that gives the Compose Desktop GL libs to each forked JVM that can load them and withholds them from each one that cannot — see [the `compose` module](#curated-targets). Implied by `COOEE_NO_GRADLE_PROPS=1`. |
@@ -1005,6 +1006,27 @@ manual `source`, no per-project boilerplate:
     hold no matter which sibling the session opens, still without writing into
     any tracked tree. Opt out with `COOEE_NO_CHECKOUT_PERMS=1`; point the scan
     at a specific workspace root with `COOEE_CHECKOUTS_DIR`.
+
+**Requests are cumulative.** A box is usually provisioned more than once with
+different requests: the environment's setup asked for `java,android`, then a
+Ruby project runs `ruby,postgres,playwright`. The second request **adds to** the
+first instead of replacing it:
+
+- the previous request (recorded in `~/.config/coo-ee/request`, or read back from
+  an older run's hook) is merged with this one by module, with this request's
+  params winning for a module both name;
+- the global config keeps **one** coo.ee SessionStart hook, for the merged
+  request (`…/android,java,postgres,ruby,…`). An earlier request's hook is
+  replaced, and hooks that aren't coo.ee's are left alone;
+- the earlier modules' persisted env (`JAVA_HOME`, their `PATH` entries) is
+  kept, and the stamp names every module, so the next session's merged hook
+  takes the fast path.
+
+Before this, the second request truncated the persisted env (fresh shells lost
+`JAVA_HOME`) and added a second hook. The two hooks then overwrote each other's
+stamp on every session, so neither ever took the fast path. Set
+`COOEE_REPLACE=1` to make a request replace the previous one, e.g. to drop
+modules.
 
 This is generic plumbing baked into the bootstrapper, so **any** project that
 pulls in coo.ee/env gets it — nothing is specific to one repo. GitHub Actions

@@ -97,7 +97,27 @@ main() {
     need_nix=1
   done
 
-  cooee_init_profile
+  # Is this request adding to a box an earlier, different request provisioned?
+  # Then keep that request's env and fold both into one (see "cumulative
+  # requests" in _header.sh): the merged request is what the hook re-runs.
+  local prev_seg this_seg additive=0
+  prev_seg="$(cooee_previous_segment)"
+  this_seg="$(cooee_request_segment)"
+  COOEE_HOOK_SEGMENT="$(cooee_merge_segments "$prev_seg" "$this_seg")"
+  if [[ -n "$prev_seg" && "$COOEE_HOOK_SEGMENT" != "$(cooee_merge_segments "" "$this_seg")" ]]; then
+    additive=1
+    log "Adding to this box's earlier request (${prev_seg}): it now carries ${COOEE_HOOK_SEGMENT} (COOEE_REPLACE=1 to replace instead)."
+  fi
+
+  if [[ "$additive" == 1 ]]; then
+    # Keep the persisted env, and carry its PATH into this run so every PATH
+    # snapshot a module persists still includes the earlier toolchains.
+    local old_path
+    old_path="$( (set +eu; . "$COOEE_PROFILE" >/dev/null 2>&1; printf '%s' "$PATH") 2>/dev/null || true)"
+    [[ -n "$old_path" ]] && export PATH="$(printf '%s' "$old_path:$PATH" | tr ':' '\n' | awk 'NF && !seen[$0]++' | paste -sd: -)"
+  else
+    cooee_init_profile
+  fi
 
   # Host preflight only matters when something will actually install — if every
   # requested tool is adopted from the environment, there is nothing to probe.
@@ -144,7 +164,18 @@ main() {
   # provider's image), Chromium reads the proxy CA from ~/.pki/nssdb only.
   cooee_trust_cas_in_nss
 
-  printf '%s' "${MODULES[*]:-}" > "$COOEE_STAMP"
+  # The stamp names every module the box now carries — this run's plus, on an
+  # additive run, the earlier request's — in the renderer's canonical order, so
+  # the merged hook's next run matches it and takes the fast path.
+  if [[ "$additive" == 1 && -f "$COOEE_STAMP" ]]; then
+    { tr ' ' '\n' < "$COOEE_STAMP"; echo; printf '%s\n' "${MODULES[@]}"; } \
+      | awk 'NF && $0 != "base" && !seen[$0]++' | LC_ALL=C sort \
+      | { printf 'base'; while IFS= read -r m; do printf ' %s' "$m"; done; } > "$COOEE_STAMP.tmp"
+    mv -f "$COOEE_STAMP.tmp" "$COOEE_STAMP"
+  else
+    printf '%s' "${MODULES[*]:-}" > "$COOEE_STAMP"
+  fi
+  printf '%s\n' "$COOEE_HOOK_SEGMENT" > "$COOEE_REQUEST_FILE"
 
   # Wire up auto-activation so the env applies without a manual `source`.
   cooee_install_activation
