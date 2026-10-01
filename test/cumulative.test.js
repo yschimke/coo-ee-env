@@ -27,6 +27,10 @@ function env(home, extra = {}) {
     CLAUDE_CONFIG_DIR: "",
     COOEE_NO_CHECKOUT_PERMS: "1",
     COOEE_NO_NSS_CA: "1",
+    // On GitHub Actions the script activates through $GITHUB_ENV instead of the
+    // global Claude config; these tests are about the latter.
+    GITHUB_ACTIONS: "",
+    GITHUB_ENV: "",
     ...extra,
   };
 }
