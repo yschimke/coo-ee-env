@@ -75,7 +75,7 @@ treats an already-present package as success — so a partial/cold box is
 | `ruby`    | Ruby + RubyGems + the project's gems (`bundle install`); the version from `ruby[3.4]`, else the project's `.ruby-version` / `.tool-versions` / Gemfile `ruby`, else 3 — adopting a matching Ruby on PATH or in the image's rbenv before installing from Nix; apt-installs headers for native gems (`pg` → `libpq-dev`, `mysql2`, `psych`) — see [Ruby](#ruby-what-ruby-installs) | `cache.nixos.org` (only without a matching Ruby), `rubygems.org`, `index.rubygems.org` | Codex: `CODEX_ENV_RUBY_VERSION` |
 | `postgres` | A **running** local PostgreSQL dev server: adopts the box's server binaries (Debian's `/usr/lib/postgresql/<major>/bin`, off PATH) or installs from Nix; owns a trust-auth cluster on localhost with superuser roles for you and `postgres`; restarted every session; exports `PGHOST`/`PGPORT`; `postgres[16]` picks the major — see [PostgreSQL](#postgresql-what-postgres-runs) | `cache.nixos.org` (only when the box has no PostgreSQL) | `COOEE_PG_PORT`, `COOEE_PG_BASE` |
 | `swift`   | The official swift.org toolchain (`swift`, `swiftc`, SwiftPM, `swift-format`, `sourcekit-lsp`) via [swiftly](https://github.com/swiftlang/swiftly), plus the distro packages it links against; the version comes from `swift[6.3]`, else the project's `.swift-version`, else the latest release. `swift[nix]` installs nixpkgs' much older Swift 5.10.1 instead (build/run only, see [Swift](#swift-what-swift-installs)) | `www.swift.org`, `download.swift.org` (`cache.nixos.org` for `swift[nix]`); builds: `github.com` | Codex: `CODEX_ENV_SWIFT_VERSION` |
-| `compose` | Jetpack Compose `@Preview` rendering: installs the `compose-preview` agent skill (renders previews to PNG, no emulator) and puts its CLI on PATH (`$COMPOSE_PREVIEW_HOME`, default `~/.local/share/compose-preview`, so an MCP host can start `compose-preview mcp serve`), pulls in a JDK + the Android SDK, and provisions the native GL libs (`libGL`/`libX11`/`fontconfig`/`libstdc++`) Compose **Desktop** (skiko/Skia) loads at render time, baked into a wrapper JDK (plus a Gradle init script that retunes each fork's `LD_LIBRARY_PATH` per JDK) rather than the session environment; **implies `java`, `android`** | `github.com`, `cache.nixos.org` (git + the GL libs) | `COOEE_NO_DESKTOP_GL=1` to skip GL; `COOEE_DESKTOP_GL_PACKAGES` to adjust the set; `COOEE_NO_GRADLE_INIT=1` to skip the init script |
+| `compose` | Jetpack Compose `@Preview` rendering: installs the `compose-preview` and `compose-ui-builder` agent skills (render previews to PNG with no emulator; author and export UI Builder designs) and puts the `compose-preview` CLI on PATH (`$COMPOSE_PREVIEW_HOME`, default `~/.local/share/compose-preview`, so an MCP host can start `compose-preview mcp serve`), pulls in a JDK + the Android SDK, and provisions the native GL libs (`libGL`/`libX11`/`fontconfig`/`libstdc++`) Compose **Desktop** (skiko/Skia) loads at render time, baked into a wrapper JDK (plus a Gradle init script that retunes each fork's `LD_LIBRARY_PATH` per JDK) rather than the session environment; **implies `java`, `android`** | `github.com`, `cache.nixos.org` (git + the GL libs) | `COOEE_COMPOSE_SKILLS` (space-separated) to change the skills; `COOEE_NO_DESKTOP_GL=1` to skip GL; `COOEE_DESKTOP_GL_PACKAGES` to adjust the set; `COOEE_NO_GRADLE_INIT=1` to skip the init script |
 | `dotfiles` | A config repo cloned and applied to `$HOME`; `dotfiles[owner/repo]` (optionally `@ref`) — **required**, there is no default repo. Applies by linking the top-level dotfiles (backing up anything it would clobber to `*.cooee.bak`), or via GNU Stow when that's already installed and the repo is a package tree. A repo-provided `install.sh` is **not** run unless `COOEE_DOTFILES_RUN_INSTALL=1` | `github.com` (`cache.nixos.org` if `git` is absent) | `COOEE_DOTFILES_RUN_INSTALL=1` to allow the repo's installer |
 | `skills`  | Agent skills, linked into `~/.claude/skills/` and, when Codex or Gemini is on the box, `~/.agents/skills/` (see [Agent homes](#agent-homes)); `skills[owner/repo]` links every skill in a repo, `skills[owner/repo/<skill>]` links just one | `github.com` (`cache.nixos.org` if `git` is absent) | — |
 | `tools`   | Arbitrary CLI tools from nixpkgs, by name (`tools[ripgrep,jq,gh]`) | `cache.nixos.org` | — |
@@ -198,7 +198,8 @@ and installs like any other; it's just kept out of the searchable catalog.
 `compose` is a **curated target** built on the same mechanism: it implies
 `java` and `android` (the JDK + SDK that Compose `@Preview` rendering needs —
 but *not* `android-emulator`, which the renderer doesn't use) and installs the
-`compose-preview` agent skill, so one word sets up a Compose preview workflow:
+`compose-preview` and `compose-ui-builder` agent skills (yschimke/skills'
+default pair), so one word sets up a Compose preview workflow:
 
 ```bash
 curl -fsSL https://env.coo.ee/compose | bash
@@ -703,6 +704,14 @@ A skill directory another installer already owns (`npx skills`, the
 compose-preview installer) is kept rather than replaced. A repo that carries a
 skill twice (yschimke/skills keeps generated copies under `plugins/` for its
 marketplace) has each name linked once, from the copy outside `plugins/`.
+
+A skill an enabled Claude Code plugin already ships (the `compose-skills`
+bundle from yschimke/skills or compose-agent-plugins' marketplace, say) is not
+linked into `~/.claude/skills/`, and a link an earlier run left there is
+removed: the plugin and the link would load every skill twice. The plugin's
+skills are read from Claude Code's plugin cache, or from the cloned repo's
+`plugins/<bundle>/` before the first session fills that cache. Codex and Gemini
+still get their `~/.agents/skills/` copy.
 
 Antigravity 1.2.12 does not load `~/.agents/skills/`; install skills there as
 plugins (see [compose-agent-plugins](https://github.com/yschimke/compose-agent-plugins#antigravity)).

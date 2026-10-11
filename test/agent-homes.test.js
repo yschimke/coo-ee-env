@@ -200,3 +200,99 @@ test("Gemini's configured context file name gets the guide, with any of jq, pyth
     }
   }
 });
+
+test("a skill an enabled Claude plugin ships is not linked into ~/.claude/skills", () => {
+  const home = tmpdir("cooee-home-");
+  // A cloned skills repo whose marketplace bundle `bundle` carries `demo`.
+  const repo = path.join(home, ".cache/coo-ee/skills/owner-repo");
+  for (const dir of ["skills/demo", "plugins/bundle/skills/demo"]) {
+    fs.mkdirSync(path.join(repo, dir), { recursive: true });
+    fs.writeFileSync(path.join(repo, dir, "SKILL.md"), "");
+  }
+  const skill = path.join(repo, "skills/demo");
+  // Linked by an earlier run, before the plugin was enabled.
+  evalRendered("java", `cooee_link_skill '${skill}'`, { HOME: home, COOEE_AGENTS: "codex" });
+  assert.ok(fs.lstatSync(path.join(home, ".claude/skills/demo")).isSymbolicLink());
+
+  fs.writeFileSync(
+    path.join(home, ".claude/settings.json"),
+    JSON.stringify({ enabledPlugins: { "bundle@market": true, "other@market": false } }),
+  );
+  const out = evalRendered(
+    "java",
+    `cooee_link_skill '${skill}'; cooee_skill_linked demo && echo linked`,
+    { HOME: home, COOEE_AGENTS: "codex" },
+  );
+  assert.match(out, /comes from an enabled Claude plugin/);
+  assert.match(out, /linked$/, "the plugin's copy counts as linked for Claude Code");
+  assert.equal(fs.existsSync(path.join(home, ".claude/skills/demo")), false, "the old link is removed");
+  assert.equal(fs.readlinkSync(path.join(home, ".agents/skills/demo")), skill, "Codex keeps its copy");
+});
+
+test("a disabled plugin, or one that doesn't ship the skill, changes nothing", () => {
+  const home = tmpdir("cooee-home-");
+  const cache = path.join(home, ".claude/plugins/cache/market/bundle/1.0.0/skills/other");
+  fs.mkdirSync(cache, { recursive: true });
+  fs.writeFileSync(path.join(cache, "SKILL.md"), "");
+  fs.writeFileSync(
+    path.join(home, ".claude/settings.json"),
+    JSON.stringify({ enabledPlugins: { "bundle@market": true, "off@market": false } }),
+  );
+  const skill = fakeSkill("demo");
+  evalRendered("java", `cooee_link_skill '${skill}'`, { HOME: home, COOEE_AGENTS: "none" });
+  assert.equal(fs.readlinkSync(path.join(home, ".claude/skills/demo")), skill);
+  // ...while the plugin cache does answer for the skill it ships.
+  const out = evalRendered("java", "cooee_claude_plugin_provides other && echo yes || echo no", {
+    HOME: home,
+    COOEE_AGENTS: "none",
+  });
+  assert.equal(out, "yes");
+});
+
+test("a stale coo.ee link beside an enabled plugin keeps the box off the fast path", () => {
+  const home = tmpdir("cooee-home-");
+  const repo = path.join(home, ".cache/coo-ee/skills/owner-repo");
+  for (const dir of ["skills/demo", "plugins/bundle/skills/demo"]) {
+    fs.mkdirSync(path.join(repo, dir), { recursive: true });
+    fs.writeFileSync(path.join(repo, dir, "SKILL.md"), "");
+  }
+  // Provisioned first, plugin enabled afterwards.
+  evalRendered("java", `cooee_link_skill '${path.join(repo, "skills/demo")}'`, {
+    HOME: home,
+    COOEE_AGENTS: "none",
+  });
+  fs.writeFileSync(
+    path.join(home, ".claude/settings.json"),
+    JSON.stringify({ enabledPlugins: { "bundle@market": true } }),
+  );
+  const linked = () =>
+    evalRendered("java", "cooee_skill_linked demo && echo yes || echo no", { HOME: home, COOEE_AGENTS: "none" });
+  assert.equal(linked(), "no", "the stale link must send the next run down the full path");
+  evalRendered("java", `cooee_link_skill '${path.join(repo, "skills/demo")}'`, {
+    HOME: home,
+    COOEE_AGENTS: "none",
+  });
+  assert.equal(fs.existsSync(path.join(home, ".claude/skills/demo")), false);
+  assert.equal(linked(), "yes");
+});
+
+test("a plugin's skills come from its own marketplace's cache", () => {
+  const home = tmpdir("cooee-home-");
+  // `bundle` is enabled from market-a; only market-b's cache ships `demo`.
+  for (const [market, skill] of [["market-a", "other"], ["market-b", "demo"]]) {
+    const dir = path.join(home, `.claude/plugins/cache/${market}/bundle/1.0.0/skills/${skill}`);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "SKILL.md"), "");
+  }
+  fs.writeFileSync(
+    path.join(home, ".claude/settings.json"),
+    JSON.stringify({ enabledPlugins: { "bundle@market-a": true } }),
+  );
+  const provides = (name) =>
+    evalRendered("java", `cooee_claude_plugin_provides ${name} && echo yes || echo no`, {
+      HOME: home,
+      COOEE_AGENTS: "none",
+    });
+  assert.equal(provides("demo"), "no");
+  assert.equal(provides("other"), "yes");
+});
