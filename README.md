@@ -689,7 +689,7 @@ home:
 | --- | --- | --- |
 | Claude Code | `~/.claude/skills/` | `~/.claude/CLAUDE.md` (`$CLAUDE_CONFIG_DIR`) |
 | Codex | `~/.agents/skills/` | `$CODEX_HOME/AGENTS.md` (default `~/.codex/AGENTS.md`), or `AGENTS.override.md` when that is non-empty |
-| Gemini CLI, Antigravity | `~/.agents/skills/` | `~/.gemini/GEMINI.md`, or the name `context.fileName` sets in `~/.gemini/settings.json` |
+| Gemini CLI, Antigravity | `~/.agents/skills/` | `~/.gemini/GEMINI.md`, plus the file `context.fileName` names in the system or `~/.gemini/settings.json` when that differs |
 | OpenCode | reads Claude Code's | reads Claude Code's |
 
 Claude Code's home is always written. Codex and Gemini are added when their CLI
