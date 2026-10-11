@@ -376,8 +376,68 @@ cooee_agent_rules_files() {
     fi
   fi
   if cooee_agent_present gemini; then
-    printf '%s\n' "$HOME/.gemini/GEMINI.md"
+    local gemini_name
+    while IFS= read -r gemini_name; do
+      printf '%s\n' "$HOME/.gemini/$gemini_name"
+    done < <(cooee_gemini_context_files)
   fi
+}
+
+# The global context file(s) to write for Gemini, one per line. Gemini CLI loads
+# the names in `context.fileName` (a string or a list; older releases used a
+# top-level `contextFileName`), defaulting to GEMINI.md, and the effective value
+# comes from the highest-priority settings layer that sets it: a checkout's
+# .gemini/settings.json or the system settings outrank ~/.gemini/settings.json.
+# A project override cannot be known here (it differs per checkout), so GEMINI.md
+# is always written as the fallback, and the system then user settings name a
+# second file when they choose another one. With a list, GEMINI.md is kept when
+# it is in it, else the first name is taken. A whole-string `$VAR`, `${VAR}` or
+# `${VAR:-default}` is expanded the way Gemini expands it; anything that is not
+# then a plain file name, or settings we cannot parse (no jq/python3/node, or
+# JSON with comments), adds nothing beyond GEMINI.md.
+cooee_gemini_context_files() {
+  printf 'GEMINI.md\n'
+  local settings name=""
+  for settings in "${GEMINI_CLI_SYSTEM_SETTINGS_PATH:-/etc/gemini-cli/settings.json}" \
+                  "$HOME/.gemini/settings.json"; do
+    name=$(cooee_gemini_settings_file_name "$settings")
+    [[ -n "$name" ]] && break
+  done
+  if [[ "$name" =~ ^\$\{?([A-Za-z_][A-Za-z0-9_]*)(:-([^}]*))?\}?$ ]]; then
+    local var="${BASH_REMATCH[1]}" def="${BASH_REMATCH[3]}"
+    name="${!var:-$def}"
+  fi
+  case "$name" in
+    ""|GEMINI.md|*/*|*'$'*|.|..) : ;;
+    *) printf '%s\n' "$name" ;;
+  esac
+}
+
+# The `context.fileName` one settings file sets, or nothing.
+cooee_gemini_settings_file_name() {  # <settings.json>
+  local settings="$1"
+  [[ -f "$settings" ]] || return 0
+  if command -v jq >/dev/null 2>&1; then
+    jq -r '(.context.fileName // .contextFileName // empty)
+           | if type == "array" then (if index("GEMINI.md") then "GEMINI.md" else .[0] end)
+             else . end // empty' "$settings" 2>/dev/null
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+v = (d.get("context") or {}).get("fileName") or d.get("contextFileName")
+if isinstance(v, list):
+    v = "GEMINI.md" if "GEMINI.md" in v else (v[0] if v else None)
+if isinstance(v, str):
+    print(v)' "$settings" 2>/dev/null
+  elif command -v node >/dev/null 2>&1; then
+    node -e '
+      const d = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+      let v = (d.context || {}).fileName || d.contextFileName;
+      if (Array.isArray(v)) v = v.includes("GEMINI.md") ? "GEMINI.md" : v[0];
+      if (typeof v === "string") console.log(v);' "$settings" 2>/dev/null
+  fi
+  return 0
 }
 
 # Symlink one skill directory into every agent's skills dir, so a re-run that

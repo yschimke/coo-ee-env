@@ -157,3 +157,46 @@ test("a skill found twice in a repo is listed once, preferring the copy outside 
   const one = evalRendered("java", `cooee_find_skills '${repo}' demo`, { COOEE_AGENTS: "none" });
   assert.equal(one, path.join(repo, "skills/demo"));
 });
+
+test("Gemini's configured context file name gets the guide, with any of jq, python3 or node", () => {
+  // [user settings, system settings, env, files expected besides GEMINI.md]
+  const cases = [
+    [{ context: { fileName: "CONTEXT.md" } }, null, {}, ["CONTEXT.md"]],
+    [{ context: { fileName: ["AGENTS.md", "CONTEXT.md"] } }, null, {}, ["AGENTS.md"]],
+    [{ context: { fileName: ["AGENTS.md", "GEMINI.md"] } }, null, {}, []],
+    [{ contextFileName: "LEGACY.md" }, null, {}, ["LEGACY.md"]],
+    [{ context: { fileName: "../escape.md" } }, null, {}, []],
+    [{}, null, {}, []],
+    // System settings outrank the user's.
+    [{ context: { fileName: "USER.md" } }, { context: { fileName: "SYSTEM.md" } }, {}, ["SYSTEM.md"]],
+    // Environment references expand the way Gemini expands them.
+    [{ context: { fileName: "${CTX_FILE:-DEFAULT.md}" } }, null, {}, ["DEFAULT.md"]],
+    [{ context: { fileName: "${CTX_FILE:-DEFAULT.md}" } }, null, { CTX_FILE: "SET.md" }, ["SET.md"]],
+    [{ context: { fileName: "$CTX_FILE" } }, null, {}, []],
+    [{ context: { fileName: "pre-$CTX_FILE.md" } }, null, { CTX_FILE: "x" }, []],
+  ];
+  // Hide the parsers in turn, so each fallback is exercised wherever it exists.
+  const hide = (names) =>
+    `command() { case "$2" in ${names}) return 1;; esac; builtin command "$@"; }\n`;
+  for (const hidden of ["__none__", "jq", "jq|python3"]) {
+    for (const [settings, system, env, want] of cases) {
+      const home = tmpdir("cooee-home-");
+      fs.mkdirSync(path.join(home, ".gemini"));
+      fs.writeFileSync(path.join(home, ".gemini/settings.json"), JSON.stringify(settings));
+      const systemPath = path.join(home, "system-settings.json");
+      if (system) fs.writeFileSync(systemPath, JSON.stringify(system));
+      const out = evalRendered("java", `${hide(hidden)}cooee_agent_rules_files`, {
+        HOME: home,
+        COOEE_AGENTS: "gemini",
+        GEMINI_CLI_SYSTEM_SETTINGS_PATH: systemPath,
+        CTX_FILE: "",
+        ...env,
+      });
+      assert.deepEqual(
+        out.split("\n").slice(1),
+        ["GEMINI.md", ...want].map((f) => path.join(home, ".gemini", f)),
+        `${JSON.stringify(settings)} / ${JSON.stringify(system)} / ${JSON.stringify(env)} with ${hidden} hidden`,
+      );
+    }
+  }
+});
