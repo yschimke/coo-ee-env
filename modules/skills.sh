@@ -67,17 +67,15 @@ module_skills() {
       fi
     fi
 
-    # A skill is any directory containing SKILL.md. Link each one into every
-    # agent's skills dir (symlink so a re-run that re-pulls the repo updates it).
-    local skillmd name n=0
-    while IFS= read -r -d '' skillmd; do
-      name=$(basename "$(dirname "$skillmd")")
-      # When a skill was named, link only that one (match on the directory name).
-      [[ -n "$skill" && "$name" != "${skill##*/}" ]] && continue
-      cooee_link_skill "$(dirname "$skillmd")"
-      ok "skill: $name  ($repo)"
+    # A skill is any directory containing SKILL.md; each name is linked once,
+    # into every agent's skills dir (symlink so a re-run that re-pulls the repo
+    # updates it).
+    local skilldir n=0
+    while IFS= read -r skilldir; do
+      cooee_link_skill "$skilldir"
+      ok "skill: $(basename "$skilldir")  ($repo)"
       n=$((n + 1)); installed=$((installed + 1))
-    done < <(find "$dest" -name SKILL.md -not -path '*/.git/*' -print0 2>/dev/null)
+    done < <(cooee_find_skills "$dest" "${skill##*/}")
 
     if (( n == 0 )); then
       [[ -n "$skill" ]] && warn "skill '${skill##*/}' not found in $repo" \

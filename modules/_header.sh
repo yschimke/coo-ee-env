@@ -396,6 +396,22 @@ cooee_link_skill() {  # cooee_link_skill <skill dir>
   done < <(cooee_skill_dirs)
 }
 
+# Every skill directory in a cloned repo, one per skill name. A skills repo can
+# carry the same skill twice — yschimke/skills keeps `skills/<name>` and a
+# generated copy under `plugins/<bundle>/skills/<name>` for its marketplace —
+# so prefer a path outside a `plugins/` dir and drop later duplicates. With a
+# <name>, print only that skill.
+cooee_find_skills() {  # cooee_find_skills <repo dir> [name]
+  local dir="$1" only="${2:-}"
+  find "$dir" -name SKILL.md -not -path '*/.git/*' 2>/dev/null \
+    | awk '{ print (index($0, "/plugins/") ? 1 : 0) "\t" $0 }' | sort \
+    | while IFS=$'\t' read -r _ md; do
+        local d; d=$(dirname "$md")
+        printf '%s\t%s\n' "$(basename "$d")" "$d"
+      done \
+    | awk -F'\t' -v only="$only" '(only == "" || $1 == only) && !seen[$1]++ { print $2 }'
+}
+
 # True when <name> is linked (or otherwise installed) in every agent's skills dir.
 cooee_skill_linked() {  # cooee_skill_linked <name>
   local d

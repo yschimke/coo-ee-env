@@ -142,3 +142,18 @@ test("a non-empty Codex AGENTS.override.md gets the guide instead of AGENTS.md",
   assert.match(md, /build-brief \.\/gradlew/);
   assert.equal(fs.existsSync(path.join(home, ".codex/AGENTS.md")), false);
 });
+
+test("a skill found twice in a repo is listed once, preferring the copy outside plugins/", () => {
+  const repo = tmpdir("cooee-repo-");
+  for (const dir of ["plugins/bundle/skills/demo", "skills/demo", "skills/other"]) {
+    fs.mkdirSync(path.join(repo, dir), { recursive: true });
+    fs.writeFileSync(path.join(repo, dir, "SKILL.md"), "");
+  }
+  const all = evalRendered("java", `cooee_find_skills '${repo}'`, { COOEE_AGENTS: "none" });
+  assert.deepEqual(all.split("\n").sort(), [
+    path.join(repo, "skills/demo"),
+    path.join(repo, "skills/other"),
+  ]);
+  const one = evalRendered("java", `cooee_find_skills '${repo}' demo`, { COOEE_AGENTS: "none" });
+  assert.equal(one, path.join(repo, "skills/demo"));
+});
