@@ -687,15 +687,17 @@ home:
 | Agent | Skills | Global rules |
 | --- | --- | --- |
 | Claude Code | `~/.claude/skills/` | `~/.claude/CLAUDE.md` (`$CLAUDE_CONFIG_DIR`) |
-| Codex | `~/.agents/skills/` | `$CODEX_HOME/AGENTS.md` (default `~/.codex/AGENTS.md`) |
+| Codex | `~/.agents/skills/` | `$CODEX_HOME/AGENTS.md` (default `~/.codex/AGENTS.md`), or `AGENTS.override.md` when that is non-empty |
 | Gemini CLI, Antigravity | `~/.agents/skills/` | `~/.gemini/GEMINI.md` |
 | OpenCode | reads Claude Code's | reads Claude Code's |
 
 Claude Code's home is always written. Codex and Gemini are added when their CLI
 is on `PATH`, their config dir exists, or the run detected them as the
 [provider](#cloud-built-ins--short-circuit); `COOEE_AGENTS` replaces that
-detection. OpenCode is never given a second copy, because it reads both
-`~/.claude/skills/` and `~/.agents/skills/` and would load each skill twice.
+detection. OpenCode needs nothing of its own because it reads Claude Code's
+home, but it scans `~/.agents/skills/` too: on a box with OpenCode beside Codex
+or Gemini it sees each skill twice. Set `COOEE_AGENTS=none` there if that
+matters more than the other agents' copy.
 A skill directory another installer already owns (`npx skills`, the
 compose-preview installer) is kept rather than replaced.
 

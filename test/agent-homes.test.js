@@ -131,3 +131,14 @@ test("the build-brief guide is written to every agent's global rules file", () =
     assert.equal(md.match(/coo\.ee\/env:build-brief:start/g).length, 1);
   }
 });
+
+test("a non-empty Codex AGENTS.override.md gets the guide instead of AGENTS.md", () => {
+  const home = tmpdir("cooee-home-");
+  fs.mkdirSync(path.join(home, ".codex"));
+  fs.writeFileSync(path.join(home, ".codex/AGENTS.override.md"), "# mine\n");
+  evalRendered("java", "cooee_build_brief_guide", { HOME: home, COOEE_AGENTS: "codex" });
+  const md = fs.readFileSync(path.join(home, ".codex/AGENTS.override.md"), "utf8");
+  assert.match(md, /^# mine/);
+  assert.match(md, /build-brief \.\/gradlew/);
+  assert.equal(fs.existsSync(path.join(home, ".codex/AGENTS.md")), false);
+});

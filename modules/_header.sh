@@ -336,8 +336,9 @@ cooee_global_claude_dir() {
 #   Antigravity
 #
 # OpenCode reads ~/.claude/skills and ~/.claude/CLAUDE.md itself, so it needs
-# nothing extra (and a second copy under ~/.agents/skills would load twice
-# there). Claude Code is always targeted — it is what the SessionStart hook
+# nothing extra. It also scans ~/.agents/skills, so on a box that has OpenCode
+# beside Codex or Gemini it sees each skill twice; COOEE_AGENTS=none avoids that
+# at the cost of the other agents' copy. Claude Code is always targeted — it is what the SessionStart hook
 # re-provisions. Codex and Gemini count when their CLI is on PATH, their config
 # dir exists, or they are the provider this run detected; COOEE_AGENTS (e.g.
 # `codex,gemini`, or `none`) replaces that detection.
@@ -366,7 +367,13 @@ cooee_skill_dirs() {
 cooee_agent_rules_files() {
   printf '%s\n' "$(cooee_global_claude_dir)/CLAUDE.md"
   if cooee_agent_present codex; then
-    printf '%s\n' "${CODEX_HOME:-$HOME/.codex}/AGENTS.md"
+    # Codex reads only the first non-empty of AGENTS.override.md, AGENTS.md.
+    local codex="${CODEX_HOME:-$HOME/.codex}"
+    if [[ -s "$codex/AGENTS.override.md" ]]; then
+      printf '%s\n' "$codex/AGENTS.override.md"
+    else
+      printf '%s\n' "$codex/AGENTS.md"
+    fi
   fi
   if cooee_agent_present gemini; then
     printf '%s\n' "$HOME/.gemini/GEMINI.md"
