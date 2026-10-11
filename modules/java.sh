@@ -830,9 +830,10 @@ cooee_build_brief_install_sh() {
 # ---- the guide -------------------------------------------------------------
 # Installing the binary is half the job: a reducer nobody reaches for changes
 # nothing. So write the usage rules where an agent will actually read them —
-# a managed block in the GLOBAL Claude config's CLAUDE.md
-# ($CLAUDE_CONFIG_DIR/CLAUDE.md, default ~/.claude/CLAUDE.md), which every
-# session in this container loads regardless of which checkout it opens.
+# a managed block in each agent's GLOBAL rules file (cooee_agent_rules_files:
+# ~/.claude/CLAUDE.md always, plus Codex's AGENTS.md and Gemini's GEMINI.md when
+# those agents are on the box), which every session in this container loads
+# regardless of which checkout it opens.
 #
 # Deliberately NOT `build-brief --install`: that regenerates a managed block in
 # the *checkout's* AGENTS.md, a git-tracked file. Dirtying provisioned working
@@ -852,8 +853,15 @@ cooee_build_brief_guide() {
     log "java: skipping the build-brief usage guide (COOEE_NO_BUILD_BRIEF_GUIDE=1)."
     return 0
   fi
-  local dir; dir="$(cooee_global_claude_dir)"
-  local md="$dir/CLAUDE.md"
+  local md
+  while IFS= read -r md; do
+    cooee_build_brief_guide_write "$md"
+  done < <(cooee_agent_rules_files)
+  return 0
+}
+
+cooee_build_brief_guide_write() {  # <rules file>
+  local md="$1" dir; dir="$(dirname "$1")"
   mkdir -p "$dir" || { warn "java: couldn't create $dir; skipping the build-brief guide."; return 0; }
 
   local tmp; tmp=$(mktemp "${TMPDIR:-/tmp}/cooee-bb-guide.XXXXXX") || {

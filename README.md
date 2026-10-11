@@ -77,7 +77,7 @@ treats an already-present package as success — so a partial/cold box is
 | `swift`   | The official swift.org toolchain (`swift`, `swiftc`, SwiftPM, `swift-format`, `sourcekit-lsp`) via [swiftly](https://github.com/swiftlang/swiftly), plus the distro packages it links against; the version comes from `swift[6.3]`, else the project's `.swift-version`, else the latest release. `swift[nix]` installs nixpkgs' much older Swift 5.10.1 instead (build/run only, see [Swift](#swift-what-swift-installs)) | `www.swift.org`, `download.swift.org` (`cache.nixos.org` for `swift[nix]`); builds: `github.com` | Codex: `CODEX_ENV_SWIFT_VERSION` |
 | `compose` | Jetpack Compose `@Preview` rendering: installs the `compose-preview` agent skill (renders previews to PNG, no emulator), pulls in a JDK + the Android SDK, and provisions the native GL libs (`libGL`/`libX11`/`fontconfig`/`libstdc++`) Compose **Desktop** (skiko/Skia) loads at render time, baked into a wrapper JDK (plus a Gradle init script that retunes each fork's `LD_LIBRARY_PATH` per JDK) rather than the session environment; **implies `java`, `android`** | `github.com`, `cache.nixos.org` (git + the GL libs) | `COOEE_NO_DESKTOP_GL=1` to skip GL; `COOEE_DESKTOP_GL_PACKAGES` to adjust the set; `COOEE_NO_GRADLE_INIT=1` to skip the init script |
 | `dotfiles` | A config repo cloned and applied to `$HOME`; `dotfiles[owner/repo]` (optionally `@ref`) — **required**, there is no default repo. Applies by linking the top-level dotfiles (backing up anything it would clobber to `*.cooee.bak`), or via GNU Stow when that's already installed and the repo is a package tree. A repo-provided `install.sh` is **not** run unless `COOEE_DOTFILES_RUN_INSTALL=1` | `github.com` (`cache.nixos.org` if `git` is absent) | `COOEE_DOTFILES_RUN_INSTALL=1` to allow the repo's installer |
-| `skills`  | Claude Code agent skills, linked into `~/.claude/skills/`; `skills[owner/repo]` links every skill in a repo, `skills[owner/repo/<skill>]` links just one | `github.com` (`cache.nixos.org` if `git` is absent) | — |
+| `skills`  | Agent skills, linked into `~/.claude/skills/` and, when Codex or Gemini is on the box, `~/.agents/skills/` (see [Agent homes](#agent-homes)); `skills[owner/repo]` links every skill in a repo, `skills[owner/repo/<skill>]` links just one | `github.com` (`cache.nixos.org` if `git` is absent) | — |
 | `tools`   | Arbitrary CLI tools from nixpkgs, by name (`tools[ripgrep,jq,gh]`) | `cache.nixos.org` | — |
 
 `base` is always included; it is the implicit preamble for every request. The
@@ -88,7 +88,8 @@ built-in); `skills` and `tools` are different *kinds* of dependency — see belo
 
 A module isn't necessarily a Nix package — `skills` is the first **other kind
 of dependency**. It clones one or more skill repos and symlinks every skill
-(any directory with a `SKILL.md`) into `~/.claude/skills/`. Which repos is a
+(any directory with a `SKILL.md`) into each agent's skills dir (see
+[Agent homes](#agent-homes)). Which repos is a
 **request parameter**, given in brackets:
 
 ```bash
@@ -668,6 +669,7 @@ Knobs:
 | `COOEE_NO_GRADLE_PROPS=1` | Don't pin the cloud JVM flags on `org.gradle.jvmargs` in the user-dir `gradle.properties` (`$GRADLE_USER_HOME/gradle.properties`). The `java` module writes them there (merge-safe, never overriding a property you set yourself): the proxy host/port + `nonProxyHosts`, the extra-CA truststore, and `-Dfile.encoding=UTF-8`. This is the **primary** channel for those flags — see [JVM flags and `JAVA_TOOL_OPTIONS`](#jvm-flags-and-java_tool_options). |
 | `COOEE_NO_NSS_CA=1` | Don't import the extra/proxy CAs into the browser NSS database at `~/.pki/nssdb`. By default every run (fast path included) does, whenever extra CAs exist: Chromium on Linux — Playwright's, or one the provider's image ships — ignores `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS` and the system store, so behind a TLS-terminating sandbox proxy every HTTPS page fails with `net::ERR_CERT_AUTHORITY_INVALID` without it. `certutil` comes from `nixpkgs#nss.tools` when it isn't on `PATH`. |
 | `COOEE_SWIFT_SYSTEM_DEPS=0` | `swift`: print the distro packages the official toolchain links against instead of installing them as root. |
+| `COOEE_AGENTS` | Which agents besides Claude Code get skills and the environment guides: a comma list of `codex`, `gemini`, or `none`. Replaces the detection described in [Agent homes](#agent-homes). |
 | `COOEE_BASE_URL` | Service base URL baked into the installed SessionStart hook (default `https://env.coo.ee`). |
 
 The [devenv.sh backend](#devenvsh-backend) is selected per request with the
@@ -675,6 +677,35 @@ The [devenv.sh backend](#devenvsh-backend) is selected per request with the
 
 The provisioning stamp lives at `~/.config/coo-ee/provisioned` (the canonical
 module set); delete it to force the next run to re-probe.
+
+## Agent homes
+
+Skills and the environment-wide guides (today the [`build-brief`](#gradle-output-build-brief)
+usage rules) only help an agent that reads them, and each agent reads its own
+home:
+
+| Agent | Skills | Global rules |
+| --- | --- | --- |
+| Claude Code | `~/.claude/skills/` | `~/.claude/CLAUDE.md` (`$CLAUDE_CONFIG_DIR`) |
+| Codex | `~/.agents/skills/` | `$CODEX_HOME/AGENTS.md` (default `~/.codex/AGENTS.md`) |
+| Gemini CLI, Antigravity | `~/.agents/skills/` | `~/.gemini/GEMINI.md` |
+| OpenCode | reads Claude Code's | reads Claude Code's |
+
+Claude Code's home is always written. Codex and Gemini are added when their CLI
+is on `PATH`, their config dir exists, or the run detected them as the
+[provider](#cloud-built-ins--short-circuit); `COOEE_AGENTS` replaces that
+detection. OpenCode is never given a second copy, because it reads both
+`~/.claude/skills/` and `~/.agents/skills/` and would load each skill twice.
+A skill directory another installer already owns (`npx skills`, the
+compose-preview installer) is kept rather than replaced.
+
+Antigravity 1.2.12 does not load `~/.agents/skills/`; install skills there as
+plugins (see [compose-agent-plugins](https://github.com/yschimke/compose-agent-plugins#antigravity)).
+
+The SessionStart hook and the permission allowlist under
+[Auto-activation](#auto-activation) stay Claude Code only: Codex cloud runs its
+setup script once per container and reads the persisted env from `~/.bashrc`,
+and neither Codex nor Gemini takes a Claude-style allowlist.
 
 ## devenv.sh backend
 
@@ -921,9 +952,11 @@ dependency prefetch, the whole step is **best-effort**: Gradle still builds
 without the reducer, so a blocked CDN warns and provisioning continues.
 
 It also installs the part that makes the tool actually get used: a **usage
-guide**, written as a managed block in the global Claude config's `CLAUDE.md`
-(`$CLAUDE_CONFIG_DIR/CLAUDE.md`, default `~/.claude/CLAUDE.md`) — which every
-session in the container loads, whichever checkout it opens. The block is
+guide**, written as a managed block in each agent's global rules file — the
+global Claude config's `CLAUDE.md` (`$CLAUDE_CONFIG_DIR/CLAUDE.md`, default
+`~/.claude/CLAUDE.md`), plus Codex's and Gemini's when they are on the box (see
+[Agent homes](#agent-homes)) — which every session in the container loads,
+whichever checkout it opens. The block is
 delimited by markers and rewritten in place, so re-provisioning updates it
 rather than stacking copies, and surrounding content is preserved. It carries
 build-brief's own per-command rules plus two environment-specific ones: prefer a

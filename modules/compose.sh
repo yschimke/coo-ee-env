@@ -487,7 +487,7 @@ cooee_compose_wrap_render_jdk() {
 # desktop GL libs are built (the wrapper JDK is replayed from the persisted env).
 # A fast-path session doesn't re-pull the skill repo; COOEE_FORCE=1 does.
 cooee_present_compose() {
-  [[ -f "$HOME/.claude/skills/$COOEE_COMPOSE_SKILL/SKILL.md" ]] || return 1
+  cooee_skill_linked "$COOEE_COMPOSE_SKILL" || return 1
   [[ "${COOEE_NO_DESKTOP_GL:-0}" == 1 || -d "$HOME/.cache/coo-ee/desktop-gl/lib" ]]
 }
 
@@ -505,10 +505,9 @@ module_compose() {
   command -v git >/dev/null 2>&1 || die "git not on PATH; cannot install the compose-preview skill."
 
   local repo="$COOEE_COMPOSE_SKILL_REPO" skill="$COOEE_COMPOSE_SKILL"
-  local skills_dir="$HOME/.claude/skills"
   local cache_dir="$HOME/.cache/coo-ee/skills"
   local dest="$cache_dir/${repo//\//-}"
-  mkdir -p "$skills_dir" "$cache_dir"
+  mkdir -p "$cache_dir"
 
   if [[ -d "$dest/.git" ]]; then
     log "updating $repo..."
@@ -526,7 +525,7 @@ module_compose() {
   while IFS= read -r -d '' skillmd; do
     name=$(basename "$(dirname "$skillmd")")
     [[ "$name" == "$skill" ]] || continue
-    ln -sfn "$(dirname "$skillmd")" "$skills_dir/$name"
+    cooee_link_skill "$(dirname "$skillmd")"
     ok "skill: $name  ($repo)"
     linked=1
   done < <(find "$dest" -name SKILL.md -not -path '*/.git/*' -print0 2>/dev/null)

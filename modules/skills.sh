@@ -1,9 +1,11 @@
 
 # ===========================================================================
-#  module: skills — install Claude Code agent skills from one or more repos
+#  module: skills — install agent skills from one or more repos
 #    type     : agent skills (NOT a Nix package) — the first "other kind of
 #               dependency": clones skill repo(s) and links each skill into
-#               ~/.claude/skills/ so the agent picks them up.
+#               ~/.claude/skills/, plus ~/.agents/skills/ when Codex or Gemini
+#               is on the box (see cooee_skill_dirs), so every agent picks
+#               them up.
 #    params   : skills[owner/repo, owner/repo/<skill>, owner/repo@ref, ...]
 #               a path segment after the repo picks one skill by name;
 #               bare `skills` links every skill in yschimke/skills
@@ -25,9 +27,8 @@ module_skills() {
   fi
   command -v git >/dev/null 2>&1 || die "git not on PATH; cannot install skills."
 
-  local skills_dir="$HOME/.claude/skills"
   local cache_dir="$HOME/.cache/coo-ee/skills"
-  mkdir -p "$skills_dir" "$cache_dir"
+  mkdir -p "$cache_dir"
 
   local installed=0 src spec ref repo slug dest owner rest skill
   for src in "${sources[@]}"; do
@@ -66,14 +67,14 @@ module_skills() {
       fi
     fi
 
-    # A skill is any directory containing SKILL.md. Link each one into
-    # ~/.claude/skills/ (symlink so a re-run that re-pulls the repo updates it).
+    # A skill is any directory containing SKILL.md. Link each one into every
+    # agent's skills dir (symlink so a re-run that re-pulls the repo updates it).
     local skillmd name n=0
     while IFS= read -r -d '' skillmd; do
       name=$(basename "$(dirname "$skillmd")")
       # When a skill was named, link only that one (match on the directory name).
       [[ -n "$skill" && "$name" != "${skill##*/}" ]] && continue
-      ln -sfn "$(dirname "$skillmd")" "$skills_dir/$name"
+      cooee_link_skill "$(dirname "$skillmd")"
       ok "skill: $name  ($repo)"
       n=$((n + 1)); installed=$((installed + 1))
     done < <(find "$dest" -name SKILL.md -not -path '*/.git/*' -print0 2>/dev/null)
@@ -85,7 +86,7 @@ module_skills() {
   done
 
   if (( installed )); then
-    ok "skills ready: $installed skill(s) linked into $skills_dir"
+    ok "skills ready: $installed skill(s) linked into $(cooee_skill_dirs | sed "s|^$HOME|~|" | paste -sd, -)"
   else
     warn "no skills installed (check the source repo(s) and network)."
   fi
