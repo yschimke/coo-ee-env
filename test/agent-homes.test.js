@@ -157,3 +157,33 @@ test("a skill found twice in a repo is listed once, preferring the copy outside 
   const one = evalRendered("java", `cooee_find_skills '${repo}' demo`, { COOEE_AGENTS: "none" });
   assert.equal(one, path.join(repo, "skills/demo"));
 });
+
+test("Gemini's configured context file name gets the guide, with any of jq, python3 or node", () => {
+  const cases = [
+    [{ context: { fileName: "CONTEXT.md" } }, "CONTEXT.md"],
+    [{ context: { fileName: ["AGENTS.md", "CONTEXT.md"] } }, "AGENTS.md"],
+    [{ context: { fileName: ["AGENTS.md", "GEMINI.md"] } }, "GEMINI.md"],
+    [{ contextFileName: "LEGACY.md" }, "LEGACY.md"],
+    [{ context: { fileName: "../escape.md" } }, "GEMINI.md"],
+    [{}, "GEMINI.md"],
+  ];
+  // Hide the parsers in turn, so each fallback is exercised wherever it exists.
+  const hide = (names) =>
+    `command() { case "$2" in ${names}) return 1;; esac; builtin command "$@"; }\n`;
+  for (const hidden of ["__none__", "jq", "jq|python3"]) {
+    for (const [settings, want] of cases) {
+      const home = tmpdir("cooee-home-");
+      fs.mkdirSync(path.join(home, ".gemini"));
+      fs.writeFileSync(path.join(home, ".gemini/settings.json"), JSON.stringify(settings));
+      const out = evalRendered("java", `${hide(hidden)}cooee_agent_rules_files`, {
+        HOME: home,
+        COOEE_AGENTS: "gemini",
+      });
+      assert.equal(
+        out.split("\n")[1],
+        path.join(home, ".gemini", want),
+        `${JSON.stringify(settings)} with ${hidden} hidden`,
+      );
+    }
+  }
+});

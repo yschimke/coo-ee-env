@@ -376,8 +376,44 @@ cooee_agent_rules_files() {
     fi
   fi
   if cooee_agent_present gemini; then
-    printf '%s\n' "$HOME/.gemini/GEMINI.md"
+    printf '%s\n' "$HOME/.gemini/$(cooee_gemini_context_file)"
   fi
+}
+
+# The global context file Gemini actually loads. Gemini CLI reads the names in
+# `context.fileName` of ~/.gemini/settings.json (a string or a list; older
+# releases used a top-level `contextFileName`), defaulting to GEMINI.md. With a
+# list, keep GEMINI.md when it is in it, else take the first name. Anything that
+# is not a plain file name, or settings we cannot parse (no jq/python3/node, or
+# JSON with comments), falls back to the default.
+cooee_gemini_context_file() {
+  local settings="$HOME/.gemini/settings.json" name=""
+  if [[ -f "$settings" ]]; then
+    if command -v jq >/dev/null 2>&1; then
+      name=$(jq -r '(.context.fileName // .contextFileName // empty)
+                    | if type == "array" then (if index("GEMINI.md") then "GEMINI.md" else .[0] end)
+                      else . end // empty' "$settings" 2>/dev/null)
+    elif command -v python3 >/dev/null 2>&1; then
+      name=$(python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+v = (d.get("context") or {}).get("fileName") or d.get("contextFileName")
+if isinstance(v, list):
+    v = "GEMINI.md" if "GEMINI.md" in v else (v[0] if v else None)
+if isinstance(v, str):
+    print(v)' "$settings" 2>/dev/null)
+    elif command -v node >/dev/null 2>&1; then
+      name=$(node -e '
+        const d = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+        let v = (d.context || {}).fileName || d.contextFileName;
+        if (Array.isArray(v)) v = v.includes("GEMINI.md") ? "GEMINI.md" : v[0];
+        if (typeof v === "string") console.log(v);' "$settings" 2>/dev/null)
+    fi
+  fi
+  case "$name" in
+    ""|*/*|.|..) printf 'GEMINI.md' ;;
+    *) printf '%s' "$name" ;;
+  esac
 }
 
 # Symlink one skill directory into every agent's skills dir, so a re-run that
