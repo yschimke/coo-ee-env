@@ -248,3 +248,51 @@ test("a disabled plugin, or one that doesn't ship the skill, changes nothing", (
   });
   assert.equal(out, "yes");
 });
+
+test("a stale coo.ee link beside an enabled plugin keeps the box off the fast path", () => {
+  const home = tmpdir("cooee-home-");
+  const repo = path.join(home, ".cache/coo-ee/skills/owner-repo");
+  for (const dir of ["skills/demo", "plugins/bundle/skills/demo"]) {
+    fs.mkdirSync(path.join(repo, dir), { recursive: true });
+    fs.writeFileSync(path.join(repo, dir, "SKILL.md"), "");
+  }
+  // Provisioned first, plugin enabled afterwards.
+  evalRendered("java", `cooee_link_skill '${path.join(repo, "skills/demo")}'`, {
+    HOME: home,
+    COOEE_AGENTS: "none",
+  });
+  fs.writeFileSync(
+    path.join(home, ".claude/settings.json"),
+    JSON.stringify({ enabledPlugins: { "bundle@market": true } }),
+  );
+  const linked = () =>
+    evalRendered("java", "cooee_skill_linked demo && echo yes || echo no", { HOME: home, COOEE_AGENTS: "none" });
+  assert.equal(linked(), "no", "the stale link must send the next run down the full path");
+  evalRendered("java", `cooee_link_skill '${path.join(repo, "skills/demo")}'`, {
+    HOME: home,
+    COOEE_AGENTS: "none",
+  });
+  assert.equal(fs.existsSync(path.join(home, ".claude/skills/demo")), false);
+  assert.equal(linked(), "yes");
+});
+
+test("a plugin's skills come from its own marketplace's cache", () => {
+  const home = tmpdir("cooee-home-");
+  // `bundle` is enabled from market-a; only market-b's cache ships `demo`.
+  for (const [market, skill] of [["market-a", "other"], ["market-b", "demo"]]) {
+    const dir = path.join(home, `.claude/plugins/cache/${market}/bundle/1.0.0/skills/${skill}`);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "SKILL.md"), "");
+  }
+  fs.writeFileSync(
+    path.join(home, ".claude/settings.json"),
+    JSON.stringify({ enabledPlugins: { "bundle@market-a": true } }),
+  );
+  const provides = (name) =>
+    evalRendered("java", `cooee_claude_plugin_provides ${name} && echo yes || echo no`, {
+      HOME: home,
+      COOEE_AGENTS: "none",
+    });
+  assert.equal(provides("demo"), "no");
+  assert.equal(provides("other"), "yes");
+});
