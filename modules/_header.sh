@@ -81,6 +81,27 @@ cooee_unforward_from_harness() {  # cooee_unforward_from_harness KEY
   return 0
 }
 
+# Heal a harness env file another tool poisoned. yschimke/skills' installer
+# (before it learned to quote) appended two kinds of line to it:
+#   * `JAVA_TOOL_OPTIONS=-D… -D…` unquoted, so every Bash call Claude Code makes
+#     ran the second flag as a command ("-Dhttps.proxyPort=…: command not
+#     found"), one more copy per container start; and
+#   * `PATH=~/.local/bin:<jdk>/bin:$PATH`, which put whichever JDK it found
+#     ahead of the one JAVA_HOME names, so `java` and JAVA_HOME disagreed.
+# This script writes neither (JAVA_TOOL_OPTIONS is shell-only, and its PATH lines
+# are expanded, never a literal $PATH), so such lines are someone else's breakage.
+cooee_heal_harness_env() {
+  local file="${CLAUDE_ENV_FILE:-}" tmp
+  local jto="^JAVA_TOOL_OPTIONS=[^'\"][^ ]* "
+  local jdk="^PATH=${HOME}/\.local/bin:[^:]*(jvm|jdk|java)[^:]*/bin:.*\\\$PATH\$"
+  [[ -n "$file" && -f "$file" ]] || return 0
+  grep -qE -- "$jto|$jdk" "$file" 2>/dev/null || return 0
+  tmp=$(mktemp "${file}.cooee.XXXXXX" 2>/dev/null) || return 0
+  grep -vE -- "$jto|$jdk" "$file" > "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$file"
+  ok "Removed lines another installer left in the Claude Code env file (an unquoted JAVA_TOOL_OPTIONS ran as commands in every shell; a PATH entry put a different JDK ahead of JAVA_HOME's)."
+}
+
 # Remove every `KEY=…` line from FILE, atomically. No-op when FILE is empty
 # (harness absent), missing, or carries no such key.
 cooee_env_file_delete() {  # cooee_env_file_delete FILE KEY

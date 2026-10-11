@@ -512,7 +512,11 @@ cooee_compose_cli() {  # <skill repo clone>
     return 0
   fi
   log "compose: installing the compose-preview CLI into ${home/#$HOME/\~}..."
-  if SKILL_DIR="$home" COMPOSE_PREVIEW_HOME="$home" PREFIX="$HOME/.local" \
+  # Without the agent markers the installer writes no harness env file: this
+  # script owns that file, and older installers appended an unquoted, proxy-only
+  # JAVA_TOOL_OPTIONS (and a JAVA_HOME for whichever JDK they found) to it.
+  if env -u CLAUDE_ENV_FILE -u CLAUDE_CODE_SESSION_ID -u CODEX_SANDBOX -u CODEX_SESSION_ID \
+       SKILL_DIR="$home" COMPOSE_PREVIEW_HOME="$home" PREFIX="$HOME/.local" \
        bash "$installer" --cli-only --no-modify-path >&2; then
     ok "compose: compose-preview CLI on PATH ($bin/compose-preview)."
   else

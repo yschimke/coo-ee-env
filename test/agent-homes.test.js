@@ -296,3 +296,40 @@ test("a plugin's skills come from its own marketplace's cache", () => {
   assert.equal(provides("demo"), "no");
   assert.equal(provides("other"), "yes");
 });
+
+test("lines another installer poisoned the Claude env file with are removed", () => {
+  const dir = tmpdir("cooee-envfile-");
+  const home = tmpdir("cooee-home-");
+  const file = path.join(dir, "sessionstart-hook-0.sh");
+  fs.writeFileSync(
+    file,
+    [
+      "JAVA_TOOL_OPTIONS=-Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=40101",
+      "ANDROID_HOME=/opt/android-sdk",
+      "JAVA_TOOL_OPTIONS=-Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=44713",
+      "OTHER_TOOL_OPTIONS=-Da -Db",
+      `PATH=${home}/.local/bin:/usr/lib/jvm/java-21-openjdk-amd64/bin:$PATH`,
+      "PATH=/opt/android-sdk/platform-tools:/usr/bin",
+      `PATH=${home}/.local/bin:/opt/tools/bin:$PATH`,
+      "",
+    ].join("\n"),
+  );
+  const out = evalRendered("java", "cooee_heal_harness_env", { HOME: home, CLAUDE_ENV_FILE: file });
+  assert.match(out, /Removed lines another installer left/);
+  assert.equal(
+    fs.readFileSync(file, "utf8"),
+    [
+      "ANDROID_HOME=/opt/android-sdk",
+      "OTHER_TOOL_OPTIONS=-Da -Db",
+      "PATH=/opt/android-sdk/platform-tools:/usr/bin",
+      `PATH=${home}/.local/bin:/opt/tools/bin:$PATH`,
+      "",
+    ].join("\n"),
+  );
+
+  // A quoted value, or a one-word one, sources cleanly and is left alone.
+  const ok = "JAVA_TOOL_OPTIONS='-Da -Db'\n";
+  fs.writeFileSync(file, ok);
+  evalRendered("java", "cooee_heal_harness_env", { HOME: tmpdir("cooee-home-"), CLAUDE_ENV_FILE: file });
+  assert.equal(fs.readFileSync(file, "utf8"), ok);
+});

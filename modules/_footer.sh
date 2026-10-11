@@ -53,6 +53,7 @@ cooee_builtin_pass() {
 main() {
   cooee_detect_provider
   log "coo.ee/env ${COOEE_VERSION} — modules: ${MODULES[*]:-} — provider: ${COOEE_PROVIDER}"
+  cooee_heal_harness_env
 
   if cooee_already_provisioned; then
     ok "Already provisioned (${MODULES[*]:-}); skipping install."
