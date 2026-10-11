@@ -326,6 +326,100 @@ cooee_global_claude_dir() {
   printf '%s' "${CLAUDE_CONFIG_DIR:-${HOME%/}/.claude}"
 }
 
+# ---- Agent homes ----------------------------------------------------------
+# Skills and environment-wide rules only help an agent that reads them, and
+# each agent reads its own home:
+#
+#   Claude Code   skills  ~/.claude/skills    rules  ~/.claude/CLAUDE.md
+#   Codex         skills  ~/.agents/skills    rules  $CODEX_HOME/AGENTS.md
+#   Gemini CLI /  skills  ~/.agents/skills    rules  ~/.gemini/GEMINI.md
+#   Antigravity
+#
+# OpenCode reads ~/.claude/skills and ~/.claude/CLAUDE.md itself, so it needs
+# nothing extra. It also scans ~/.agents/skills, so on a box that has OpenCode
+# beside Codex or Gemini it sees each skill twice; COOEE_AGENTS=none avoids that
+# at the cost of the other agents' copy. Claude Code is always targeted — it is what the SessionStart hook
+# re-provisions. Codex and Gemini count when their CLI is on PATH, their config
+# dir exists, or they are the provider this run detected; COOEE_AGENTS (e.g.
+# `codex,gemini`, or `none`) replaces that detection.
+cooee_agent_present() {  # cooee_agent_present <codex|gemini>
+  if [[ -n "${COOEE_AGENTS:-}" ]]; then
+    [[ ",${COOEE_AGENTS}," == *",$1,"* ]]; return
+  fi
+  case "$1" in
+    codex)  [[ "$COOEE_PROVIDER" == codex ]] || command -v codex >/dev/null 2>&1 \
+              || [[ -d "${CODEX_HOME:-$HOME/.codex}" ]] ;;
+    gemini) [[ "$COOEE_PROVIDER" == gemini ]] || command -v gemini >/dev/null 2>&1 \
+              || [[ -d "$HOME/.gemini" ]] ;;
+    *) return 1 ;;
+  esac
+}
+
+# Every skills dir to link into, one per line.
+cooee_skill_dirs() {
+  printf '%s\n' "$HOME/.claude/skills"
+  if cooee_agent_present codex || cooee_agent_present gemini; then
+    printf '%s\n' "$HOME/.agents/skills"
+  fi
+}
+
+# Every global rules file to write an environment-wide guide into, one per line.
+cooee_agent_rules_files() {
+  printf '%s\n' "$(cooee_global_claude_dir)/CLAUDE.md"
+  if cooee_agent_present codex; then
+    # Codex reads only the first non-empty of AGENTS.override.md, AGENTS.md.
+    local codex="${CODEX_HOME:-$HOME/.codex}"
+    if [[ -s "$codex/AGENTS.override.md" ]]; then
+      printf '%s\n' "$codex/AGENTS.override.md"
+    else
+      printf '%s\n' "$codex/AGENTS.md"
+    fi
+  fi
+  if cooee_agent_present gemini; then
+    printf '%s\n' "$HOME/.gemini/GEMINI.md"
+  fi
+}
+
+# Symlink one skill directory into every agent's skills dir, so a re-run that
+# re-pulls the repo updates them all. A real directory already there belongs to
+# another installer (npx skills, the compose-preview installer) and is kept:
+# `ln -sfn` would otherwise link *inside* it.
+cooee_link_skill() {  # cooee_link_skill <skill dir>
+  local src="$1" name d; name=$(basename "$src")
+  while IFS= read -r d; do
+    mkdir -p "$d" || { warn "skill: couldn't create $d"; continue; }
+    if [[ -d "$d/$name" && ! -L "$d/$name" ]]; then
+      warn "skill: kept ${d/#$HOME/\~}/$name, installed by something else."
+      continue
+    fi
+    ln -sfn "$src" "$d/$name"
+  done < <(cooee_skill_dirs)
+}
+
+# Every skill directory in a cloned repo, one per skill name. A skills repo can
+# carry the same skill twice — yschimke/skills keeps `skills/<name>` and a
+# generated copy under `plugins/<bundle>/skills/<name>` for its marketplace —
+# so prefer a path outside a `plugins/` dir and drop later duplicates. With a
+# <name>, print only that skill.
+cooee_find_skills() {  # cooee_find_skills <repo dir> [name]
+  local dir="$1" only="${2:-}"
+  find "$dir" -name SKILL.md -not -path '*/.git/*' 2>/dev/null \
+    | awk '{ print (index($0, "/plugins/") ? 1 : 0) "\t" $0 }' | sort \
+    | while IFS=$'\t' read -r _ md; do
+        local d; d=$(dirname "$md")
+        printf '%s\t%s\n' "$(basename "$d")" "$d"
+      done \
+    | awk -F'\t' -v only="$only" '(only == "" || $1 == only) && !seen[$1]++ { print $2 }'
+}
+
+# True when <name> is linked (or otherwise installed) in every agent's skills dir.
+cooee_skill_linked() {  # cooee_skill_linked <name>
+  local d
+  while IFS= read -r d; do
+    [[ -f "$d/$1/SKILL.md" ]] || return 1
+  done < <(cooee_skill_dirs)
+}
+
 # Install/merge the SessionStart hook AND the toolchain's permission allowlist
 # into the user's GLOBAL Claude config ($HOME/.claude/settings.json) — the
 # environment, never a project checkout.

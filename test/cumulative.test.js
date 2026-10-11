@@ -114,14 +114,26 @@ test("a second request keeps the first one's env, stamp and hook", { skip: !have
   assert.match(cmds[0], /env\.coo\.ee\/java,node /);
 });
 
-test("compose counts as present once its skill and GL libs are in place", () => {
+test("compose counts as present once its skill, CLI and GL libs are in place", () => {
   const home = scratch("home");
-  const present = (extra = {}) => evalIn("compose", "module_present compose && echo yes || echo no", home, extra);
+  const bin = path.join(home, "bin");
+  fs.mkdirSync(bin);
+  const withCli = `${bin}:${process.env.PATH}`;
+  const present = (extra = {}) =>
+    evalIn("compose", "module_present compose && echo yes || echo no", home, {
+      COOEE_AGENTS: "none",
+      PATH: withCli,
+      ...extra,
+    });
   assert.equal(present(), "no");
   fs.mkdirSync(path.join(home, ".claude", "skills", "compose-preview"), { recursive: true });
   fs.writeFileSync(path.join(home, ".claude", "skills", "compose-preview", "SKILL.md"), "");
+  assert.equal(present({ COOEE_NO_DESKTOP_GL: "1" }), "no", "CLI still missing");
+  fs.writeFileSync(path.join(bin, "compose-preview"), "#!/bin/sh\n", { mode: 0o755 });
   assert.equal(present(), "no", "GL libs still missing");
   assert.equal(present({ COOEE_NO_DESKTOP_GL: "1" }), "yes");
   fs.mkdirSync(path.join(home, ".cache", "coo-ee", "desktop-gl", "lib"), { recursive: true });
   assert.equal(present(), "yes");
+  fs.rmSync(path.join(bin, "compose-preview"));
+  assert.equal(present({ COOEE_NO_COMPOSE_CLI: "1" }), "yes", "the CLI can be opted out");
 });

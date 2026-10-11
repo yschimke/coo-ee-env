@@ -38,6 +38,8 @@
 register_module compose
 need_host github.com      "git clone of the compose-preview skill repo"
 want_host cache.nixos.org "git + the Compose Desktop native GL libs (libGL/libX11/fontconfig/libstdc++), from the Nix cache"
+want_host api.github.com "the compose-preview CLI's latest release (COOEE_NO_COMPOSE_CLI=1 to skip)"
+want_host release-assets.githubusercontent.com "the compose-preview CLI release tarball"
 
 # The skill source is overridable for forks/pins, but defaults to the canonical
 # repo + skill name.
@@ -480,6 +482,41 @@ cooee_compose_wrap_render_jdk() {
   ok "compose: render JDK $major wraps $real and carries $COOEE_DESKTOP_GL_LIB (only this JDK sees the store libs; LD_LIBRARY_PATH is left alone, and Gradle picks the daemon JVM itself)."
 }
 
+# The compose-preview CLI, from the skill repo's own installer. The skill's stub
+# bootstraps it on first use, but an MCP host (the compose-preview plugin's
+# `compose-preview mcp serve`) needs it on PATH before any skill runs.
+#
+# The CLI goes to its own home, never into a skills dir: the skill dirs are this
+# script's symlinks into the clone, and the installer would otherwise unpack into
+# ~/.agents/skills/compose-preview, leaving a SKILL.md-less dir that later
+# blocks the Codex/Gemini link. SKILL_DIR + COMPOSE_PREVIEW_HOME pin that with
+# installers that predate --cli-home; persisting COMPOSE_PREVIEW_HOME keeps
+# `compose-preview update` on the same home. Best effort: the skill still works
+# (and bootstraps) without it. Opt out with COOEE_NO_COMPOSE_CLI=1.
+cooee_compose_cli() {  # <skill repo clone>
+  if [[ "${COOEE_NO_COMPOSE_CLI:-0}" == 1 ]]; then
+    log "compose: skipping the compose-preview CLI (COOEE_NO_COMPOSE_CLI=1)."
+    return 0
+  fi
+  local installer="$1/scripts/install.sh"
+  local home="${COMPOSE_PREVIEW_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/compose-preview}"
+  local bin="$HOME/.local/bin"
+  add_env COMPOSE_PREVIEW_HOME "$home"
+  case ":${PATH}:" in *":$bin:"*) : ;; *) add_env PATH "$bin:$PATH" ;; esac
+  if [[ ! -f "$installer" ]]; then
+    warn "compose: no scripts/install.sh in the skill repo; the skill will bootstrap its CLI on first use."
+    return 0
+  fi
+  log "compose: installing the compose-preview CLI into ${home/#$HOME/\~}..."
+  if SKILL_DIR="$home" COMPOSE_PREVIEW_HOME="$home" PREFIX="$HOME/.local" \
+       bash "$installer" --cli-only --no-modify-path >&2; then
+    ok "compose: compose-preview CLI on PATH ($bin/compose-preview)."
+  else
+    warn "compose: the compose-preview installer failed; the skill will bootstrap its CLI on first use."
+  fi
+  return 0
+}
+
 # Presence for the framework (fast path / adopt pass). compose installs no tool
 # on PATH, so without this it was never "present" — and every box with compose
 # in its request redid the whole provisioning on every session instead of taking
@@ -487,7 +524,8 @@ cooee_compose_wrap_render_jdk() {
 # desktop GL libs are built (the wrapper JDK is replayed from the persisted env).
 # A fast-path session doesn't re-pull the skill repo; COOEE_FORCE=1 does.
 cooee_present_compose() {
-  [[ -f "$HOME/.claude/skills/$COOEE_COMPOSE_SKILL/SKILL.md" ]] || return 1
+  cooee_skill_linked "$COOEE_COMPOSE_SKILL" || return 1
+  [[ "${COOEE_NO_COMPOSE_CLI:-0}" == 1 ]] || command -v compose-preview >/dev/null 2>&1 || return 1
   [[ "${COOEE_NO_DESKTOP_GL:-0}" == 1 || -d "$HOME/.cache/coo-ee/desktop-gl/lib" ]]
 }
 
@@ -505,10 +543,9 @@ module_compose() {
   command -v git >/dev/null 2>&1 || die "git not on PATH; cannot install the compose-preview skill."
 
   local repo="$COOEE_COMPOSE_SKILL_REPO" skill="$COOEE_COMPOSE_SKILL"
-  local skills_dir="$HOME/.claude/skills"
   local cache_dir="$HOME/.cache/coo-ee/skills"
   local dest="$cache_dir/${repo//\//-}"
-  mkdir -p "$skills_dir" "$cache_dir"
+  mkdir -p "$cache_dir"
 
   if [[ -d "$dest/.git" ]]; then
     log "updating $repo..."
@@ -522,14 +559,14 @@ module_compose() {
   fi
 
   # Link just the requested skill — the directory named <skill> holding SKILL.md.
-  local skillmd name linked=0
-  while IFS= read -r -d '' skillmd; do
-    name=$(basename "$(dirname "$skillmd")")
-    [[ "$name" == "$skill" ]] || continue
-    ln -sfn "$(dirname "$skillmd")" "$skills_dir/$name"
-    ok "skill: $name  ($repo)"
+  local skilldir linked=0
+  while IFS= read -r skilldir; do
+    cooee_link_skill "$skilldir"
+    ok "skill: $(basename "$skilldir")  ($repo)"
     linked=1
-  done < <(find "$dest" -name SKILL.md -not -path '*/.git/*' -print0 2>/dev/null)
+  done < <(cooee_find_skills "$dest" "$skill")
+
+  cooee_compose_cli "$dest"
 
   if (( linked )); then
     ok "compose ready: '$skill' skill linked; JDK + Android SDK come from the java/android modules."
