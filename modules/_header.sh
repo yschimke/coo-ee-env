@@ -444,9 +444,21 @@ if isinstance(v, str):
 # re-pulls the repo updates them all. A real directory already there belongs to
 # another installer (npx skills, the compose-preview installer) and is kept:
 # `ln -sfn` would otherwise link *inside* it.
+#
+# Claude Code is skipped for a skill an enabled Claude plugin already ships
+# (yschimke/skills' `compose-skills` bundle, say): a second copy under
+# ~/.claude/skills would load every skill twice. A link an earlier run left there
+# is removed; anything else is left alone.
 cooee_link_skill() {  # cooee_link_skill <skill dir>
   local src="$1" name d; name=$(basename "$src")
   while IFS= read -r d; do
+    if [[ "$d" == "$HOME/.claude/skills" ]] && cooee_claude_plugin_provides "$name"; then
+      if [[ -L "$d/$name" && "$(readlink "$d/$name")" == "$HOME/.cache/coo-ee/"* ]]; then
+        rm -f "$d/$name"
+      fi
+      log "skill: $name comes from an enabled Claude plugin; not linking it into ~/.claude/skills."
+      continue
+    fi
     mkdir -p "$d" || { warn "skill: couldn't create $d"; continue; }
     if [[ -d "$d/$name" && ! -L "$d/$name" ]]; then
       warn "skill: kept ${d/#$HOME/\~}/$name, installed by something else."
@@ -473,11 +485,53 @@ cooee_find_skills() {  # cooee_find_skills <repo dir> [name]
 }
 
 # True when <name> is linked (or otherwise installed) in every agent's skills dir.
+# For Claude Code, an enabled plugin that ships the skill counts.
 cooee_skill_linked() {  # cooee_skill_linked <name>
   local d
   while IFS= read -r d; do
-    [[ -f "$d/$1/SKILL.md" ]] || return 1
+    [[ -f "$d/$1/SKILL.md" ]] && continue
+    [[ "$d" == "$HOME/.claude/skills" ]] && cooee_claude_plugin_provides "$1" && continue
+    return 1
   done < <(cooee_skill_dirs)
+}
+
+# The Claude Code plugins enabled in the global settings (`enabledPlugins`, keyed
+# `<plugin>@<marketplace>`), one plugin name per line.
+cooee_claude_enabled_plugins() {
+  local settings; settings="$(cooee_global_claude_dir)/settings.json"
+  [[ -f "$settings" ]] || return 0
+  if command -v jq >/dev/null 2>&1; then
+    jq -r '(.enabledPlugins // {}) | to_entries[] | select(.value == true) | .key | split("@")[0]' \
+      "$settings" 2>/dev/null
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -c '
+import json, sys
+for k, v in (json.load(open(sys.argv[1])).get("enabledPlugins") or {}).items():
+    if v is True:
+        print(k.split("@")[0])' "$settings" 2>/dev/null
+  elif command -v node >/dev/null 2>&1; then
+    node -e '
+      const p = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).enabledPlugins || {};
+      for (const [k, v] of Object.entries(p)) if (v === true) console.log(k.split("@")[0]);' \
+      "$settings" 2>/dev/null
+  fi
+  return 0
+}
+
+# True when an enabled Claude plugin ships skill <name>. A plugin's skills are
+# read from Claude Code's plugin cache, or, before the first session has filled
+# that cache, from the `plugins/<plugin>/skills/` bundles of the skill repos this
+# script has cloned (yschimke/skills generates its marketplace bundles there).
+cooee_claude_plugin_provides() {  # cooee_claude_plugin_provides <name>
+  local name="$1" plugin f
+  while IFS= read -r plugin; do
+    [[ -n "$plugin" ]] || continue
+    for f in "$(cooee_global_claude_dir)"/plugins/cache/*/"$plugin"/*/skills/"$name"/SKILL.md \
+             "$HOME"/.cache/coo-ee/skills/*/plugins/"$plugin"/skills/"$name"/SKILL.md; do
+      [[ -f "$f" ]] && return 0
+    done
+  done < <(cooee_claude_enabled_plugins)
+  return 1
 }
 
 # Install/merge the SessionStart hook AND the toolchain's permission allowlist

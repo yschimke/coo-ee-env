@@ -44,7 +44,11 @@ want_host release-assets.githubusercontent.com "the compose-preview CLI release 
 # The skill source is overridable for forks/pins, but defaults to the canonical
 # repo + skill name.
 COOEE_COMPOSE_SKILL_REPO="${COOEE_COMPOSE_SKILL_REPO:-yschimke/skills}"
-COOEE_COMPOSE_SKILL="${COOEE_COMPOSE_SKILL:-compose-preview}"
+# The skills linked: yschimke/skills' default pair, the same two its installer
+# and its `compose-skills` plugin bundle install. COOEE_COMPOSE_SKILLS
+# (space-separated) overrides the list; the older single-skill
+# COOEE_COMPOSE_SKILL still works and links just that one.
+COOEE_COMPOSE_SKILLS="${COOEE_COMPOSE_SKILLS:-${COOEE_COMPOSE_SKILL:-compose-preview compose-ui-builder}}"
 
 # The Nix packages whose libraries skiko (Compose Desktop's Skia backend) needs
 # at load time, beyond the glibc the JVM already provides. skiko's
@@ -520,11 +524,14 @@ cooee_compose_cli() {  # <skill repo clone>
 # Presence for the framework (fast path / adopt pass). compose installs no tool
 # on PATH, so without this it was never "present" — and every box with compose
 # in its request redid the whole provisioning on every session instead of taking
-# the fast path. It's present when the skill is linked and, unless opted out, the
+# the fast path. It's present when the skills are linked and, unless opted out, the
 # desktop GL libs are built (the wrapper JDK is replayed from the persisted env).
 # A fast-path session doesn't re-pull the skill repo; COOEE_FORCE=1 does.
 cooee_present_compose() {
-  cooee_skill_linked "$COOEE_COMPOSE_SKILL" || return 1
+  local skill
+  for skill in $COOEE_COMPOSE_SKILLS; do
+    cooee_skill_linked "$skill" || return 1
+  done
   [[ "${COOEE_NO_COMPOSE_CLI:-0}" == 1 ]] || command -v compose-preview >/dev/null 2>&1 || return 1
   [[ "${COOEE_NO_DESKTOP_GL:-0}" == 1 || -d "$HOME/.cache/coo-ee/desktop-gl/lib" ]]
 }
@@ -542,7 +549,7 @@ module_compose() {
   fi
   command -v git >/dev/null 2>&1 || die "git not on PATH; cannot install the compose-preview skill."
 
-  local repo="$COOEE_COMPOSE_SKILL_REPO" skill="$COOEE_COMPOSE_SKILL"
+  local repo="$COOEE_COMPOSE_SKILL_REPO" skill
   local cache_dir="$HOME/.cache/coo-ee/skills"
   local dest="$cache_dir/${repo//\//-}"
   mkdir -p "$cache_dir"
@@ -558,19 +565,22 @@ module_compose() {
       || { warn "compose: clone failed for $repo (is github.com reachable?)"; return 0; }
   fi
 
-  # Link just the requested skill — the directory named <skill> holding SKILL.md.
-  local skilldir linked=0
-  while IFS= read -r skilldir; do
+  # Link just the requested skills — each the directory named <skill> holding SKILL.md.
+  local skilldir linked=()
+  for skill in $COOEE_COMPOSE_SKILLS; do
+    skilldir=$(cooee_find_skills "$dest" "$skill")
+    if [[ -z "$skilldir" ]]; then
+      warn "compose: skill '$skill' not found in $repo — not linked."
+      continue
+    fi
     cooee_link_skill "$skilldir"
-    ok "skill: $(basename "$skilldir")  ($repo)"
-    linked=1
-  done < <(cooee_find_skills "$dest" "$skill")
+    ok "skill: $skill  ($repo)"
+    linked+=("$skill")
+  done
 
   cooee_compose_cli "$dest"
 
-  if (( linked )); then
-    ok "compose ready: '$skill' skill linked; JDK + Android SDK come from the java/android modules."
-  else
-    warn "compose: skill '$skill' not found in $repo — nothing linked."
+  if (( ${#linked[@]} )); then
+    ok "compose ready: ${linked[*]} linked; JDK + Android SDK come from the java/android modules."
   fi
 }

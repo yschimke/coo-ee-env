@@ -118,16 +118,25 @@ test("compose counts as present once its skill, CLI and GL libs are in place", (
   const home = scratch("home");
   const bin = path.join(home, "bin");
   fs.mkdirSync(bin);
-  const withCli = `${bin}:${process.env.PATH}`;
+  // Only the fixture's CLI counts: a box provisioned by coo.ee has a real one on PATH.
+  const onlyFixtureCli = `command() {
+    if [ "$1" = -v ] && [ "$2" = compose-preview ]; then [ -x "${bin}/compose-preview" ]; return; fi
+    builtin command "$@"
+  }
+  `;
   const present = (extra = {}) =>
-    evalIn("compose", "module_present compose && echo yes || echo no", home, {
+    evalIn("compose", `${onlyFixtureCli}module_present compose && echo yes || echo no`, home, {
       COOEE_AGENTS: "none",
-      PATH: withCli,
       ...extra,
     });
   assert.equal(present(), "no");
-  fs.mkdirSync(path.join(home, ".claude", "skills", "compose-preview"), { recursive: true });
-  fs.writeFileSync(path.join(home, ".claude", "skills", "compose-preview", "SKILL.md"), "");
+  const skill = (name) => {
+    fs.mkdirSync(path.join(home, ".claude", "skills", name), { recursive: true });
+    fs.writeFileSync(path.join(home, ".claude", "skills", name, "SKILL.md"), "");
+  };
+  skill("compose-preview");
+  assert.equal(present({ COOEE_NO_DESKTOP_GL: "1", COOEE_NO_COMPOSE_CLI: "1" }), "no", "compose-ui-builder still missing");
+  skill("compose-ui-builder");
   assert.equal(present({ COOEE_NO_DESKTOP_GL: "1" }), "no", "CLI still missing");
   fs.writeFileSync(path.join(bin, "compose-preview"), "#!/bin/sh\n", { mode: 0o755 });
   assert.equal(present(), "no", "GL libs still missing");
