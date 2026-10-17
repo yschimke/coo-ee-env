@@ -172,3 +172,36 @@ test("swift pre-approves the toolchain and participates in recommendations", () 
   const { recommend } = require("../api/env/recommend");
   assert.ok(recommend("swift").recommendations.some((r) => r.spec.includes("swiftlint")));
 });
+
+for (const legacy of [false, true]) {
+  test(`Nix Swift validates a working ${legacy ? "legacy wrapper" : "self-contained SDK"} without leaking its library path`, () => {
+    const home = scratch("nix-swift");
+    const tools = path.join(home, "tools");
+    fs.mkdirSync(tools);
+    fs.writeFileSync(path.join(tools, "swift"), '#!/bin/sh\necho "Swift version 6.2.4"\n', { mode: 0o755 });
+    fs.writeFileSync(path.join(tools, "swiftc"), `#!/usr/bin/env bash
+[[ "$1" == */main.swift && "$2" == -o ]] || exit 1
+grep -q 'import Foundation' "$1" || exit 1
+grep -q 'import Dispatch' "$1" || exit 1
+printf '#!/bin/sh\\necho cooee-swift-ready\\n' > "$3"
+chmod +x "$3"
+`, { mode: 0o755 });
+    const out = run("swift[nix]", `
+nix() {
+  case "$1" in
+    build) mkdir -p "$COOEE_SWIFT_NIX_DIR/toolchain/bin"; cp "$COOEE_TEST_TOOLS/"* "$COOEE_SWIFT_NIX_DIR/toolchain/bin/" ;;
+    print-dev-env) printf '%s\\n' 'export NIX_LDFLAGS="-L /nix/store/test/lib"' ${legacy ? "'export NIX_SWIFTFLAGS_COMPILE=\"-I /nix/store/test/lib/swift\"'" : ""} ;;
+    *) return 1 ;;
+  esac
+}
+module_swift nix
+[[ -z "\${LD_LIBRARY_PATH:-}" ]] || exit 1
+echo session-clean
+`, { HOME: home, COOEE_SWIFT_NIX_DIR: path.join(home, "sdk"), COOEE_TEST_TOOLS: tools, COOEE_FORCE: "1" });
+    assert.match(out, /swift ready \(nixpkgs\): Swift 6\.2\.4/);
+    assert.match(out, /session-clean/);
+    const wrapperEnv = fs.readFileSync(path.join(home, "sdk/env.sh"), "utf8");
+    assert.match(wrapperEnv, /NIX_LDFLAGS/);
+    if (legacy) assert.match(wrapperEnv, /NIX_SWIFTFLAGS_COMPILE/);
+  });
+}
