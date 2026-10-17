@@ -2,5 +2,15 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "local>yschimke/renovate-config"
+  ],
+  "packageRules": [
+    {
+      "description": "Keep the Playwright test runner and both browser images on the same release; Playwright requires the browser revision shipped by its matching image.",
+      "matchPackageNames": [
+        "@playwright/test",
+        "mcr.microsoft.com/playwright"
+      ],
+      "groupName": "playwright-monorepo"
+    }
   ]
 }
