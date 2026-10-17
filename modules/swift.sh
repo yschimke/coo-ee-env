@@ -143,8 +143,6 @@ cooee_swift_via_nix() {
     done
   ) > "$dir/env.sh"
   rm -rf "$tmp" "$devenv"
-  grep -q '^export NIX_SWIFTFLAGS_COMPILE=' "$dir/env.sh" \
-    || die "swift: the Nix Swift shell exported no NIX_SWIFTFLAGS_COMPILE; can't wrap the toolchain."
   # The manifest (and test runner) link libdispatch/Foundation/XCTest by soname.
   printf 'export LD_LIBRARY_PATH=%q"${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"\n' \
     "$dir/toolchain/lib:$dir/toolchain/lib/swift/linux" >> "$dir/env.sh"
@@ -156,6 +154,18 @@ cooee_swift_via_nix() {
     printf '#!/usr/bin/env bash\n. %q\nexec %q "$@"\n' "$dir/env.sh" "$b" > "$dir/bin/${b##*/}"
     chmod +x "$dir/bin/${b##*/}"
   done
+
+  # Older Nix Swift needs NIX_SWIFTFLAGS_COMPILE; the newer self-contained SDK
+  # exports none. Validate the compiler and its libraries instead of requiring
+  # one implementation detail of the old wrapper.
+  local probe; probe="$(mktemp -d)"
+  printf 'import Foundation\nimport Dispatch\nprint("cooee-swift-ready")\n' > "$probe/main.swift"
+  if ! "$dir/bin/swiftc" "$probe/main.swift" -o "$probe/check" \
+      || [[ "$("$probe/check")" != cooee-swift-ready ]]; then
+    rm -rf "$probe"
+    die "swift: the Nix toolchain cannot compile and run a Foundation/Dispatch program. $(cooee_nixpkgs_hint)"
+  fi
+  rm -rf "$probe"
 
   add_env PATH "$dir/bin:$PATH"
   export PATH="$dir/bin:$PATH"
