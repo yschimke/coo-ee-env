@@ -396,8 +396,7 @@ def jdkHome = { task ->
 // library path is not ours to reshuffle.
 def retune = { task ->
   try {
-    def env = new LinkedHashMap<String, Object>(task.environment)
-    def cur = env.get('LD_LIBRARY_PATH')
+    def cur = task.environment.get('LD_LIBRARY_PATH')
     def parts = new ArrayList<String>()
     if (cur != null) {
       for (String p : cur.toString().tokenize(sep)) { if (p != glDir) parts.add(p) }
@@ -405,16 +404,21 @@ def retune = { task ->
     if (wantsGl(jdkHome(task))) parts.add(0, glDir)
     // '' is a search path of no directories, not a missing variable — but a
     // forked env cannot express "unset", and glibc treats the two the same.
-    env.put('LD_LIBRARY_PATH', parts.join(sep))
-    task.environment = env
+    task.environment('LD_LIBRARY_PATH', parts.join(sep))
   } catch (Throwable t) {
     task.logger.info("coo.ee/env: leaving LD_LIBRARY_PATH alone for \${task.path}: \${t}")
   }
 }
 
-gradle.allprojects { proj ->
-  proj.tasks.withType(org.gradle.api.tasks.testing.Test).configureEach { t -> t.doFirst { retune(t) } }
-  proj.tasks.withType(org.gradle.api.tasks.JavaExec).configureEach { t -> t.doFirst { retune(t) } }
+// Once the graph is ready, not in a doFirst: Gradle hashes every task action's
+// implementation into the build cache key, so an action added here would give
+// each Test and JavaExec a key no CI runner shares, and every one of them would
+// miss a remote cache that CI filled. The environment is not a key input for
+// either type, and by now each task's toolchain launcher is final.
+gradle.taskGraph.whenReady { graph ->
+  graph.allTasks.each { t ->
+    if (t instanceof org.gradle.api.tasks.testing.Test || t instanceof org.gradle.api.tasks.JavaExec) retune(t)
+  }
 }
 EOF
 

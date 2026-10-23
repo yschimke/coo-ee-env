@@ -253,7 +253,10 @@ toolchain back to the real JDK and forks its launcher straight past the shim. So
 `$GRADLE_USER_HOME/init.d/cooee-desktop-gl.init.gradle`, which retunes
 `LD_LIBRARY_PATH` on each forked `Test` / `JavaExec` from the JDK that fork will
 actually run on: the store dir is removed for a system JVM, and **added** for a
-store JVM — which is the one thing the wrapper could never do. Skip it with
+store JVM — which is the one thing the wrapper could never do. It does that once
+the task graph is ready rather than in a `doFirst`, because Gradle hashes task
+actions into the build cache key: an added action would make every `Test` and
+`JavaExec` miss a remote build cache that CI filled. Skip it with
 `COOEE_NO_GRADLE_INIT=1`.
 
 `tools` is the same idea for the long tail of CLIs that don't deserve their own

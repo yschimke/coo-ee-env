@@ -334,6 +334,23 @@ test("the init script hands the GL dir to store JDKs and withholds it from the r
   assert.match(init, /org\.gradle\.api\.tasks\.JavaExec/);
 });
 
+test("the init script adds no task action, so Test and JavaExec keep CI's build cache keys", () => {
+  // Gradle hashes every task action's implementation into the build cache key. A doFirst from
+  // this script gave each Test and JavaExec a key no CI runner shares, so every one of them
+  // missed a remote cache that CI had filled. The environment is not a key input for either.
+  const guh = scratch("guh-init-cache-key");
+  run(`
+    GRADLE_USER_HOME="${guh}"
+    cooee_gradle_init_desktop_gl /opt/gl/lib >/dev/null
+  `);
+  const init = fs.readFileSync(path.join(guh, INIT_REL), "utf8");
+
+  assert.equal(/\.(doFirst|doLast)\s*[({]/.test(init), false);
+  assert.match(init, /gradle\.taskGraph\.whenReady/);
+  // Only LD_LIBRARY_PATH is set; the rest of the fork's environment is left as Gradle built it.
+  assert.match(init, /task\.environment\('LD_LIBRARY_PATH', parts\.join\(sep\)\)/);
+});
+
 test("rewriting the init script tracks a moved GL dir instead of stacking rules", () => {
   const guh = scratch("guh-init2");
   const out = run(`
