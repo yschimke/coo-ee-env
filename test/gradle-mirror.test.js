@@ -77,3 +77,23 @@ test("COOEE_MAVEN_MIRROR_URL overrides the mirror", () => {
   run(guh, { COOEE_MAVEN_MIRROR_URL: "https://mirror.example/maven2/" });
   assert.match(fs.readFileSync(path.join(guh, INIT), "utf8"), /def mirrorUrl = 'https:\/\/mirror\.example\/maven2\/'/);
 });
+
+test("routes through a Maven cache only when the environment configures one", () => {
+  const guh = scratch();
+  // Set at provision time: still nothing baked in. The script reads the variables when Gradle runs.
+  run(guh, { COO_MAVEN_URL: "https://cache.example/", COO_MAVEN_USER: "u", COO_MAVEN_TOKEN: "sekrit" });
+  const init = fs.readFileSync(path.join(guh, INIT), "utf8");
+  assert.doesNotMatch(init, /cache\.example|sekrit/);
+  assert.doesNotMatch(init, /maven\.coo\.ee/);
+  for (const name of ["COO_MAVEN_URL", "COO_MAVEN_USER", "COO_MAVEN_TOKEN"]) {
+    assert.match(init, new RegExp(`envOf\\('${name}'\\)`));
+  }
+  assert.match(init, /def cacheOn = cacheBase && cacheUser && cacheToken/);
+  assert.match(init, /'repo\.maven\.apache\.org': 'central'/);
+  assert.match(init, /'dl\.google\.com': 'google'/);
+  assert.match(init, /'plugins\.gradle\.org': 'gradle-plugins'/);
+  // Groovy's interpolation of the routed URL survives the bash heredoc.
+  assert.match(init, /r\.url = "\$\{cacheBase\}\/\$\{path\}"/);
+  // The GCS mirror is only added while no cache is configured.
+  assert.match(init, /if \(cacheOn \|\| !isCentral\(r\)/);
+});

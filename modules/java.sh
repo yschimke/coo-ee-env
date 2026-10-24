@@ -32,6 +32,13 @@ want_host downloads.gradle.org "Gradle direct-download host (legacy/non-wrapper 
 want_host repo.gradle.org      "Gradle tooling artifacts + the github-downloads-proxy that seeds the wrapper distribution (mirrors the GitHub release the wrapper's services.gradle.org URL 307-redirects to, which is often blocked)"
 want_host central.sonatype.com "Maven Central artifacts"
 want_host maven-central.storage-download.googleapis.com "Google's Maven Central mirror, which the Gradle init script resolves from before Central itself (see cooee_gradle_maven_mirror)"
+# A private Maven cache, when the environment configures one (see cooee_gradle_maven_mirror). Its
+# host is whatever COO_MAVEN_URL names; nothing here hard-codes one.
+if [[ -n "${COO_MAVEN_URL:-}" ]]; then
+  _cooee_cache_host="${COO_MAVEN_URL#*://}"; _cooee_cache_host="${_cooee_cache_host%%[/:]*}"
+  [[ -n "$_cooee_cache_host" ]] && want_host "$_cooee_cache_host" "the private Maven cache COO_MAVEN_URL names, which the Gradle init script resolves Central, Google Maven and the plugin portal through when COO_MAVEN_USER/COO_MAVEN_TOKEN are set"
+  unset _cooee_cache_host
+fi
 want_host api.foojay.io        "Java distro metadata for Gradle toolchains"
 want_host api.adoptium.net     "JDK/toolchain provisioning API"
 want_host cdn.azul.com         "Azul Zulu JDK builds for Gradle toolchain provisioning"
@@ -326,6 +333,16 @@ cooee_gradle_props_jvmargs() {
 #     otherwise send AGP's own dependencies there first — and a 429 is a failure,
 #     not the 404 that would have moved on to Google. `androidx` (on Google Maven
 #     alone) is kept off them even without Google Maven declared.
+#   * A private Maven cache, when the environment configures one. The script reads
+#     COO_MAVEN_URL (the cache's base URL), COO_MAVEN_USER and COO_MAVEN_TOKEN when
+#     Gradle runs, not when this module provisions, so a variable set later (or only
+#     in CI) still applies, and its secret is never written to disk. With all three
+#     set, the build's own Central, Google Maven and plugin-portal repositories
+#     resolve through <base>/central, <base>/google and <base>/gradle-plugins with
+#     those credentials, keeping their place and content filters; the GCS mirror is
+#     not added, since the cache already absorbs Central's rate limit. Other
+#     repositories (jitpack, …) stay direct. With any of the three unset, the build
+#     is exactly as above.
 #   * systemProp.org.gradle.internal.network.retry.* in the user-dir
 #     gradle.properties. Gradle already retries a 429 as transient, but only 3
 #     attempts from a 1s backoff — gone before the window resets. 6 attempts from
@@ -381,7 +398,30 @@ def googleOnly = ['androidx']
 def googleHosted = ['androidx', 'com.android', 'com.google.android.gms',
                     'com.google.android.material', 'com.google.firebase']
 
-def hostOf = { r -> (r instanceof MavenArtifactRepository && r.url != null) ? r.url.host : null }
+// A private Maven cache, configured by the environment at build time: COO_MAVEN_URL (its base URL),
+// COO_MAVEN_USER and COO_MAVEN_TOKEN. Only with all three set do the build's own Central, Google
+// Maven and plugin-portal repositories resolve through it, each keeping its place and content
+// filters; no host is named here, and nothing changes when any of them is unset.
+def envOf = { n -> (System.getenv(n) ?: '').trim() }
+def cacheBase = envOf('COO_MAVEN_URL').replaceAll('/+\$', '')
+def cacheUser = envOf('COO_MAVEN_USER')
+def cacheToken = envOf('COO_MAVEN_TOKEN')
+def cacheOn = cacheBase && cacheUser && cacheToken
+def cachePaths = ['repo.maven.apache.org': 'central', 'repo1.maven.org': 'central',
+                  'dl.google.com': 'google', 'maven.google.com': 'google',
+                  'plugins.gradle.org': 'gradle-plugins']
+// The upstream host of each repository the cache took over, so the rules below still see what it is.
+def upstream = new IdentityHashMap()
+def hostOf = { r -> upstream.containsKey(r) ? upstream[r] :
+  ((r instanceof MavenArtifactRepository && r.url != null) ? r.url.host : null) }
+def route = { r ->
+  if (!cacheOn || upstream.containsKey(r) || !(r instanceof MavenArtifactRepository) || r.url == null) return
+  def path = cachePaths[r.url.host]
+  if (path == null) return
+  upstream[r] = r.url.host
+  r.url = "\${cacheBase}/\${path}"
+  r.credentials { c -> c.username = cacheUser; c.password = cacheToken }
+}
 def isMirror = { r -> r instanceof MavenArtifactRepository && r.name == mirrorName }
 def isCentral = { r -> !isMirror(r) && centralHosts.contains(hostOf(r)) }
 def isGoogle = { r -> googleHosts.contains(hostOf(r)) }
@@ -394,11 +434,13 @@ def wire = { RepositoryHandler repos ->
     try {
       if (isGoogle(r)) {
         repos.toList().each { o -> if (isFallThrough(o)) exclude(o, googleHosted) }
+        route(r)
         return
       }
       if (!isFallThrough(r)) return
       exclude(r, repos.any { o -> isGoogle(o) } ? googleHosted : googleOnly)
-      if (!isCentral(r) || repos.findByName(mirrorName) != null) return
+      route(r)
+      if (cacheOn || !isCentral(r) || repos.findByName(mirrorName) != null) return
       def m = repos.maven { name = mirrorName; url = mirrorUrl }
       repos.remove(m)
       repos.addFirst(m)
