@@ -97,3 +97,11 @@ test("routes through a Maven cache only when the environment configures one", ()
   // The GCS mirror is only added while no cache is configured.
   assert.match(init, /if \(cacheOn \|\| !isCentral\(r\)/);
 });
+
+test("handles repositories already declared when a handler is wired", () => {
+  const guh = scratch();
+  run(guh);
+  const init = fs.readFileSync(path.join(guh, INIT), "utf8");
+  // An init script passed with -I runs first and can add Central before init.d wires the handler.
+  assert.match(init, /def existing = repos\.toList\(\)\n\s*repos\.whenObjectAdded\(handle\)\n\s*existing\.each\(handle\)/);
+});
