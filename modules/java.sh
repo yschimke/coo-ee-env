@@ -31,6 +31,14 @@ want_host bb.staticvar.dev     "build-brief's own install.sh — the fallback wh
 want_host downloads.gradle.org "Gradle direct-download host (legacy/non-wrapper distribution URLs)"
 want_host repo.gradle.org      "Gradle tooling artifacts + the github-downloads-proxy that seeds the wrapper distribution (mirrors the GitHub release the wrapper's services.gradle.org URL 307-redirects to, which is often blocked)"
 want_host central.sonatype.com "Maven Central artifacts"
+want_host maven-central.storage-download.googleapis.com "Google's Maven Central mirror, which the Gradle init script resolves from before Central itself (see cooee_gradle_maven_mirror)"
+# A private Maven cache, when the environment configures one (see cooee_gradle_maven_mirror). Its
+# host is whatever COO_MAVEN_URL names; nothing here hard-codes one.
+if [[ -n "${COO_MAVEN_URL:-}" ]]; then
+  _cooee_cache_host="${COO_MAVEN_URL#*://}"; _cooee_cache_host="${_cooee_cache_host%%[/:]*}"
+  [[ -n "$_cooee_cache_host" ]] && want_host "$_cooee_cache_host" "the private Maven cache COO_MAVEN_URL names, which the Gradle init script resolves Central, Google Maven and the plugin portal through when COO_MAVEN_USER/COO_MAVEN_TOKEN are set"
+  unset _cooee_cache_host
+fi
 want_host api.foojay.io        "Java distro metadata for Gradle toolchains"
 want_host api.adoptium.net     "JDK/toolchain provisioning API"
 want_host cdn.azul.com         "Azul Zulu JDK builds for Gradle toolchain provisioning"
@@ -220,6 +228,9 @@ module_java() {
   # gradle.properties). This is the channel that actually carries them to a
   # build: JAVA_TOOL_OPTIONS is shell-only now and is restored before we exit.
   cooee_gradle_props_jvmargs
+  # Before the prefetch, so the prefetch's own downloads already take the mirror
+  # and ride out a 429.
+  cooee_gradle_maven_mirror
 
   ok "java ready: $("$JAVA_HOME/bin/java" -version 2>&1 | head -1) (toolchains: ${versions[*]})"
 
@@ -298,6 +309,196 @@ cooee_gradle_props_jvmargs() {
     ok "java: appended ${add[*]} to org.gradle.jvmargs in $props."
   else
     warn "java: couldn't update $props; leaving it unchanged."; rm -f "$tmp"
+  fi
+}
+
+# Cloud fix: Maven Central answers HTTP 429 to cloud sessions. They leave through a
+# handful of shared egress IPs, Central's rate limit counts per IP, and every new
+# session starts with an empty dependency cache — so the limit is hit by the fleet,
+# not by any one build. Two changes, both in the Gradle user home so they reach
+# every checkout on the box without touching any repository:
+#
+#   * $GRADLE_USER_HOME/init.d/cooee-maven-mirror.init.gradle puts Google's
+#     Central mirror (maven-central.storage-download.googleapis.com, a GCS copy of
+#     Central with far more headroom) in front of each repository handler that
+#     declares Central — settings plugin/dependency repositories, buildscript and
+#     project repositories alike. Central itself stays in place behind it, so an
+#     artifact published minutes ago and not yet mirrored still resolves. A
+#     handler that never declares Central gains no repository, so a
+#     FAIL_ON_PROJECT_REPOS build is unaffected.
+#   * The same script keeps Google Maven's groups (androidx, com.android, Play
+#     services, Material, Firebase) off Central, its mirror and the plugin portal
+#     whenever the build also declares Google Maven. The portal proxies to
+#     Central, so a build that lists gradlePluginPortal() before google() would
+#     otherwise send AGP's own dependencies there first — and a 429 is a failure,
+#     not the 404 that would have moved on to Google. `androidx` (on Google Maven
+#     alone) is kept off them even without Google Maven declared.
+#   * A private Maven cache, when the environment configures one. The script reads
+#     COO_MAVEN_URL (the cache's base URL), COO_MAVEN_USER and COO_MAVEN_TOKEN when
+#     Gradle runs, not when this module provisions, so a variable set later (or only
+#     in CI) still applies, and its secret is never written to disk. With all three
+#     set, the build's own Central, Google Maven and plugin-portal repositories
+#     resolve through <base>/central, <base>/google and <base>/gradle-plugins with
+#     those credentials, keeping their place and content filters; the GCS mirror is
+#     not added, since the cache already absorbs Central's rate limit. Other
+#     repositories (jitpack, …) stay direct. With any of the three unset, the build
+#     is exactly as above.
+#   * systemProp.org.gradle.internal.network.retry.* in the user-dir
+#     gradle.properties. Gradle already retries a 429 as transient, but only 3
+#     attempts from a 1s backoff — gone before the window resets. 6 attempts from
+#     2s (doubling) waits about a minute in all.
+#
+# Opt out with COOEE_NO_MAVEN_MIRROR=1 (an existing init script is retired; the
+# retry settings still apply). The init script also honours COOEE_NO_GRADLE_INIT=1,
+# and COOEE_NO_GRADLE_PROPS=1 turns off both, like every Gradle-user-home write.
+COOEE_MAVEN_MIRROR_URL="${COOEE_MAVEN_MIRROR_URL:-https://maven-central.storage-download.googleapis.com/maven2/}"
+COOEE_GRADLE_MIRROR_INIT_FILE="cooee-maven-mirror.init.gradle"
+
+cooee_gradle_maven_mirror() {
+  if [[ "${COOEE_NO_GRADLE_PROPS:-0}" == 1 ]]; then
+    log "java: skipping the Maven Central mirror and retry settings (COOEE_NO_GRADLE_PROPS=1)."
+    return 0
+  fi
+  local guh="${GRADLE_USER_HOME:-$HOME/.gradle}"
+  local file="$guh/init.d/$COOEE_GRADLE_MIRROR_INIT_FILE"
+  cooee_gradle_props_network_retry "$guh/gradle.properties"
+
+  if [[ "${COOEE_NO_MAVEN_MIRROR:-0}" == 1 || "${COOEE_NO_GRADLE_INIT:-0}" == 1 ]]; then
+    # An init script from an earlier run would keep applying; retire it.
+    [[ -e "$file" ]] && { rm -f "$file" && log "java: retired the Maven Central mirror init script ($file)."; }
+    log "java: skipping the Maven Central mirror (COOEE_NO_MAVEN_MIRROR/COOEE_NO_GRADLE_INIT=1)."
+    return 0
+  fi
+
+  mkdir -p "$guh/init.d" 2>/dev/null || {
+    warn "java: can't create $guh/init.d; builds will resolve straight from Maven Central."; return 0; }
+  local tmp; tmp=$(mktemp "${TMPDIR:-/tmp}/cooee-gradle-mirror.XXXXXX") || {
+    warn "java: couldn't stage $file; leaving it unchanged."; return 0; }
+
+  # Groovy, applied to every build (and every included build) in this Gradle user
+  # home. whenObjectAdded rather than one pass after settings: plugin repositories
+  # are used before the settings script finishes, and a project's repositories
+  # block runs after any hook placed ahead of it. Repositories already present when
+  # a handler is wired (added by an init script passed with -I, which runs before
+  # init.d) are handled once up front.
+  cat > "$tmp" <<EOF
+// Generated by coo.ee/env — do not edit; regenerated on each provision.
+//
+// Resolves from Google's Maven Central mirror before Central itself, wherever a
+// build declares Central. Cloud sessions share a few egress IPs and Central rate-
+// limits per IP (HTTP 429); the mirror has far more headroom. Central stays in
+// place behind it for anything published too recently to be mirrored yet.
+def mirrorUrl = '${COOEE_MAVEN_MIRROR_URL}'
+def mirrorName = 'CooeeMavenCentralMirror'
+def centralHosts = ['repo.maven.apache.org', 'repo1.maven.org'] as Set
+def googleHosts = ['dl.google.com', 'maven.google.com'] as Set
+// Only ever on Google Maven: never worth a round trip anywhere else.
+def googleOnly = ['androidx']
+// Served by Google Maven, with at most stale copies elsewhere. Kept off the
+// portal, Central and the mirror only when the same build also declares Google
+// Maven, so a lookup a 429 would fail never leaves for a host that would 404 it.
+def googleHosted = ['androidx', 'com.android', 'com.google.android.gms',
+                    'com.google.android.material', 'com.google.firebase']
+
+// A private Maven cache, configured by the environment at build time: COO_MAVEN_URL (its base URL),
+// COO_MAVEN_USER and COO_MAVEN_TOKEN. Only with all three set do the build's own Central, Google
+// Maven and plugin-portal repositories resolve through it, each keeping its place and content
+// filters; no host is named here, and nothing changes when any of them is unset.
+def envOf = { n -> (System.getenv(n) ?: '').trim() }
+def cacheBase = envOf('COO_MAVEN_URL').replaceAll('/+\$', '')
+def cacheUser = envOf('COO_MAVEN_USER')
+def cacheToken = envOf('COO_MAVEN_TOKEN')
+def cacheOn = cacheBase && cacheUser && cacheToken
+def cachePaths = ['repo.maven.apache.org': 'central', 'repo1.maven.org': 'central',
+                  'dl.google.com': 'google', 'maven.google.com': 'google',
+                  'plugins.gradle.org': 'gradle-plugins']
+// The upstream host of each repository the cache took over, so the rules below still see what it is.
+def upstream = new IdentityHashMap()
+def hostOf = { r -> upstream.containsKey(r) ? upstream[r] :
+  ((r instanceof MavenArtifactRepository && r.url != null) ? r.url.host : null) }
+def route = { r ->
+  if (!cacheOn || upstream.containsKey(r) || !(r instanceof MavenArtifactRepository) || r.url == null) return
+  def path = cachePaths[r.url.host]
+  if (path == null) return
+  upstream[r] = r.url.host
+  r.url = "\${cacheBase}/\${path}"
+  r.credentials { c -> c.username = cacheUser; c.password = cacheToken }
+}
+def isMirror = { r -> r instanceof MavenArtifactRepository && r.name == mirrorName }
+def isCentral = { r -> !isMirror(r) && centralHosts.contains(hostOf(r)) }
+def isGoogle = { r -> googleHosts.contains(hostOf(r)) }
+// The plugin portal proxies non-plugin artifacts to Central, 429s included.
+def isFallThrough = { r -> isMirror(r) || isCentral(r) || hostOf(r) == 'plugins.gradle.org' }
+def exclude = { r, groups -> r.content { c -> groups.each { g -> c.excludeGroupAndSubgroups(g) } } }
+
+// Repositories already in the handler count too: an init script passed with -I (the compose-preview
+// CLI's, for one) runs before init.d and can add Central to a project's buildscript first.
+def wire = { RepositoryHandler repos ->
+  def handle = { r ->
+    try {
+      if (isGoogle(r)) {
+        repos.toList().each { o -> if (isFallThrough(o)) exclude(o, googleHosted) }
+        route(r)
+        return
+      }
+      if (!isFallThrough(r)) return
+      exclude(r, repos.any { o -> isGoogle(o) } ? googleHosted : googleOnly)
+      route(r)
+      if (cacheOn || !isCentral(r) || repos.findByName(mirrorName) != null) return
+      def m = repos.maven { name = mirrorName; url = mirrorUrl }
+      repos.remove(m)
+      repos.addFirst(m)
+    } catch (Throwable t) {
+      // A build that resolves straight from Central beats one that won't configure.
+      org.gradle.api.logging.Logging.getLogger('coo.ee/env').info("coo.ee/env: Maven mirror not applied: \${t}")
+    }
+  }
+  // Listen before handling the existing ones, so a mirror added for one of them is handled too.
+  def existing = repos.toList()
+  repos.whenObjectAdded(handle)
+  existing.each(handle)
+}
+
+beforeSettings { s ->
+  wire(s.buildscript.repositories)
+  wire(s.pluginManagement.repositories)
+  wire(s.dependencyResolutionManagement.repositories)
+}
+allprojects { p ->
+  wire(p.buildscript.repositories)
+  wire(p.repositories)
+}
+EOF
+
+  if mv -f "$tmp" "$file"; then
+    ok "java: Gradle resolves from Google's Maven Central mirror first, Central second ($file)."
+  else
+    warn "java: couldn't write $file; builds will resolve straight from Maven Central."
+    rm -f "$tmp"
+  fi
+}
+
+# Add Gradle's network-retry system properties to the user-dir gradle.properties
+# unless the key is already there — a value the user chose wins, and a re-run adds
+# nothing.
+cooee_gradle_props_network_retry() {  # <props file>
+  local props="$1" kv key
+  local -a added=()
+  mkdir -p "$(dirname "$props")" 2>/dev/null || {
+    warn "java: can't create $(dirname "$props"); leaving Gradle's network retries at their defaults."; return 0; }
+  for kv in \
+    "systemProp.org.gradle.internal.network.retry.max.attempts=${COOEE_GRADLE_RETRY_ATTEMPTS:-6}" \
+    "systemProp.org.gradle.internal.network.retry.initial.backOff=${COOEE_GRADLE_RETRY_BACKOFF_MS:-2000}"; do
+    key="${kv%%=*}"
+    [[ -f "$props" ]] && grep -qE "^[[:space:]]*${key//./\\.}[[:space:]]*=" "$props" && continue
+    printf '%s\n' "$kv" >> "$props" || {
+      warn "java: couldn't write $props; leaving Gradle's network retries at their defaults."; return 0; }
+    added+=("$kv")
+  done
+  if (( ${#added[@]} )); then
+    ok "java: set ${added[*]} in $props."
+  else
+    log "java: $props already sets Gradle's network retries; leaving them as-is."
   fi
 }
 

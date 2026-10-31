@@ -23,7 +23,7 @@ jobs:
   bootstrap:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.4.0
 
       # Uses the action from this repo (./). Consumers would pin a tag:
       #   - uses: yschimke/coo-ee-env@v1

@@ -253,7 +253,10 @@ toolchain back to the real JDK and forks its launcher straight past the shim. So
 `$GRADLE_USER_HOME/init.d/cooee-desktop-gl.init.gradle`, which retunes
 `LD_LIBRARY_PATH` on each forked `Test` / `JavaExec` from the JDK that fork will
 actually run on: the store dir is removed for a system JVM, and **added** for a
-store JVM — which is the one thing the wrapper could never do. Skip it with
+store JVM — which is the one thing the wrapper could never do. It does that once
+the task graph is ready rather than in a `doFirst`, because Gradle hashes task
+actions into the build cache key: an added action would make every `Test` and
+`JavaExec` miss a remote build cache that CI filled. Skip it with
 `COOEE_NO_GRADLE_INIT=1`.
 
 `tools` is the same idea for the long tail of CLIs that don't deserve their own
@@ -666,7 +669,11 @@ Knobs:
 | `COOEE_REPLACE=1` | Make this request replace the box's previous one instead of [adding to it](#auto-activation) (the hook, stamp and persisted env then carry only this request). |
 | `COOEE_NO_DEPS=1` | Skip [build-dependency prefetch](#build-dependency-prefetch) — install the toolchain only, don't resolve the project's dependencies. |
 | `COOEE_GRADLE_DEPS_TASK` | Run a specific Gradle task for the prefetch (e.g. `assemble -x test`) instead of the default whole-graph artifact resolution. |
-| `COOEE_NO_GRADLE_INIT=1` | Don't write `$GRADLE_USER_HOME/init.d/cooee-desktop-gl.init.gradle`, the init script that gives the Compose Desktop GL libs to each forked JVM that can load them and withholds them from each one that cannot — see [the `compose` module](#curated-targets). Implied by `COOEE_NO_GRADLE_PROPS=1`. |
+| `COOEE_NO_GRADLE_INIT=1` | Don't write the Maven mirror init script, nor `$GRADLE_USER_HOME/init.d/cooee-desktop-gl.init.gradle`, the init script that gives the Compose Desktop GL libs to each forked JVM that can load them and withholds them from each one that cannot — see [the `compose` module](#curated-targets). Implied by `COOEE_NO_GRADLE_PROPS=1`. |
+| `COOEE_NO_MAVEN_MIRROR=1` | Don't write `$GRADLE_USER_HOME/init.d/cooee-maven-mirror.init.gradle`, which resolves from Google's Maven Central mirror ahead of Central (and retires one an earlier run wrote) — see [Maven Central rate limits](#maven-central-rate-limits-http-429). The network-retry settings still apply. Also skipped by `COOEE_NO_GRADLE_INIT=1`. |
+| `COOEE_MAVEN_MIRROR_URL` | The Central mirror the init script puts first (default `https://maven-central.storage-download.googleapis.com/maven2/`). |
+| `COO_MAVEN_URL`, `COO_MAVEN_USER`, `COO_MAVEN_TOKEN` | A private Maven cache. With all three set when Gradle runs, the init script resolves Central, Google Maven and the plugin portal through it — see [A private Maven cache](#a-private-maven-cache). |
+| `COOEE_GRADLE_RETRY_ATTEMPTS` / `COOEE_GRADLE_RETRY_BACKOFF_MS` | Gradle network retries written to the user-dir `gradle.properties` (default `6` / `2000`); a value already there wins. |
 | `COOEE_NO_GRADLE_PROPS=1` | Don't pin the cloud JVM flags on `org.gradle.jvmargs` in the user-dir `gradle.properties` (`$GRADLE_USER_HOME/gradle.properties`). The `java` module writes them there (merge-safe, never overriding a property you set yourself): the proxy host/port + `nonProxyHosts`, the extra-CA truststore, and `-Dfile.encoding=UTF-8`. This is the **primary** channel for those flags — see [JVM flags and `JAVA_TOOL_OPTIONS`](#jvm-flags-and-java_tool_options). |
 | `COOEE_NO_NSS_CA=1` | Don't import the extra/proxy CAs into the browser NSS database at `~/.pki/nssdb`. By default every run (fast path included) does, whenever extra CAs exist: Chromium on Linux — Playwright's, or one the provider's image ships — ignores `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS` and the system store, so behind a TLS-terminating sandbox proxy every HTTPS page fails with `net::ERR_CERT_AUTHORITY_INVALID` without it. `certutil` comes from `nixpkgs#nss.tools` when it isn't on `PATH`. |
 | `COOEE_SWIFT_SYSTEM_DEPS=0` | `swift`: print the distro packages the official toolchain links against instead of installing them as root. |
@@ -941,6 +948,66 @@ exercises this end-to-end: the [`prefetch`](.github/workflows/prefetch.yml)
 workflow renders the `java` module, runs it against the sample, and asserts the
 dependency JAR is downloaded into the Gradle cache (and that `COOEE_NO_DEPS=1`
 skips it).
+
+## Maven Central rate limits (HTTP 429)
+
+Cloud sessions leave through a few shared egress IPs, Maven Central rate-limits
+per IP, and every new session starts with an empty dependency cache, so builds
+fail with *"Received status code 429 from server: Too Many Requests"* even when
+no single build downloads much. The `java` module writes two things into the
+Gradle user home, so every checkout on the box gets them without a change to any
+repository:
+
+- **`$GRADLE_USER_HOME/init.d/cooee-maven-mirror.init.gradle`** puts Google's
+  Maven Central mirror (`maven-central.storage-download.googleapis.com`) first in
+  every repository list that declares Central: plugin, settings, buildscript and
+  project repositories. Central stays behind it for anything too new to be
+  mirrored yet. When the same list also declares Google Maven, Google's groups
+  (`androidx`, `com.android`, Play services, Material, Firebase) are kept off
+  Central, the mirror and the Gradle Plugin Portal: the portal proxies to Central,
+  so a `gradlePluginPortal()` listed before `google()` would otherwise send AGP's
+  own dependencies there first, and a 429 fails the build where a 404 would have
+  moved on. `androidx` is kept off them even without Google Maven declared.
+  A list that never declares Central gains no repository.
+- **Longer network retries** in `$GRADLE_USER_HOME/gradle.properties`:
+  `systemProp.org.gradle.internal.network.retry.max.attempts=6` and
+  `…initial.backOff=2000`. Gradle already retries a 429, but by default only 3
+  times from a 1s backoff. A value you set yourself is left alone.
+
+Both run before the [prefetch](#build-dependency-prefetch), so it benefits too.
+Opt out of the mirror with `COOEE_NO_MAVEN_MIRROR=1` (the retries stay); point it
+elsewhere with `COOEE_MAVEN_MIRROR_URL`; tune the retries with
+`COOEE_GRADLE_RETRY_ATTEMPTS` / `COOEE_GRADLE_RETRY_BACKOFF_MS`.
+
+### A private Maven cache
+
+The same init script routes builds through a private Maven cache when the
+environment configures one: `COO_MAVEN_URL` (the cache's base URL),
+`COO_MAVEN_USER` and `COO_MAVEN_TOKEN`. It reads them when Gradle runs, not when
+the module provisions, so the token is never written to disk and a variable set
+only in CI or in a cloud provider's environment settings still applies. Nothing
+in the script names a host.
+
+With all three set, the build's own Central, Google Maven and Gradle Plugin
+Portal repositories resolve through `<base>/central`, `<base>/google` and
+`<base>/gradle-plugins` with those credentials. Each keeps its place and its
+content filters, so a build only ever reaches the upstreams it already declares.
+The GCS mirror is not added, since the cache already absorbs Central's rate
+limit. Other repositories (jitpack, …) stay direct. With any of the three unset,
+builds behave exactly as described above. When `COO_MAVEN_URL` is set at
+provision time, its host also joins the network-access check.
+
+In GitHub Actions:
+
+```yaml
+env:
+  COO_MAVEN_URL: ${{ vars.COO_MAVEN_URL }}
+  COO_MAVEN_USER: ${{ vars.COO_MAVEN_USER }}
+  COO_MAVEN_TOKEN: ${{ secrets.COO_MAVEN_TOKEN }}
+```
+
+In a cloud agent sandbox, set the same three in the provider's environment
+settings.
 
 ## Gradle output: `build-brief`
 
