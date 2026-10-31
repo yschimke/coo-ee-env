@@ -105,3 +105,29 @@ test("handles repositories already declared when a handler is wired", () => {
   // An init script passed with -I runs first and can add Central before init.d wires the handler.
   assert.match(init, /def existing = repos\.toList\(\)\n\s*repos\.whenObjectAdded\(handle\)\n\s*existing\.each\(handle\)/);
 });
+
+const initOf = (guh) => fs.readFileSync(path.join(guh, INIT), "utf8");
+
+test("the Kotlin/Native toolchain bypasses the private cache by default", () => {
+  const guh = scratch();
+  run(guh);
+  const init = initOf(guh);
+  assert.match(init, /def cacheBypass = \['org\.jetbrains\.kotlin:kotlin-native-prebuilt'\]/);
+  // Excluded from every repository the cache takes over, and served only by the bypass.
+  assert.match(init, /c\.excludeModule\(g, n\)/);
+  assert.match(init, /b\.url = mirrorUrl/);
+  assert.match(init, /c\.includeModule\(g, n\)/);
+  assert.match(init, /if \(upstream\.containsKey\(r\)\) addBypass\(repos\)/);
+});
+
+test("COOEE_MAVEN_CACHE_BYPASS replaces the list and drops malformed entries", () => {
+  const guh = scratch();
+  run(guh, { COOEE_MAVEN_CACHE_BYPASS: "com.example:big-tool, not-a-module,org.ex:other" });
+  assert.match(initOf(guh), /def cacheBypass = \['com\.example:big-tool', 'org\.ex:other'\]/);
+});
+
+test("an empty COOEE_MAVEN_CACHE_BYPASS turns the bypass off", () => {
+  const guh = scratch();
+  run(guh, { COOEE_MAVEN_CACHE_BYPASS: "" });
+  assert.match(initOf(guh), /def cacheBypass = \[\]/);
+});

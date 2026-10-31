@@ -343,6 +343,13 @@ cooee_gradle_props_jvmargs() {
 #     not added, since the cache already absorbs Central's rate limit. Other
 #     repositories (jitpack, …) stay direct. With any of the three unset, the build
 #     is exactly as above.
+#   * Modules the cache won't serve, COOEE_MAVEN_CACHE_BYPASS (group:module, comma
+#     separated; default the 220 MB Kotlin/Native toolchain), skip it. The cache
+#     answers their POM but 404s the artifact, and Gradle never asks a second
+#     repository for an artifact once one has answered for the module, so the
+#     build fails rather than falling through. They are excluded from every
+#     repository the cache took over and resolve from the GCS mirror instead,
+#     through a repository that serves nothing else.
 #   * systemProp.org.gradle.internal.network.retry.* in the user-dir
 #     gradle.properties. Gradle already retries a 429 as transient, but only 3
 #     attempts from a 1s backoff — gone before the window resets. 6 attempts from
@@ -353,6 +360,7 @@ cooee_gradle_props_jvmargs() {
 # and COOEE_NO_GRADLE_PROPS=1 turns off both, like every Gradle-user-home write.
 COOEE_MAVEN_MIRROR_URL="${COOEE_MAVEN_MIRROR_URL:-https://maven-central.storage-download.googleapis.com/maven2/}"
 COOEE_GRADLE_MIRROR_INIT_FILE="cooee-maven-mirror.init.gradle"
+COOEE_MAVEN_CACHE_BYPASS="${COOEE_MAVEN_CACHE_BYPASS-org.jetbrains.kotlin:kotlin-native-prebuilt}"
 
 cooee_gradle_maven_mirror() {
   if [[ "${COOEE_NO_GRADLE_PROPS:-0}" == 1 ]]; then
@@ -372,6 +380,13 @@ cooee_gradle_maven_mirror() {
 
   mkdir -p "$guh/init.d" 2>/dev/null || {
     warn "java: can't create $guh/init.d; builds will resolve straight from Maven Central."; return 0; }
+  # group:module entries as a Groovy list literal; anything else is dropped.
+  local bypass="" entry
+  for entry in ${COOEE_MAVEN_CACHE_BYPASS//,/ }; do
+    [[ "$entry" =~ ^[A-Za-z0-9._-]+:[A-Za-z0-9._-]+$ ]] || {
+      warn "java: ignoring COOEE_MAVEN_CACHE_BYPASS entry '$entry' (want group:module)."; continue; }
+    bypass+="${bypass:+, }'$entry'"
+  done
   local tmp; tmp=$(mktemp "${TMPDIR:-/tmp}/cooee-gradle-mirror.XXXXXX") || {
     warn "java: couldn't stage $file; leaving it unchanged."; return 0; }
 
@@ -412,6 +427,12 @@ def cacheOn = cacheBase && cacheUser && cacheToken
 def cachePaths = ['repo.maven.apache.org': 'central', 'repo1.maven.org': 'central',
                   'dl.google.com': 'google', 'maven.google.com': 'google',
                   'plugins.gradle.org': 'gradle-plugins']
+// Modules the cache won't serve (it answers their POM but 404s the artifact, and Gradle never tries
+// another repository for an artifact once one has answered for the module). They skip every
+// repository the cache took over and resolve from the GCS mirror, through a repository that serves
+// nothing else.
+def cacheBypass = [${bypass}]
+def bypassName = 'CooeeMavenCacheBypass'
 // The upstream host of each repository the cache took over, so the rules below still see what it is.
 def upstream = new IdentityHashMap()
 def hostOf = { r -> upstream.containsKey(r) ? upstream[r] :
@@ -423,6 +444,15 @@ def route = { r ->
   upstream[r] = r.url.host
   r.url = "\${cacheBase}/\${path}"
   r.credentials { c -> c.username = cacheUser; c.password = cacheToken }
+  r.content { c -> cacheBypass.each { m -> def (g, n) = m.tokenize(':'); c.excludeModule(g, n) } }
+}
+def addBypass = { RepositoryHandler repos ->
+  if (cacheBypass.isEmpty() || repos.findByName(bypassName) != null) return
+  repos.maven { b ->
+    b.name = bypassName
+    b.url = mirrorUrl
+    b.content { c -> cacheBypass.each { m -> def (g, n) = m.tokenize(':'); c.includeModule(g, n) } }
+  }
 }
 def isMirror = { r -> r instanceof MavenArtifactRepository && r.name == mirrorName }
 def isCentral = { r -> !isMirror(r) && centralHosts.contains(hostOf(r)) }
@@ -444,6 +474,7 @@ def wire = { RepositoryHandler repos ->
       if (!isFallThrough(r)) return
       exclude(r, repos.any { o -> isGoogle(o) } ? googleHosted : googleOnly)
       route(r)
+      if (upstream.containsKey(r)) addBypass(repos)
       if (cacheOn || !isCentral(r) || repos.findByName(mirrorName) != null) return
       def m = repos.maven { name = mirrorName; url = mirrorUrl }
       repos.remove(m)

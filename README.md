@@ -673,6 +673,7 @@ Knobs:
 | `COOEE_NO_MAVEN_MIRROR=1` | Don't write `$GRADLE_USER_HOME/init.d/cooee-maven-mirror.init.gradle`, which resolves from Google's Maven Central mirror ahead of Central (and retires one an earlier run wrote) — see [Maven Central rate limits](#maven-central-rate-limits-http-429). The network-retry settings still apply. Also skipped by `COOEE_NO_GRADLE_INIT=1`. |
 | `COOEE_MAVEN_MIRROR_URL` | The Central mirror the init script puts first (default `https://maven-central.storage-download.googleapis.com/maven2/`). |
 | `COO_MAVEN_URL`, `COO_MAVEN_USER`, `COO_MAVEN_TOKEN` | A private Maven cache. With all three set when Gradle runs, the init script resolves Central, Google Maven and the plugin portal through it — see [A private Maven cache](#a-private-maven-cache). |
+| `COOEE_MAVEN_CACHE_BYPASS` | `group:module` entries, comma-separated, that skip the private Maven cache and resolve from the GCS mirror (default `org.jetbrains.kotlin:kotlin-native-prebuilt`, which the cache won't serve) — see [A private Maven cache](#a-private-maven-cache). |
 | `COOEE_GRADLE_RETRY_ATTEMPTS` / `COOEE_GRADLE_RETRY_BACKOFF_MS` | Gradle network retries written to the user-dir `gradle.properties` (default `6` / `2000`); a value already there wins. |
 | `COOEE_NO_GRADLE_PROPS=1` | Don't pin the cloud JVM flags on `org.gradle.jvmargs` in the user-dir `gradle.properties` (`$GRADLE_USER_HOME/gradle.properties`). The `java` module writes them there (merge-safe, never overriding a property you set yourself): the proxy host/port + `nonProxyHosts`, the extra-CA truststore, and `-Dfile.encoding=UTF-8`. This is the **primary** channel for those flags — see [JVM flags and `JAVA_TOOL_OPTIONS`](#jvm-flags-and-java_tool_options). |
 | `COOEE_NO_NSS_CA=1` | Don't import the extra/proxy CAs into the browser NSS database at `~/.pki/nssdb`. By default every run (fast path included) does, whenever extra CAs exist: Chromium on Linux — Playwright's, or one the provider's image ships — ignores `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS` and the system store, so behind a TLS-terminating sandbox proxy every HTTPS page fails with `net::ERR_CERT_AUTHORITY_INVALID` without it. `certutil` comes from `nixpkgs#nss.tools` when it isn't on `PATH`. |
@@ -996,6 +997,16 @@ The GCS mirror is not added, since the cache already absorbs Central's rate
 limit. Other repositories (jitpack, …) stay direct. With any of the three unset,
 builds behave exactly as described above. When `COO_MAVEN_URL` is set at
 provision time, its host also joins the network-access check.
+
+A few modules are too large for the cache to proxy. It answers their POM and
+404s the artifact, and Gradle never asks a second repository for an artifact
+once one has answered for the module, so the build fails instead of falling
+through. `COOEE_MAVEN_CACHE_BYPASS` lists them as comma-separated
+`group:module` entries. The default is `org.jetbrains.kotlin:kotlin-native-prebuilt`,
+the 220 MB Kotlin/Native toolchain that ABI dumps and native targets need. Those
+modules are excluded from every repository the cache takes over, and resolve
+from the GCS mirror through a repository that serves nothing else. Set it empty
+to send everything through the cache.
 
 In GitHub Actions:
 
