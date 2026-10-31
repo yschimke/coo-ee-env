@@ -23,14 +23,14 @@ jobs:
       image: mcr.microsoft.com/playwright:v1.60.0-noble
       options: --ipc=host
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.4.0
       - name: install deps
         run: npm ci
       - name: playwright tests (picker UI + screenshot baselines)
         run: npx playwright test
       - name: upload report + screenshot diffs on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: playwright-report
           path: |
