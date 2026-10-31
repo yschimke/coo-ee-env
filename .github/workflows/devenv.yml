@@ -45,7 +45,7 @@ jobs:
 
       - uses: actions/setup-node@v4.4.0
         with:
-          node-version: 22.23.3
+          node-version: 22.23.4
 
       - name: Render go,java[17,21],node with the ?devenv backend
         run: |
@@ -186,7 +186,7 @@ jobs:
 
       - uses: actions/setup-node@v4.4.0
         with:
-          node-version: 22.23.3
+          node-version: 22.23.4
 
       - name: Render android[34],java[17] with the ?devenv backend
         run: |
