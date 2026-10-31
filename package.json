@@ -5,7 +5,7 @@
   "description": "coo.ee/env — composable dev-environment bootstrapper (Vercel serverless renderer)",
   "license": "Apache-2.0",
   "engines": {
-    "node": "24.22.0"
+    "node": "24.22.2"
   },
   "scripts": {
     "test": "node --test",
