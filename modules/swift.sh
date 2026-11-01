@@ -137,6 +137,24 @@ cooee_swift_via_nix() {
     # shellcheck disable=SC1090
     . "$devenv" >/dev/null 2>&1
     NIX_LDFLAGS="$(sed -E 's#-rpath [^ ]*/outputs/out/lib##' <<<"${NIX_LDFLAGS:-}")"
+    # Resolve the store libraries' own dependencies inside the store. Outside a
+    # Nix build, clang adds the host's /lib/<triple> and /usr/lib/<triple> to the
+    # link and the ld wrapper turns them into -rpath entries, which GNU ld
+    # searches for a DT_NEEDED soname *before* the library's own RUNPATH. So a
+    # host library that shares a soname with a store one wins at link time:
+    # Foundation's ICU is Apple's unrenamed libicuuc.so.78, and on a host that
+    # ships ICU 78 (Ubuntu 26.04) the link picks the system's renamed copy and
+    # fails with "undefined reference to `u_errorName'". -rpath-link is searched
+    # first, and only for those DT_NEEDED lookups; the output RUNPATH is unchanged.
+    local f d prev="" links=""
+    for f in $NIX_LDFLAGS; do
+      d=""
+      if [[ "$prev" == -L ]]; then d=$f; elif [[ "$f" == -L?* ]]; then d=${f#-L}; fi
+      prev=$f
+      [[ "$d" == "${NIX_STORE:-/nix/store}/"* && "$links " != *" -rpath-link $d "* ]] \
+        && links+=" -rpath-link $d"
+    done
+    NIX_LDFLAGS+="$links"
     local v
     for v in $(compgen -e | grep '^NIX_' | grep -vE '^NIX_(BUILD_TOP|BUILD_CORES|STORE|PROFILES|PATH|SSL_CERT_FILE|REMOTE|CONF_DIR|USER_CONF_FILES|CONFIG)$'); do
       printf 'export %s=%q\n' "$v" "${!v}"
