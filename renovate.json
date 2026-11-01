@@ -3,6 +3,7 @@
   "extends": [
     "local>yschimke/renovate-config"
   ],
+  "platformAutomerge": false,
   "packageRules": [
     {
       "description": "Keep the Playwright test runner and both browser images on the same release; Playwright requires the browser revision shipped by its matching image.",
