@@ -23,14 +23,14 @@ jobs:
 
       - uses: actions/setup-node@v4.4.0
         with:
-          node-version: 22.23.3
+          node-version: 22.23.4
 
       # A JDK for the sample's ./gradlew. The java module adopts this existing
       # JDK (no Nix install) and then runs the prefetch — the warm-box path.
       - uses: actions/setup-java@v4.9.1
         with:
           distribution: temurin
-          java-version: "21.0.12+8.0.LTS"
+          java-version: "21.0.13+9.0.LTS"
 
       - name: Render the java module
         run: |
