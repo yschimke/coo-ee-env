@@ -79,6 +79,11 @@ main() {
     if declare -F cooee_playwright_align >/dev/null; then
       cooee_playwright_align
     fi
+    # (git-identity: the harness can rewrite ~/.gitconfig when a container
+    # resumes, putting the agent identity back — re-apply the owner's.)
+    if declare -F cooee_git_identity_apply >/dev/null; then
+      cooee_git_identity_apply
+    fi
     cooee_trust_cas_in_nss     # idempotent: browsers trust the proxy CA (see _header.sh)
     cooee_install_activation   # idempotent: ensure auto-activation is wired up
     log "Re-exported env from ${COOEE_PROFILE} (source it in a fresh shell)."
