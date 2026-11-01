@@ -205,3 +205,34 @@ echo session-clean
     if (legacy) assert.match(wrapperEnv, /NIX_SWIFTFLAGS_COMPILE/);
   });
 }
+
+// Outside a Nix build the link also sees the host's /usr/lib/<triple> as an
+// -rpath, which GNU ld searches before a store library's own RUNPATH. On a host
+// with ICU 78 (Ubuntu 26.04) that resolved Foundation's unrenamed Apple ICU
+// (libicuuc.so.78) to the system's renamed one: "undefined reference to
+// `u_errorName'". Each store -L must also be an -rpath-link, searched first.
+test("Nix Swift resolves store libraries' dependencies inside the store (-rpath-link)", () => {
+  const home = scratch("nix-swift-rpath-link");
+  const tools = path.join(home, "tools");
+  fs.mkdirSync(tools);
+  fs.writeFileSync(path.join(tools, "swift"), '#!/bin/sh\necho "Swift version 6.2.4"\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(tools, "swiftc"), `#!/usr/bin/env bash
+printf '#!/bin/sh\\necho cooee-swift-ready\\n' > "$3"; chmod +x "$3"
+`, { mode: 0o755 });
+  const ldflags = "-L/nix/store/aaa-swift-6.2.4/lib -L/nix/store/bbb-ICU-76142.4.7/lib -L/nix/store/aaa-swift-6.2.4/lib -L /nix/store/ccc-glibc/lib -L/usr/lib/x86_64-linux-gnu -rpath /tmp/x/outputs/out/lib";
+  run("swift[nix]", `
+nix() {
+  case "$1" in
+    build) mkdir -p "$COOEE_SWIFT_NIX_DIR/toolchain/bin"; cp "$COOEE_TEST_TOOLS/"* "$COOEE_SWIFT_NIX_DIR/toolchain/bin/" ;;
+    print-dev-env) printf 'export NIX_LDFLAGS=%q\\n' "$COOEE_TEST_LDFLAGS" ;;
+    *) return 1 ;;
+  esac
+}
+module_swift nix
+`, { HOME: home, COOEE_SWIFT_NIX_DIR: path.join(home, "sdk"), COOEE_TEST_TOOLS: tools, COOEE_TEST_LDFLAGS: ldflags, COOEE_FORCE: "1" });
+  const flags = require("child_process").execFileSync("bash", ["-c", '. "$1"; printf %s "$NIX_LDFLAGS"', "_", path.join(home, "sdk/env.sh")], { encoding: "utf8" });
+  const links = [...flags.matchAll(/-rpath-link (\S+)/g)].map((m) => m[1]);
+  assert.deepEqual(links, ["/nix/store/aaa-swift-6.2.4/lib", "/nix/store/bbb-ICU-76142.4.7/lib", "/nix/store/ccc-glibc/lib"]);
+  assert.doesNotMatch(flags, /outputs\/out\/lib/);
+  assert.match(flags, /-L\/usr\/lib\/x86_64-linux-gnu/, "the existing flags are kept");
+});
